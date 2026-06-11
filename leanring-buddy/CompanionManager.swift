@@ -65,6 +65,10 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+
+    /// Persistent GPT-Realtime-2 WebSocket (proxied through the Cloudflare
+    /// Worker). Opens on launch and stays connected for the whole session.
+    let realtimeClient = RealtimeClient()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -179,6 +183,9 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        // Open the persistent GPT-Realtime-2 WebSocket on launch and keep it
+        // alive for the whole session (heartbeat every 25s).
+        realtimeClient.connect()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -291,6 +298,7 @@ final class CompanionManager: ObservableObject {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
+        realtimeClient.disconnect()
         transientHideTask?.cancel()
 
         currentResponseTask?.cancel()

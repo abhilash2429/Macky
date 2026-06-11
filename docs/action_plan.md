@@ -109,7 +109,7 @@ Create `AGENT_TASKS.md` at repo root with exactly this:
 Read AGENTS.md, worker/AGENTS.md, REQUIREMENTS.md, and BACKLOG.md milestone 1 section before doing anything.
 
 ## Goal
-Replace all existing routes in worker/src/index.ts with a single /realtime WebSocket proxy route. The route upgrades HTTP to WebSocket and forwards bytes between the client and OpenAI's Realtime API at wss://api.openai.com/v1/realtime?model=gpt-realtime-2. Zero computation. Zero parsing. Pure byte forwarding.
+Replace all existing routes in worker/src/index.ts with a single /realtime WebSocket proxy route. The route upgrades HTTP to WebSocket and forwards bytes between the client and OpenAI's Realtime API at https://api.openai.com/v1/realtime?model=gpt-realtime-2. Zero computation. Zero parsing. Pure byte forwarding.
 
 ## Technical details
 - OpenAI upstream connection requires headers: Authorization: Bearer [OPENAI_API_KEY] and OpenAI-Beta: realtime=v1
