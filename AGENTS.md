@@ -89,9 +89,4 @@ Re-read the original request. Did you actually address everything that was asked
 Check for regressions — did you break something that was working before?
 The bar: you should be able to point to evidence that each requirement is met, not just assert it.
 
-How to Know These Guidelines Are Working
-Diffs contain fewer unrelated changes.
-Fewer rewrites due to overcomplication.
-Clarifying questions come before implementation, not after mistakes.
-Edge cases are handled without the code being bloated.
-Code reads clearly to someone seeing it for the first time.
+.

@@ -44,7 +44,7 @@ COMPOSIO_API_KEY=...
 ## Counterintuitive Conventions
 
 **1. The Worker is a WebSocket proxy — it does zero computation.**
-The `/realtime` route upgrades to WebSocket and forwards bytes between the Swift app and the Azure AI Foundry Realtime endpoint (`wss://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2`, authenticated with the `api-key` header). It does not parse messages, modify payloads, or add logic. Any routing or model configuration is set at session initialization in the Swift client, not in the Worker.
+The `/realtime` route upgrades to WebSocket and forwards bytes between the Swift app and the Azure AI Foundry Realtime endpoint (`https://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2`, authenticated with the `api-key` header). It does not parse messages, modify payloads, or add logic. Any routing or model configuration is set at session initialization in the Swift client, not in the Worker.
 
 **2. Cloudflare Workers have a 30s CPU time limit — proxying is exempt.**
 Forwarding bytes does not count as CPU compute. Do not add message parsing, logging, or transformation to the proxy route — that would consume CPU and break long sessions.

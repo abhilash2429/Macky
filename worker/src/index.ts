@@ -6,66 +6,135 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === '/realtime') {
+    if (url.pathname === "/realtime") {
       return handleRealtimeProxy(request, env);
     }
 
-    return new Response('Not found', { status: 404 });
+    return new Response("Not found", { status: 404 });
   },
 };
 
-async function handleRealtimeProxy(request: Request, env: Env): Promise<Response> {
-  const upgradeHeader = request.headers.get('Upgrade');
-  if (!upgradeHeader || upgradeHeader !== 'websocket') {
-    return new Response('Expected WebSocket upgrade', { status: 426 });
+async function handleRealtimeProxy(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const upgrade = request.headers.get("Upgrade");
+
+  if (upgrade?.toLowerCase() !== "websocket") {
+    return new Response("Expected WebSocket upgrade", {
+      status: 426,
+    });
   }
 
-  const azureEndpoint =
-    'wss://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2';
+  const azureUrl =
+    "https://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2";
 
-  const azureResponse = await fetch(azureEndpoint, {
-    headers: {
-      'api-key': env.AZURE_OPENAI_API_KEY,
-      Upgrade: 'websocket',
-      Connection: 'Upgrade',
-    },
-  });
+  console.log("Connecting to Azure:", azureUrl);
 
-  const azureSocket = (azureResponse as any).webSocket as (WebSocket & { accept(): void }) | undefined;
+  let azureResponse: Response;
+
+  try {
+    azureResponse = await fetch(azureUrl, {
+      headers: {
+        Upgrade: "websocket",
+        "api-key": env.AZURE_OPENAI_API_KEY,
+      },
+    });
+  } catch (err) {
+    console.error("Azure fetch failed:", err);
+
+    return new Response(
+      `Azure connection failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      { status: 502 }
+    );
+  }
+
+  console.log("Azure status:", azureResponse.status);
+
+  if (azureResponse.status !== 101) {
+    const body = await azureResponse.text().catch(() => "");
+
+    console.error("Azure upgrade rejected");
+    console.error("Status:", azureResponse.status);
+    console.error("Body:", body);
+
+    return new Response(
+      `Azure websocket upgrade failed.\nStatus: ${azureResponse.status}\nBody: ${body}`,
+      { status: 502 }
+    );
+  }
+
+  const azureSocket = (azureResponse as any).webSocket;
+
   if (!azureSocket) {
-    return new Response('Failed to connect to Azure upstream', { status: 502 });
+    console.error("Azure returned 101 but no websocket object");
+
+    return new Response(
+      "Azure returned 101 but no websocket instance",
+      { status: 502 }
+    );
   }
 
   azureSocket.accept();
 
-  const { 0: clientSocket, 1: serverSocket } =
-    new (globalThis as any).WebSocketPair();
-  serverSocket.accept();
+  const pair = new (globalThis as any).WebSocketPair();
 
-  // client → Azure
-  serverSocket.addEventListener('message', (event: MessageEvent) => {
-    azureSocket.send(event.data);
+  const clientSocket = pair[0];
+  const workerSocket = pair[1];
+
+  workerSocket.accept();
+
+  let closed = false;
+
+  function shutdown(code?: number, reason?: string) {
+    if (closed) return;
+    closed = true;
+
+    try {
+      workerSocket.close(code, reason);
+    } catch {}
+
+    try {
+      azureSocket.close(code, reason);
+    } catch {}
+  }
+
+  workerSocket.addEventListener("message", (event: MessageEvent) => {
+    try {
+      azureSocket.send(event.data);
+    } catch (err) {
+      console.error("Client -> Azure send failed", err);
+      shutdown();
+    }
   });
 
-  // Azure → client
-  azureSocket.addEventListener('message', (event: MessageEvent) => {
-    serverSocket.send(event.data);
+  azureSocket.addEventListener("message", (event: MessageEvent) => {
+    try {
+      workerSocket.send(event.data);
+    } catch (err) {
+      console.error("Azure -> Client send failed", err);
+      shutdown();
+    }
   });
 
-  serverSocket.addEventListener('close', (event: CloseEvent) => {
-    try { azureSocket.close(event.code, event.reason); } catch {}
+  workerSocket.addEventListener("close", (event: CloseEvent) => {
+    shutdown(event.code, event.reason);
   });
 
-  azureSocket.addEventListener('close', (event: CloseEvent) => {
-    try { serverSocket.close(event.code, event.reason); } catch {}
+  azureSocket.addEventListener("close", (event: CloseEvent) => {
+    shutdown(event.code, event.reason);
   });
 
-  serverSocket.addEventListener('error', () => {
-    try { azureSocket.close(); } catch {}
+  workerSocket.addEventListener("error", (err: Event) => {
+    console.error("Client socket error", err);
+    shutdown();
   });
 
-  azureSocket.addEventListener('error', () => {
-    try { serverSocket.close(); } catch {}
+  azureSocket.addEventListener("error", (err: Event) => {
+    console.error("Azure socket error", err);
+    shutdown();
   });
 
   return new Response(null, {

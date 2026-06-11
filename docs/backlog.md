@@ -1,4 +1,4 @@
-# BACKLOG.md — Auren v1
+# BACKLOG.md — Speed v1
 <!-- One milestone = one Claude Code session. Commit before every session. Never start next milestone on broken code. -->
 <!-- When starting a session: tell Claude Code to read AGENTS.md + REQUIREMENTS.md + this file before doing anything. -->
 
@@ -26,7 +26,7 @@
 
 **Architecture context**:
 - Current Worker has three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI) — all three get removed
-- New route: `GET /realtime` — upgrades HTTP to WebSocket, connects upstream to `wss://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2`, forwards all frames bidirectionally
+- New route: `GET /realtime` — upgrades HTTP to WebSocket, connects upstream to `https://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2`, forwards all frames bidirectionally
 - Azure requires the `api-key: YOUR_KEY` header on the upstream connection (NOT `Authorization: Bearer`; no `OpenAI-Beta` header — that is OpenAI-direct only)
 - Cloudflare Workers cannot open outbound WebSockets with `new WebSocket()` — open the upstream with `fetch()` carrying an `Upgrade: websocket` header and read `response.webSocket`. The client-facing end uses `WebSocketPair`: the Worker creates a pair, returns one end to the client, forwards everything from the other end to Azure.
 - Zero computation in this route. No JSON parsing. No message inspection. Pure byte forwarding.
@@ -347,7 +347,7 @@
 
 ## Milestone 13: System Prompt
 
-**Goal**: Write and wire the production system prompt that defines Auren's behavior as a voice assistant.
+**Goal**: Write and wire the production system prompt that defines Speed's behavior as a voice assistant.
 
 **What the prompt must enforce**:
 - Acknowledge every request immediately before doing anything: "on it", "let me check", "give me a sec" — pick naturally based on context
@@ -378,13 +378,13 @@
 - On verify success: create Composio sub-user for this email via Composio API, return session JWT + Composio user ID
 - Swift side: `AuthManager.swift` checks Keychain for existing session on launch, if none → show auth UI
 - Session JWT stored in macOS Keychain via `Security` framework
-- Magic link opens a custom URL scheme registered in the app: `auren://auth?token=...` → app intercepts, calls verify endpoint
+- Magic link opens a custom URL scheme registered in the app: `Speed://auth?token=...` → app intercepts, calls verify endpoint
 
 **Files**:
 - Create: `leanring-buddy/AuthManager.swift`
 - Create: `leanring-buddy/AuthView.swift` — email input + "check your email" state
 - Modify: `worker/src/index.ts` — add /auth/magic-link and /auth/verify routes + KV binding
-- Modify: `leanring-buddy/Info.plist` — register `auren` URL scheme
+- Modify: `leanring-buddy/Info.plist` — register `Speed` URL scheme
 - Modify: `leanring-buddy/leanring_buddyApp.swift` — handle incoming URL scheme
 
 **Done when**:
@@ -432,8 +432,8 @@
 - Requires paid Apple Developer account ($99/year)
 - Xcode archive → export with Developer ID signing
 - Notarize via `notarytool`: `xcrun notarytool submit app.zip --apple-id ... --team-id ... --password ...`
-- Staple the notarization ticket: `xcrun stapler staple Auren.app`
-- Create .dmg with `create-dmg` npm package: `npx create-dmg Auren.app`
+- Staple the notarization ticket: `xcrun stapler staple Speed.app`
+- Create .dmg with `create-dmg` npm package: `npx create-dmg Speed.app`
 
 **Files**:
 - Create: `build.sh` — script that archives, exports, notarizes, staples, and creates .dmg
@@ -448,7 +448,7 @@
 
 ## Milestone 17: PostHog Analytics Wiring
 
-**Goal**: Wire new events for Auren-specific interactions. The PostHog integration itself (ClickyAnalytics.swift) already exists — just add the new event calls.
+**Goal**: Wire new events for Speed-specific interactions. The PostHog integration itself (ClickyAnalytics.swift) already exists — just add the new event calls.
 
 **Events to add**:
 - `voice_interaction_started` — every time hotkey is pressed

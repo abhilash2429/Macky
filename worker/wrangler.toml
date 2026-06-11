@@ -1,6 +1,4 @@
-name = "clicky-proxy"
+name = "realtime-proxy"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2025-06-11"
 
-[vars]
-ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"

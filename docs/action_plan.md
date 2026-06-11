@@ -1,4 +1,4 @@
-# END TO END — Auren Development Guide
+# END TO END — Speed Development Guide
 
 ---
 
@@ -6,10 +6,10 @@
 
 ### 1. Place the project files
 
-Open terminal, navigate to your Clicky repo root:
+Open terminal, navigate to your speed repo root:
 
 ```bash
-cd /path/to/your/clicky/repo
+cd /path/to/your/speed/repo
 ls  # should show: leanring-buddy.xcodeproj, worker/, AGENTS.md, README.md
 ```
 
@@ -62,7 +62,7 @@ open leanring-buddy.xcodeproj
 - Signing & Capabilities → set your Apple team
 - Cmd+R
 
-Clicky should appear in your menu bar. If it doesn't build, fix it before proceeding. Do not build on broken code.
+speed should appear in your menu bar. If it doesn't build, fix it before proceeding. Do not build on broken code.
 
 ### 5. First commit — your rollback baseline
 
@@ -145,7 +145,7 @@ Read AGENTS.md, worker/AGENTS.md, and AGENT_TASKS.md fully before planning.
 
 Then read worker/src/index.ts to understand the existing code.
 
-Plan how to replace the existing routes with a /realtime WebSocket proxy route that forwards bytes between the connecting client and OpenAI's Realtime API at wss://api.openai.com/v1/realtime?model=gpt-realtime-2. The OPENAI_API_KEY from env secrets is passed as Authorization Bearer header to OpenAI upstream. The Worker does zero computation — just proxies bytes using Cloudflare's WebSocketPair API.
+Plan how to replace the existing routes with a /realtime WebSocket proxy route that forwards bytes between the connecting client and OpenAI's Realtime API at https://api.openai.com/v1/realtime?model=gpt-realtime-2. The OPENAI_API_KEY from env secrets is passed as Authorization Bearer header to OpenAI upstream. The Worker does zero computation — just proxies bytes using Cloudflare's WebSocketPair API.
 
 Do not write code yet. Plan only.
 ```
@@ -215,7 +215,7 @@ DELETE: leanring-buddy/BuddyTranscriptionProvider.swift
 DELETE: leanring-buddy/OpenAIAPI.swift
 
 ## Files off-limits
-- OverlayWindow.swift, DesignSystem.swift, ClickyAnalytics.swift, GlobalPushToTalkShortcutMonitor.swift
+- OverlayWindow.swift, DesignSystem.swift, Analytics.swift, GlobalPushToTalkShortcutMonitor.swift
 - BuddyDictationManager.swift (audio wiring is Milestone 3)
 - worker/ (done in Milestone 1)
 
