@@ -31,7 +31,7 @@ npx wrangler dev
 npx wrangler deploy
 
 # Worker secrets
-npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put AZURE_OPENAI_API_KEY
 npx wrangler secret put COMPOSIO_API_KEY
 ```
 

@@ -21,14 +21,14 @@ npx wrangler dev
 npx wrangler deploy
 
 # Add/update secrets (never hardcode these)
-npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put AZURE_OPENAI_API_KEY
 npx wrangler secret put COMPOSIO_API_KEY
 ```
 
 ## .dev.vars (local dev only — never commit this file)
 
 ```
-OPENAI_API_KEY=sk-...
+AZURE_OPENAI_API_KEY=...
 COMPOSIO_API_KEY=...
 ```
 
@@ -36,7 +36,7 @@ COMPOSIO_API_KEY=...
 
 | Route | Purpose |
 |-------|---------|
-| `GET /realtime` | WebSocket upgrade → proxy to OpenAI Realtime API |
+| `GET /realtime` | WebSocket upgrade → proxy to Azure AI Foundry Realtime endpoint |
 | `POST /auth/magic-link` | Send magic link email for user auth |
 | `POST /auth/verify` | Verify magic link token, return session |
 | `POST /composio/connect` | Create Composio sub-user, return OAuth URL |
@@ -44,7 +44,7 @@ COMPOSIO_API_KEY=...
 ## Counterintuitive Conventions
 
 **1. The Worker is a WebSocket proxy — it does zero computation.**
-The `/realtime` route upgrades to WebSocket and forwards bytes between the Swift app and OpenAI's Realtime endpoint. It does not parse messages, modify payloads, or add logic. Any routing or model configuration is set at session initialization in the Swift client, not in the Worker.
+The `/realtime` route upgrades to WebSocket and forwards bytes between the Swift app and the Azure AI Foundry Realtime endpoint (`wss://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2`, authenticated with the `api-key` header). It does not parse messages, modify payloads, or add logic. Any routing or model configuration is set at session initialization in the Swift client, not in the Worker.
 
 **2. Cloudflare Workers have a 30s CPU time limit — proxying is exempt.**
 Forwarding bytes does not count as CPU compute. Do not add message parsing, logging, or transformation to the proxy route — that would consume CPU and break long sessions.
@@ -55,7 +55,7 @@ Workers are stateless per request. User sessions, Composio tokens, and OAuth sta
 ## Permission Tiers
 
 **✅ Always do:**
-- Validate that secrets exist before using them (check `env.OPENAI_API_KEY` is defined)
+- Validate that secrets exist before using them (check `env.AZURE_OPENAI_API_KEY` is defined)
 - Return appropriate HTTP status codes on errors
 
 **⚠️ Ask before doing:**

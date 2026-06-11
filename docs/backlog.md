@@ -20,17 +20,17 @@
 
 ## Milestone 1: Cloudflare Worker — WebSocket Proxy
 
-**Goal**: Replace the existing Worker routes with a `/realtime` WebSocket proxy that forwards bytes between the Swift app and OpenAI's Realtime API. This is the only route needed right now.
+**Goal**: Replace the existing Worker routes with a `/realtime` WebSocket proxy that forwards bytes between the Swift app and the Azure AI Foundry Realtime endpoint. This is the only route needed right now.
 
-**Why this first**: Every Swift milestone depends on this connection existing. Nothing else can be tested until bytes flow through the Worker to OpenAI.
+**Why this first**: Every Swift milestone depends on this connection existing. Nothing else can be tested until bytes flow through the Worker to Azure.
 
 **Architecture context**:
 - Current Worker has three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI) — all three get removed
-- New route: `GET /realtime` — upgrades HTTP to WebSocket, connects upstream to `wss://api.openai.com/v1/realtime?model=gpt-realtime-2`, forwards all frames bidirectionally
-- OpenAI requires `Authorization: Bearer YOUR_KEY` and `OpenAI-Beta: realtime=v1` headers on the upstream connection
-- Cloudflare Workers handle WebSocket proxying via WebSocketPair — the Worker creates a pair, returns one end to the client, forwards everything from the other end to OpenAI
+- New route: `GET /realtime` — upgrades HTTP to WebSocket, connects upstream to `wss://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2`, forwards all frames bidirectionally
+- Azure requires the `api-key: YOUR_KEY` header on the upstream connection (NOT `Authorization: Bearer`; no `OpenAI-Beta` header — that is OpenAI-direct only)
+- Cloudflare Workers cannot open outbound WebSockets with `new WebSocket()` — open the upstream with `fetch()` carrying an `Upgrade: websocket` header and read `response.webSocket`. The client-facing end uses `WebSocketPair`: the Worker creates a pair, returns one end to the client, forwards everything from the other end to Azure.
 - Zero computation in this route. No JSON parsing. No message inspection. Pure byte forwarding.
-- OPENAI_API_KEY lives as a Worker secret, read from `env.OPENAI_API_KEY`
+- AZURE_OPENAI_API_KEY lives as a Worker secret, read from `env.AZURE_OPENAI_API_KEY`
 
 **Files**:
 - Modify: `worker/src/index.ts` — delete old routes, add /realtime WebSocket proxy
@@ -38,7 +38,7 @@
 
 **Done when**:
 - `npx wscat -c ws://localhost:8787/realtime` connects without error
-- Sending a raw JSON frame through wscat reaches OpenAI (OpenAI will respond with `session.created` event)
+- Sending a raw JSON frame through wscat reaches Azure (Azure will respond with `session.created` event)
 - Worker logs show connection established, no errors
 - Old routes (/chat, /tts, /transcribe-token) are removed
 
@@ -84,7 +84,7 @@
 
 **Done when**:
 - App builds and runs in Xcode without errors
-- On launch, WebSocket connects to Worker and OpenAI responds with `session.created`
+- On launch, WebSocket connects to Worker and Azure responds with `session.created`
 - Console logs confirm: connection established, heartbeat firing every 25s
 - `registerTool()` method exists and compiles
 - Old API client files are gone from the project
@@ -308,7 +308,7 @@
 **Architecture context**:
 - Composio provides a single MCP endpoint URL — get this from your Composio dashboard after setting up an app
 - Pass it into session config in `session.update`: `{"mcp_servers": [{"type": "url", "url": "YOUR_COMPOSIO_URL", "headers": {"Authorization": "Bearer COMPOSIO_API_KEY"}}]}`
-- The Composio API key lives as a Worker secret (`COMPOSIO_API_KEY`) — the Worker must pass it as a header when connecting to OpenAI, OR the Swift app reads it from a config endpoint on the Worker
+- The Composio API key lives as a Worker secret (`COMPOSIO_API_KEY`) — the Worker must pass it as a header when connecting to Azure, OR the Swift app reads it from a config endpoint on the Worker
 - Cleaner approach: Swift app fetches a session token from a Worker endpoint `/composio-config` that returns the Composio URL + key, then Swift app passes them into the Realtime session config
 - User's OAuth connections (their personal Slack/Gmail/Spotify) are tied to their Composio sub-user account — created at auth time (Milestone 14), but for testing use a hardcoded test sub-user first
 
