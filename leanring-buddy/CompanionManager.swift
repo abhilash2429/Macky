@@ -444,6 +444,10 @@ final class CompanionManager: ObservableObject {
             // Barge-in: cut off any audio the model is still playing, and clear
             // any leftover pointing target from a previous interaction.
             realtimeClient.interruptPlayback()
+            // Discard any leftover uncommitted audio from a prior press so this
+            // capture starts with a clean input buffer (otherwise the model can
+            // respond to a previous utterance).
+            realtimeClient.clearAudioBuffer()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing

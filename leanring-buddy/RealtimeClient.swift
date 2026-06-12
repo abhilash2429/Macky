@@ -36,6 +36,13 @@ final class RealtimeClient: ObservableObject {
     /// True between the first audio delta and the matching done event, so we
     /// only fire `onResponseAudioStarted` once per response.
     private var isReceivingResponseAudio = false
+    /// True while a response is being generated server side (between
+    /// `response.created`/our `response.create` and `response.done`). Gates
+    /// `response.cancel` so we never cancel when nothing is running.
+    private var hasActiveResponse = false
+    /// True after a barge-in `response.cancel`, until the next response actually
+    /// begins. Used to drop late audio deltas from the killed response.
+    private var isResponseCancelled = false
     /// Count of audio chunks appended since the last commit (diagnostics).
     private var appendedAudioChunkCount = 0
 
@@ -90,9 +97,28 @@ final class RealtimeClient: ObservableObject {
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
         self.urlSession = URLSession(configuration: configuration)
+        registerBuiltInTools()
     }
 
     // MARK: - Tool Registration
+
+    /// Registers tools owned by the client itself (vs. app-level tools the
+    /// owner registers). Done in init so they're included in the first
+    /// session.update.
+    private func registerBuiltInTools() {
+        registerTool(
+            name: "get_screen_context",
+            description: "Capture and look at the user's screen(s). Call this only when the user refers to something on their screen, asks what they're looking at, or you need to see the screen to help.",
+            schema: ["type": "object", "properties": [String: Any]()]
+        ) { [weak self] _ in
+            guard let self else { return "{\"error\": \"client unavailable\"}" }
+            let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+            // Images can't live in a function_call_output, so attach them as a
+            // separate user message before the function result is sent.
+            self.sendScreenContext(captures)
+            return "{\"status\": \"captured\", \"screen_count\": \(captures.count)}"
+        }
+    }
 
     /// Registers a function tool. The schema is the JSON-Schema `parameters`
     /// object the model uses to build arguments. `handler` runs when the model
@@ -204,6 +230,12 @@ final class RealtimeClient: ObservableObject {
         case "session.created":
             print("session.created received")
             sendSessionUpdate()
+        case "response.created":
+            // A fresh response has truly started → allow its audio to play.
+            hasActiveResponse = true
+            isResponseCancelled = false
+        case "response.done":
+            hasActiveResponse = false
         // The GA gpt-realtime API documents `response.output_audio.*`, but some
         // deployments still emit the older `response.audio.*` — handle both.
         case "response.audio.delta", "response.output_audio.delta":
@@ -267,6 +299,7 @@ final class RealtimeClient: ObservableObject {
               let callID = json["call_id"] as? String else {
             return
         }
+        print("🛠 RealtimeClient: function call → \(name)")
         guard let tool = registeredTools[name] else {
             print("⚠️ RealtimeClient: no handler registered for tool \(name)")
             return
@@ -292,6 +325,8 @@ final class RealtimeClient: ObservableObject {
                     "output": output
                 ]
             ])
+            self.hasActiveResponse = true
+            self.isResponseCancelled = false
             self.sendJSON(["type": "response.create"])
         }
     }
@@ -316,6 +351,34 @@ final class RealtimeClient: ObservableObject {
         }
     }
 
+    /// Adds the captured screens to the conversation as a user message with
+    /// input_image content. The Realtime API can't carry images inside a
+    /// function_call_output, so the get_screen_context handler attaches them
+    /// here; the model then sees them when it generates its response.
+    private func sendScreenContext(_ captures: [CompanionScreenCapture]) {
+        guard !captures.isEmpty else { return }
+
+        var content: [[String: Any]] = []
+        for capture in captures {
+            content.append(["type": "input_text", "text": capture.label])
+            let base64Image = capture.imageData.base64EncodedString()
+            content.append([
+                "type": "input_image",
+                "image_url": "data:image/jpeg;base64,\(base64Image)"
+            ])
+        }
+
+        print("🖼 RealtimeClient: attaching \(captures.count) screen image(s) to conversation")
+        sendJSON([
+            "type": "conversation.item.create",
+            "item": [
+                "type": "message",
+                "role": "user",
+                "content": content
+            ]
+        ])
+    }
+
     // MARK: - Audio Input (mic → model)
 
     /// Appends a chunk of mic audio to the model's input buffer. `pcm16Data` is
@@ -333,6 +396,14 @@ final class RealtimeClient: ObservableObject {
         ])
     }
 
+    /// Discards any uncommitted audio in the model's input buffer. Sent at the
+    /// start of a new push-to-talk capture so leftover audio from a prior press
+    /// can't be committed with the new utterance.
+    func clearAudioBuffer() {
+        appendedAudioChunkCount = 0
+        sendJSON(["type": "input_audio_buffer.clear"])
+    }
+
     /// Marks the end of the user's utterance (push-to-talk key release).
     func commitAudio() {
         print("📤 RealtimeClient: commit audio (\(appendedAudioChunkCount) chunks)")
@@ -343,6 +414,8 @@ final class RealtimeClient: ObservableObject {
     /// Asks the model to generate a response to the committed audio.
     func requestResponse() {
         print("📨 RealtimeClient: response.create")
+        hasActiveResponse = true
+        isResponseCancelled = false
         sendJSON(["type": "response.create"])
     }
 
@@ -374,6 +447,9 @@ final class RealtimeClient: ObservableObject {
     /// Decodes a base64 PCM16 chunk and schedules it for playback. The first
     /// chunk of a response also flips the owner into the "responding" state.
     private func handleResponseAudioDelta(_ base64Audio: String) {
+        // After a barge-in cancel, ignore audio still in flight for the old
+        // response so it can't resume on the re-armed player node.
+        guard !isResponseCancelled else { return }
         guard let pcm16Data = Data(base64Encoded: base64Audio), !pcm16Data.isEmpty else { return }
         guard startOutputEngineIfNeeded() else { return }
 
@@ -391,12 +467,25 @@ final class RealtimeClient: ObservableObject {
     private func handleResponseAudioDone() {
         print("✅ RealtimeClient: response audio done")
         isReceivingResponseAudio = false
+        // A cancelled response's done event must not flip voiceState to idle —
+        // the user has already moved on to a new utterance.
+        guard !isResponseCancelled else { return }
         onResponseCompleted?()
     }
 
     /// Stops playback immediately and clears the queue — used for barge-in when
     /// the user starts a new utterance while the model is still talking.
     func interruptPlayback() {
+        // Stop the server from generating the rest of the current response;
+        // otherwise its in-flight audio deltas would just re-fill the player.
+        if hasActiveResponse {
+            print("✋ RealtimeClient: barge-in → response.cancel")
+            sendJSON(["type": "response.cancel"])
+            hasActiveResponse = false
+        }
+        // Drop any deltas still arriving for the cancelled response.
+        isResponseCancelled = true
+
         guard isOutputEngineRunning else { return }
         outputPlayerNode.stop()
         outputPlayerNode.play() // re-arm so the next response can schedule buffers
