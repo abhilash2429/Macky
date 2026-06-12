@@ -13,6 +13,7 @@
 //  intentionally stubbed until then).
 //
 
+import AVFoundation
 import Combine
 import Foundation
 
@@ -25,6 +26,18 @@ final class RealtimeClient: ObservableObject {
     /// The most recent server `error` event message, surfaced for later
     /// milestones to display. Nil until an error arrives.
     @Published private(set) var lastError: String?
+
+    /// Fired when the first audio chunk of a model response arrives, so the
+    /// owner can move to the "responding" state. CompanionManager owns voiceState.
+    var onResponseAudioStarted: (() -> Void)?
+    /// Fired when the model finishes producing audio for a response.
+    var onResponseCompleted: (() -> Void)?
+
+    /// True between the first audio delta and the matching done event, so we
+    /// only fire `onResponseAudioStarted` once per response.
+    private var isReceivingResponseAudio = false
+    /// Count of audio chunks appended since the last commit (diagnostics).
+    private var appendedAudioChunkCount = 0
 
     /// Deployed Cloudflare Worker /realtime endpoint (Milestone 1 proxy → Azure
     /// GPT-Realtime-2). All traffic routes through here so no key ships in the binary.
@@ -57,6 +70,21 @@ final class RealtimeClient: ObservableObject {
         let handler: ([String: Any]) async throws -> String
     }
     private var registeredTools: [String: RegisteredTool] = [:]
+
+    // MARK: - Audio Output (model voice playback)
+
+    /// Dedicated engine for playing the model's voice. Kept separate from the
+    /// mic-capture engine in BuddyDictationManager. Started lazily on first audio.
+    private let outputAudioEngine = AVAudioEngine()
+    private let outputPlayerNode = AVAudioPlayerNode()
+    /// The model streams PCM16 24kHz mono; we play it as Float32 at the same rate.
+    private let outputAudioFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 24_000,
+        channels: 1,
+        interleaved: false
+    )!
+    private var isOutputEngineRunning = false
 
     init() {
         let configuration = URLSessionConfiguration.default
@@ -176,12 +204,14 @@ final class RealtimeClient: ObservableObject {
         case "session.created":
             print("session.created received")
             sendSessionUpdate()
-        case "response.audio.delta":
-            // TODO(Milestone 3): decode the base64 PCM16 chunk and play via AVAudioEngine.
-            break
-        case "response.audio.done":
-            // TODO(Milestone 3): mark playback complete.
-            break
+        // The GA gpt-realtime API documents `response.output_audio.*`, but some
+        // deployments still emit the older `response.audio.*` — handle both.
+        case "response.audio.delta", "response.output_audio.delta":
+            if let base64Audio = json["delta"] as? String {
+                handleResponseAudioDelta(base64Audio)
+            }
+        case "response.audio.done", "response.output_audio.done":
+            handleResponseAudioDone()
         case "response.function_call_arguments.done":
             dispatchFunctionCall(json)
         case "error":
@@ -207,11 +237,23 @@ final class RealtimeClient: ObservableObject {
             ]
         }
 
+        // GA gpt-realtime session schema: `type` is required, audio formats and
+        // turn detection are nested under `audio.input` / `audio.output`. Server
+        // VAD is disabled by OMITTING turn_detection — push-to-talk drives commit
+        // + response.create manually. Audio is PCM16 24kHz mono in both directions.
+        let pcmFormat: [String: Any] = ["type": "audio/pcm", "rate": 24_000]
         sendJSON([
             "type": "session.update",
             "session": [
+                "type": "realtime",
+                "output_modalities": ["audio"],
                 "tools": tools,
-                "tool_choice": "auto"
+                "tool_choice": "auto",
+                "audio": [
+                    "input": ["format": pcmFormat],
+                    // A voice is required for the model to produce audio output.
+                    "output": ["format": pcmFormat, "voice": "alloy"]
+                ]
             ]
         ])
     }
@@ -272,6 +314,117 @@ final class RealtimeClient: ObservableObject {
                 print("⚠️ RealtimeClient: send failed: \(error)")
             }
         }
+    }
+
+    // MARK: - Audio Input (mic → model)
+
+    /// Appends a chunk of mic audio to the model's input buffer. `pcm16Data` is
+    /// raw little-endian PCM16, 24kHz mono (produced by BuddyPCM16AudioConverter);
+    /// the Realtime API expects it base64-encoded.
+    func sendAudio(_ pcm16Data: Data) {
+        guard !pcm16Data.isEmpty else { return }
+        if appendedAudioChunkCount == 0 {
+            print("📤 RealtimeClient: sending first audio chunk (\(pcm16Data.count) bytes)")
+        }
+        appendedAudioChunkCount += 1
+        sendJSON([
+            "type": "input_audio_buffer.append",
+            "audio": pcm16Data.base64EncodedString()
+        ])
+    }
+
+    /// Marks the end of the user's utterance (push-to-talk key release).
+    func commitAudio() {
+        print("📤 RealtimeClient: commit audio (\(appendedAudioChunkCount) chunks)")
+        appendedAudioChunkCount = 0
+        sendJSON(["type": "input_audio_buffer.commit"])
+    }
+
+    /// Asks the model to generate a response to the committed audio.
+    func requestResponse() {
+        print("📨 RealtimeClient: response.create")
+        sendJSON(["type": "response.create"])
+    }
+
+    // MARK: - Audio Output (model voice → speakers)
+
+    /// Lazily starts the playback engine. Returns false if it couldn't start.
+    private func startOutputEngineIfNeeded() -> Bool {
+        guard !isOutputEngineRunning else { return true }
+
+        outputAudioEngine.attach(outputPlayerNode)
+        outputAudioEngine.connect(
+            outputPlayerNode,
+            to: outputAudioEngine.mainMixerNode,
+            format: outputAudioFormat
+        )
+        outputAudioEngine.prepare()
+
+        do {
+            try outputAudioEngine.start()
+            outputPlayerNode.play()
+            isOutputEngineRunning = true
+            return true
+        } catch {
+            print("⚠️ RealtimeClient: failed to start output audio engine: \(error)")
+            return false
+        }
+    }
+
+    /// Decodes a base64 PCM16 chunk and schedules it for playback. The first
+    /// chunk of a response also flips the owner into the "responding" state.
+    private func handleResponseAudioDelta(_ base64Audio: String) {
+        guard let pcm16Data = Data(base64Encoded: base64Audio), !pcm16Data.isEmpty else { return }
+        guard startOutputEngineIfNeeded() else { return }
+
+        if !isReceivingResponseAudio {
+            isReceivingResponseAudio = true
+            print("🔊 RealtimeClient: receiving response audio")
+            onResponseAudioStarted?()
+        }
+
+        guard let buffer = makeFloatBuffer(fromPCM16: pcm16Data) else { return }
+        outputPlayerNode.scheduleBuffer(buffer, completionHandler: nil)
+    }
+
+    /// The model finished this response's audio.
+    private func handleResponseAudioDone() {
+        print("✅ RealtimeClient: response audio done")
+        isReceivingResponseAudio = false
+        onResponseCompleted?()
+    }
+
+    /// Stops playback immediately and clears the queue — used for barge-in when
+    /// the user starts a new utterance while the model is still talking.
+    func interruptPlayback() {
+        guard isOutputEngineRunning else { return }
+        outputPlayerNode.stop()
+        outputPlayerNode.play() // re-arm so the next response can schedule buffers
+        isReceivingResponseAudio = false
+    }
+
+    /// Converts raw little-endian PCM16 mono into a Float32 buffer the player
+    /// node can schedule. Manual (`Int16 / 32768`) conversion avoids the
+    /// off-limits BuddyAudioConversionSupport (which only converts *to* PCM16).
+    private func makeFloatBuffer(fromPCM16 pcm16Data: Data) -> AVAudioPCMBuffer? {
+        let sampleCount = pcm16Data.count / MemoryLayout<Int16>.size
+        guard sampleCount > 0,
+              let buffer = AVAudioPCMBuffer(
+                  pcmFormat: outputAudioFormat,
+                  frameCapacity: AVAudioFrameCount(sampleCount)
+              ),
+              let channel = buffer.floatChannelData?[0] else {
+            return nil
+        }
+
+        pcm16Data.withUnsafeBytes { rawBuffer in
+            let int16Samples = rawBuffer.bindMemory(to: Int16.self)
+            for sampleIndex in 0..<sampleCount {
+                channel[sampleIndex] = Float(Int16(littleEndian: int16Samples[sampleIndex])) / 32768.0
+            }
+        }
+        buffer.frameLength = AVAudioFrameCount(sampleCount)
+        return buffer
     }
 
     // MARK: - Heartbeat
