@@ -148,6 +148,10 @@ final class MenuBarPanelManager: NSObject {
             .frame(width: panelWidth)
 
         let hostingView = NSHostingView(rootView: companionPanelView)
+        // We size and position the panel ourselves (via fittingSize + setFrame),
+        // so the hosting view must not auto-drive the window size — otherwise it
+        // can race the manual frame changes during the layout pass.
+        hostingView.sizingOptions = []
         hostingView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = .clear

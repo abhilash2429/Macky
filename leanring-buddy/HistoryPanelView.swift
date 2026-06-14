@@ -20,12 +20,12 @@ struct HistoryPanelView: View {
     var onHoverChange: (Bool) -> Void = { _ in }
 
     /// Flat top, rounded bottom — matching the notch bar's bottom corner radius
-    /// (reused from NotchPanelController, not duplicated).
+    /// (reused from NotchConstants, not duplicated).
     private var panelShape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
             topLeadingRadius: 0,
-            bottomLeadingRadius: NotchPanelController.notchBottomCornerRadius,
-            bottomTrailingRadius: NotchPanelController.notchBottomCornerRadius,
+            bottomLeadingRadius: NotchConstants.openedCornerRadius.bottom,
+            bottomTrailingRadius: NotchConstants.openedCornerRadius.bottom,
             topTrailingRadius: 0,
             style: .continuous
         )

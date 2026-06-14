@@ -20,8 +20,8 @@ struct DropZoneView: View {
     private var panelShape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
             topLeadingRadius: 0,
-            bottomLeadingRadius: NotchPanelController.notchBottomCornerRadius,
-            bottomTrailingRadius: NotchPanelController.notchBottomCornerRadius,
+            bottomLeadingRadius: NotchConstants.openedCornerRadius.bottom,
+            bottomTrailingRadius: NotchConstants.openedCornerRadius.bottom,
             topTrailingRadius: 0,
             style: .continuous
         )
