@@ -21,9 +21,86 @@ enum CompanionVoiceState {
     case responding
 }
 
+/// One completed voice turn, shown in the drop panel's history list.
+struct Interaction: Identifiable {
+    let id = UUID()
+    let userPhrase: String     // what the user said (input transcript)
+    let modelSummary: String   // first sentence of the model's reply
+    let timestamp: Date
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
+    /// True while a model-requested tool call is executing. Drives the notch
+    /// bar's brief vertical pulse. Set from RealtimeClient's tool callbacks.
+    @Published private(set) var toolCallActive: Bool = false
+    /// Short narration shown in the notch bar's left zone while a tool call runs
+    /// (e.g. "looking at your screen"), overriding the plain state text. Cleared
+    /// when the tool call resolves.
+    @Published private(set) var narrationText: String? = nil
+
+    // MARK: - Drop Panel State (history + queued file context)
+
+    /// Last 5 completed voice turns, newest first. Shown in the drop panel.
+    @Published private(set) var recentInteractions: [Interaction] = []
+    /// Text extracted from dropped files, queued for the next voice turn.
+    @Published var pendingFileContext: [String] = []
+    /// Raw image data from dropped images (PNG), queued for the next voice turn.
+    @Published var pendingImageContext: [Data] = []
+    /// Filenames of currently queued attachments, shown as confirmation chips.
+    @Published private(set) var pendingAttachmentNames: [String] = []
+
+    /// Most interactions to keep in the history list.
+    private static let maxRecentInteractions = 5
+
+    /// Queues a dropped text file's contents for the next voice interaction.
+    func attachDroppedText(_ text: String, name: String) {
+        guard !text.isEmpty else { return }
+        pendingFileContext.append("Attached file \"\(name)\":\n\(text)")
+        pendingAttachmentNames.append(name)
+    }
+
+    /// Queues a dropped image (PNG data) for the next voice interaction.
+    func attachDroppedImage(_ data: Data, name: String) {
+        guard !data.isEmpty else { return }
+        pendingImageContext.append(data)
+        pendingAttachmentNames.append(name)
+    }
+
+    /// Clears all queued attachments (after they're injected into a turn).
+    private func clearPendingAttachments() {
+        pendingFileContext = []
+        pendingImageContext = []
+        pendingAttachmentNames = []
+    }
+
+    /// Builds a history entry from a completed turn's transcripts and keeps the
+    /// list capped at the 5 most recent. Skips empty turns.
+    private func recordInteraction(userPhrase: String, modelText: String) {
+        let trimmedUser = userPhrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = modelText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUser.isEmpty || !trimmedModel.isEmpty else { return }
+
+        let interaction = Interaction(
+            userPhrase: trimmedUser,
+            modelSummary: Self.firstSentence(of: trimmedModel),
+            timestamp: Date()
+        )
+        recentInteractions.insert(interaction, at: 0)
+        if recentInteractions.count > Self.maxRecentInteractions {
+            recentInteractions.removeLast(recentInteractions.count - Self.maxRecentInteractions)
+        }
+    }
+
+    /// Returns the first sentence of `text` (up to the first ., !, or ?), so the
+    /// history row stays short.
+    private static func firstSentence(of text: String) -> String {
+        guard let end = text.firstIndex(where: { $0 == "." || $0 == "!" || $0 == "?" }) else {
+            return text
+        }
+        return String(text[...end])
+    }
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
@@ -161,6 +238,19 @@ final class CompanionManager: ObservableObject {
             self.voiceState = .idle
             self.scheduleTransientHideIfNeeded()
         }
+        // Tool-call activity pulses the notch bar and shows a narration label.
+        realtimeClient.onToolCallStarted = { [weak self] toolName in
+            self?.toolCallActive = true
+            self?.narrationText = CompanionManager.narrationPhrase(for: toolName)
+        }
+        realtimeClient.onToolCallEnded = { [weak self] in
+            self?.toolCallActive = false
+            self?.narrationText = nil
+        }
+        // A completed turn becomes a history entry in the drop panel.
+        realtimeClient.onTurnCompleted = { [weak self] userPhrase, modelText in
+            self?.recordInteraction(userPhrase: userPhrase, modelText: modelText)
+        }
         // Open the persistent GPT-Realtime-2 WebSocket on launch and keep it
         // alive for the whole session (heartbeat every 25s).
         realtimeClient.connect()
@@ -260,6 +350,16 @@ final class CompanionManager: ObservableObject {
                 self?.onboardingMusicPlayer = nil
                 self?.onboardingMusicFadeTimer = nil
             }
+        }
+    }
+
+    /// Maps a tool name to the short phrase shown in the notch bar's left zone
+    /// while it runs. Returns nil for tools with no narration (the bar then shows
+    /// the plain state text instead).
+    private static func narrationPhrase(for toolName: String) -> String? {
+        switch toolName {
+        case "get_screen_context": return "looking at your screen"
+        default: return nil
         }
     }
 
@@ -496,6 +596,12 @@ final class CompanionManager: ObservableObject {
             if buddyDictationManager.stopRealtimeAudioStreaming() {
                 voiceState = .processing
                 realtimeClient.commitAudio()
+                // Inject any files dropped into the panel before asking for a
+                // response, so the model sees them this turn. Then clear the queue.
+                if !pendingFileContext.isEmpty || !pendingImageContext.isEmpty {
+                    realtimeClient.sendUserContext(texts: pendingFileContext, images: pendingImageContext)
+                    clearPendingAttachments()
+                }
                 realtimeClient.requestResponse()
             } else {
                 print("🎤 Companion: released but no capture was active")

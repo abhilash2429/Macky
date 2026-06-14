@@ -32,6 +32,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
+    /// Owns the notch panel for the app's lifetime, independent of the voice
+    /// pipeline. Created on launch and never torn down.
+    private var notchPanelController: NotchPanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🎯 Clicky: Starting...")
@@ -41,6 +44,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         ClickyAnalytics.configure()
         ClickyAnalytics.trackAppOpened()
+
+        // Create the notch panel up front. It observes companionManager's
+        // voiceState (read-only) to drive expand/collapse.
+        notchPanelController = NotchPanelController(companionManager: companionManager)
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
