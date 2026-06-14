@@ -7,6 +7,7 @@
 //  opens a floating panel with companion voice controls.
 //
 
+import AppKit
 import ServiceManagement
 import SwiftUI
 import Sparkle
@@ -40,6 +41,12 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         print("🎯 Clicky: Starting...")
         print("🎯 Clicky: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 
+        // Enforce a single live instance before any setup. Clicky auto-launches as
+        // a login item, so on a Cmd+R from Xcode a second copy would otherwise run
+        // alongside the already-running one — two WebSockets, two voices, two
+        // overlays. The newest instance wins: terminate any older ones first.
+        terminateOtherInstances()
+
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
         ClickyAnalytics.configure()
@@ -62,6 +69,22 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
+    }
+
+    /// Terminates any other running copies of this app (same bundle identifier,
+    /// different process) so only this — the most recently launched — instance
+    /// stays alive. Uses a graceful `terminate()` so the old copy runs its
+    /// `applicationWillTerminate` and cleanly disconnects its WebSocket.
+    private func terminateOtherInstances() {
+        let myBundleID = Bundle.main.bundleIdentifier
+        let myPID = NSRunningApplication.current.processIdentifier
+        let duplicates = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier == myBundleID && $0.processIdentifier != myPID
+        }
+        for instance in duplicates {
+            print("🎯 Clicky: terminating older instance (pid \(instance.processIdentifier))")
+            instance.terminate()
+        }
     }
 
     /// Registers the app as a login item so it launches automatically on

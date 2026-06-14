@@ -29,6 +29,15 @@ struct Interaction: Identifiable {
     let timestamp: Date
 }
 
+/// A single line in the activity history log (Session E's history panel). One per
+/// completed interaction — a tool-call cycle ("opening slack ✓ opened") or a plain
+/// conversational turn (the model's first sentence).
+struct HistoryEntry: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let summary: String
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -44,21 +53,37 @@ final class CompanionManager: ObservableObject {
 
     /// Last 5 completed voice turns, newest first. Shown in the drop panel.
     @Published private(set) var recentInteractions: [Interaction] = []
+
+    /// Rolling activity history (last 20) for the history panel. Appended one
+    /// entry per completed interaction; see appendHistory / handleActivityChange.
+    @Published private(set) var historyLog: [HistoryEntry] = []
     /// Text extracted from dropped files, queued for the next voice turn.
     @Published var pendingFileContext: [String] = []
     /// Raw image data from dropped images (PNG), queued for the next voice turn.
     @Published var pendingImageContext: [Data] = []
+
+    /// File URLs dropped onto the notch's drop zone, queued for attachment on the
+    /// next voice turn. RealtimeClient reads each one and attaches it by type
+    /// (image / readable text / filename fallback); the queue is cleared after.
+    @Published var pendingDroppedFiles: [URL] = []
     /// Filenames of currently queued attachments, shown as confirmation chips.
     @Published private(set) var pendingAttachmentNames: [String] = []
 
     /// Most interactions to keep in the history list.
     private static let maxRecentInteractions = 5
+    private static let maxHistoryEntries = 20
 
     /// Queues a dropped text file's contents for the next voice interaction.
     func attachDroppedText(_ text: String, name: String) {
         guard !text.isEmpty else { return }
         pendingFileContext.append("Attached file \"\(name)\":\n\(text)")
         pendingAttachmentNames.append(name)
+    }
+
+    /// Queues file URLs dropped on the notch drop zone for the next voice turn.
+    func enqueueDroppedFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        pendingDroppedFiles.append(contentsOf: urls)
     }
 
     /// Queues a dropped image (PNG data) for the next voice interaction.
@@ -90,6 +115,32 @@ final class CompanionManager: ObservableObject {
         recentInteractions.insert(interaction, at: 0)
         if recentInteractions.count > Self.maxRecentInteractions {
             recentInteractions.removeLast(recentInteractions.count - Self.maxRecentInteractions)
+        }
+    }
+
+    /// Appends one entry to the activity history log, capped at the last 20
+    /// (oldest dropped). Entries are kept in chronological order (newest last).
+    private func appendHistory(_ summary: String) {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        historyLog.append(HistoryEntry(timestamp: Date(), summary: trimmed))
+        if historyLog.count > Self.maxHistoryEntries {
+            historyLog.removeFirst(historyLog.count - Self.maxHistoryEntries)
+        }
+    }
+
+    /// Tracks the model's tool narration so a finished tool cycle can be logged as
+    /// "<narration> ✓ <result>". `currentActivity` transitions from the narration
+    /// phrase to a "✓ …" confirmation when the tool's result is sent; the "✓"
+    /// transition is the cue to write the history entry.
+    private func handleActivityChange(_ activity: String?) {
+        guard let activity else { return }
+        if activity.hasPrefix("✓") {
+            let summary = lastNarration.map { "\($0) \(activity)" } ?? activity
+            appendHistory(summary)
+            lastNarration = nil
+        } else {
+            lastNarration = activity
         }
     }
 
@@ -150,6 +201,15 @@ final class CompanionManager: ObservableObject {
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
+    /// Subscriptions to RealtimeClient's tool-activity publishers (Session D).
+    private var realtimeActivityCancellables = Set<AnyCancellable>()
+    /// The narration phrase currently shown for an in-flight tool, used to build
+    /// the "<narration> ✓ <result>" history entry when the tool completes.
+    private var lastNarration: String?
+    /// Whether the current user turn invoked a tool. Reset when listening starts;
+    /// used so a tool turn logs only its tool-cycle entry (not a duplicate plain
+    /// conversational entry).
+    private var turnUsedTool = false
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
@@ -249,8 +309,25 @@ final class CompanionManager: ObservableObject {
         }
         // A completed turn becomes a history entry in the drop panel.
         realtimeClient.onTurnCompleted = { [weak self] userPhrase, modelText in
-            self?.recordInteraction(userPhrase: userPhrase, modelText: modelText)
+            guard let self else { return }
+            self.recordInteraction(userPhrase: userPhrase, modelText: modelText)
+            // Log plain conversational turns (no tool) to the activity history.
+            // Tool turns are logged from handleActivityChange's "✓" transition
+            // instead, so they aren't double-counted here.
+            if !self.turnUsedTool {
+                self.appendHistory(Self.firstSentence(of: modelText.trimmingCharacters(in: .whitespacesAndNewlines)))
+            }
         }
+        // Track tool narration → result transitions for the history log, and note
+        // when a turn used a tool so it isn't also logged as a plain turn.
+        realtimeClient.$currentActivity
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] activity in self?.handleActivityChange(activity) }
+            .store(in: &realtimeActivityCancellables)
+        realtimeClient.$isToolActive
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] active in if active { self?.turnUsedTool = true } }
+            .store(in: &realtimeActivityCancellables)
         // Open the persistent GPT-Realtime-2 WebSocket on launch and keep it
         // alive for the whole session (heartbeat every 25s).
         realtimeClient.connect()
@@ -565,6 +642,8 @@ final class CompanionManager: ObservableObject {
 
             // Stream mic audio straight to GPT-Realtime-2 as PCM16 chunks.
             voiceState = .listening
+            // New user turn: no tool used yet (gates plain-turn history logging).
+            turnUsedTool = false
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task { [weak self] in
                 guard let self else { return }
@@ -601,6 +680,11 @@ final class CompanionManager: ObservableObject {
                 if !pendingFileContext.isEmpty || !pendingImageContext.isEmpty {
                     realtimeClient.sendUserContext(texts: pendingFileContext, images: pendingImageContext)
                     clearPendingAttachments()
+                }
+                // Attach files dropped on the notch drop zone, then clear the queue.
+                if !pendingDroppedFiles.isEmpty {
+                    realtimeClient.sendDroppedFiles(pendingDroppedFiles)
+                    pendingDroppedFiles = []
                 }
                 realtimeClient.requestResponse()
             } else {

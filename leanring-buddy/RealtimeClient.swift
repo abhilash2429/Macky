@@ -13,9 +13,11 @@
 //  intentionally stubbed until then).
 //
 
+import AppKit
 import AVFoundation
 import Combine
 import Foundation
+import UniformTypeIdentifiers
 
 @MainActor
 final class RealtimeClient: ObservableObject {
@@ -42,6 +44,17 @@ final class RealtimeClient: ObservableObject {
     /// mixer. Drives the "speaking" waveform in the notch bar.
     @Published private(set) var playbackAudioLevel: Float = 0
 
+    /// Short verb-phrase shown in the notch's left flank while a tool runs —
+    /// the model's own spoken narration (e.g. "opening your slack"), parsed from
+    /// `conversation.item.created`. Briefly becomes a "✓ …" confirmation after
+    /// the tool's result is sent, then returns to nil. Nil whenever no tool is
+    /// running, so the flank falls back to the plain voice-state label.
+    @Published private(set) var currentActivity: String?
+
+    /// True while a tool call is in flight (from dispatch through the brief "✓"
+    /// confirmation after its result is sent). Drives the left-flank spinner.
+    @Published private(set) var isToolActive: Bool = false
+
     /// Fired when a full conversation turn finishes (`response.done`), carrying
     /// the transcript of what the user said and what the model replied. The owner
     /// builds the history entry. Either string may be empty if its transcript
@@ -54,6 +67,17 @@ final class RealtimeClient: ObservableObject {
     /// Transcript of the current turn's model speech, captured from the
     /// assistant audio-transcript done event.
     private var pendingModelTranscript = ""
+
+    /// The model's most recent spoken narration, captured from
+    /// `conversation.item.created`. Buffered here (rather than shown immediately)
+    /// because at creation time we don't yet know whether a tool call follows —
+    /// it's promoted to `currentActivity` only when a tool actually dispatches,
+    /// and cleared at the end of each response. This keeps plain conversational
+    /// replies out of the flank, which only ever shows tool narration.
+    private var pendingNarration: String?
+    /// Bumped each time a tool call begins so the delayed "✓ …"-then-clear after
+    /// one tool can't wipe a newer tool's activity (e.g. chained tool calls).
+    private var activityGeneration = 0
 
     /// True between the first audio delta and the matching done event, so we
     /// only fire `onResponseAudioStarted` once per response.
@@ -527,6 +551,9 @@ final class RealtimeClient: ObservableObject {
             onTurnCompleted?(pendingUserPhrase, pendingModelTranscript)
             pendingUserPhrase = ""
             pendingModelTranscript = ""
+            // Drop any buffered narration that no tool consumed (e.g. a plain
+            // reply), so it can't be mistaken for a later tool's narration.
+            pendingNarration = nil
         // The GA gpt-realtime API documents `response.output_audio.*`, but some
         // deployments still emit the older `response.audio.*` — handle both.
         case "response.audio.delta", "response.output_audio.delta":
@@ -544,6 +571,13 @@ final class RealtimeClient: ObservableObject {
         case "response.audio_transcript.done", "response.output_audio_transcript.done":
             if let transcript = json["transcript"] as? String {
                 pendingModelTranscript = transcript
+            }
+        // The model's spoken narration (and any assistant message) arrives as a
+        // created conversation item. Buffer its text; it's only surfaced if a
+        // tool call follows (see dispatchFunctionCall).
+        case "conversation.item.created":
+            if let narration = assistantText(fromItemCreated: json) {
+                pendingNarration = narration
             }
         case "response.function_call_arguments.done":
             dispatchFunctionCall(json)
@@ -615,6 +649,15 @@ final class RealtimeClient: ObservableObject {
         let argumentsString = json["arguments"] as? String ?? "{}"
         let arguments = (try? JSONSerialization.jsonObject(with: Data(argumentsString.utf8))) as? [String: Any] ?? [:]
 
+        // A tool is now confirmed running: surface the model's buffered narration
+        // (if any) and raise the spinner. The generation guards the delayed clear
+        // below against a newer chained tool call taking over in the meantime.
+        activityGeneration += 1
+        let generation = activityGeneration
+        currentActivity = pendingNarration
+        pendingNarration = nil
+        isToolActive = true
+
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.onToolCallStarted?(name)
@@ -637,7 +680,54 @@ final class RealtimeClient: ObservableObject {
             self.hasActiveResponse = true
             self.isResponseCancelled = false
             self.sendJSON(["type": "response.create"])
+
+            // The result is sent: briefly show a "✓ …" confirmation, then clear
+            // the activity state back to nil/false — unless a newer tool call has
+            // already taken over (generation mismatch).
+            guard self.activityGeneration == generation else { return }
+            self.currentActivity = Self.successPhrase(for: output)
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard self.activityGeneration == generation else { return }
+            self.currentActivity = nil
+            self.isToolActive = false
         }
+    }
+
+    /// Extracts the assistant's text from a `conversation.item.created` event,
+    /// or nil for non-assistant items / items with no text yet. Spoken narration
+    /// arrives as an audio part's `transcript`; typed text arrives as `text`.
+    /// Field names mirror the GA schema's nested `item.content[]` shape, parsed in
+    /// the same defensive style as the top-level `transcript`/`name` keys above.
+    private func assistantText(fromItemCreated json: [String: Any]) -> String? {
+        guard let item = json["item"] as? [String: Any],
+              (item["role"] as? String) == "assistant",
+              let content = item["content"] as? [[String: Any]] else {
+            return nil
+        }
+        for part in content {
+            if let transcript = part["transcript"] as? String,
+               !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return transcript
+            }
+            if let text = part["text"] as? String,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
+        }
+        return nil
+    }
+
+    /// Builds the brief confirmation phrase shown after a tool result is sent.
+    /// Uses the handler output's `status` (e.g. "opened") when present, otherwise
+    /// a generic "✓ done".
+    private static func successPhrase(for output: String) -> String {
+        if let data = output.data(using: .utf8),
+           let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let status = json["status"] as? String,
+           !status.isEmpty {
+            return "✓ \(status)"
+        }
+        return "✓ done"
     }
 
     // MARK: - Sending
@@ -717,6 +807,67 @@ final class RealtimeClient: ObservableObject {
                 "content": content
             ]
         ])
+    }
+
+    /// Attaches files dropped on the notch drop zone as a user message, read and
+    /// classified by type: images become `input_image` (PNG, base64, same data-URL
+    /// pattern as sendScreenContext), UTF-8-readable files become `input_text` with
+    /// their contents, and anything else becomes `input_text` naming the file path
+    /// so the model at least knows it was attached. Call before `requestResponse()`.
+    func sendDroppedFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+
+        var content: [[String: Any]] = []
+        for url in urls {
+            let name = url.lastPathComponent
+            let contentType = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
+                ?? UTType(filenameExtension: url.pathExtension)
+
+            if let contentType, contentType.conforms(to: .image), let base64 = Self.pngBase64(forImageAt: url) {
+                content.append([
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,\(base64)"
+                ])
+            } else if let text = Self.readableText(at: url) {
+                content.append(["type": "input_text", "text": "Attached file \"\(name)\":\n\(text)"])
+            } else {
+                // Unreadable/binary (e.g. PDF, archives): give the model the path
+                // as context rather than dropping the attachment silently.
+                content.append(["type": "input_text", "text": "Attached file: \(url.path)"])
+            }
+        }
+        guard !content.isEmpty else { return }
+
+        print("📎 RealtimeClient: attaching \(urls.count) dropped file(s)")
+        sendJSON([
+            "type": "conversation.item.create",
+            "item": [
+                "type": "message",
+                "role": "user",
+                "content": content
+            ]
+        ])
+    }
+
+    /// Re-encodes the image at `url` to base64 PNG, or nil if it isn't a readable
+    /// image. PNG keeps the injected data-URL format predictable.
+    private static func pngBase64(forImageAt url: URL) -> String? {
+        guard let image = NSImage(contentsOf: url),
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        return png.base64EncodedString()
+    }
+
+    /// Reads `url` as UTF-8 text, or nil if it isn't valid UTF-8 (e.g. a binary
+    /// file) or is empty.
+    private static func readableText(at url: URL) -> String? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty else {
+            return nil
+        }
+        return text
     }
 
     // MARK: - Audio Input (mic → model)
