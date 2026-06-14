@@ -90,6 +90,24 @@ private struct NotchGeometry {
     }
 }
 
+/// Backing state for the notch bar's three regions. The controller owns this and
+/// pushes derived values into it (see observeVoiceState); NotchBarView observes it
+/// and renders, so the bar view stays decoupled from CompanionManager and
+/// RealtimeClient — and Session D can feed it real narration / output values.
+@MainActor
+final class NotchPanelViewModel: ObservableObject {
+    /// Left-flank label for the current voice state ("Listening" / "Thinking" /
+    /// "Speaking"). Empty at idle, which collapses the left flank to zero width.
+    @Published var activityText: String = ""
+
+    /// Whether a tool call is in flight. Drives the left-flank braille spinner.
+    @Published var isToolActive: Bool = false
+
+    /// Normalized 0–1 loudness driving the right-flank waveform. Sourced from mic
+    /// input while listening and model playback while speaking.
+    @Published var waveformLevel: CGFloat = 0
+}
+
 /// Owns the notch bar + drop panel for the app's lifetime. Instantiated once by
 /// the app delegate on launch and driven read-only by CompanionManager.voiceState.
 @MainActor
@@ -104,7 +122,15 @@ final class NotchPanelController {
     static let dropPanelHeight: CGFloat = 280
 
     private let companionManager: CompanionManager
+    private let realtimeClient: RealtimeClient
     private var cancellables = Set<AnyCancellable>()
+
+    /// State the hosted NotchBarView observes. Driven by observeVoiceState.
+    let viewModel = NotchPanelViewModel()
+
+    /// Drives the synthetic "thinking" waveform pulse while processing; nil otherwise.
+    private var thinkingPulseCancellable: AnyCancellable?
+    private var thinkingPulsePhase: Double = 0
 
     // MARK: Bar panel
     private var panel: NotchBarPanel?
@@ -125,6 +151,7 @@ final class NotchPanelController {
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
+        self.realtimeClient = companionManager.realtimeClient
         createPanels()
         observeVoiceState()
     }
@@ -250,19 +277,101 @@ final class NotchPanelController {
 
     // MARK: - State observation
 
-    /// Drives expansion from voice activity: any non-idle state expands the bar,
-    /// `.idle` collapses it. The initial `.idle` emission is a harmless no-op.
+    /// Drives the bar from voice activity. Voice state sets the left-flank label
+    /// and expands/collapses the panel; the mic and playback level publishers feed
+    /// the right-flank waveform (each only while its state is active); tool-call
+    /// activity drives the left-flank spinner. The initial `.idle` emission is a
+    /// harmless no-op.
     private func observeVoiceState() {
         companionManager.$voiceState
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
-                if state == .idle {
-                    self?.collapse()
-                } else {
-                    self?.expand()
-                }
+                self?.handleVoiceStateChange(state)
             }
             .store(in: &cancellables)
+
+        // Mic input level drives the waveform while listening.
+        companionManager.$currentAudioPowerLevel
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] level in
+                guard let self, self.companionManager.voiceState == .listening else { return }
+                self.viewModel.waveformLevel = level
+            }
+            .store(in: &cancellables)
+
+        // Model playback level drives the waveform while speaking. This output
+        // level is already wired; Session D layers the narration text on top.
+        realtimeClient.$playbackAudioLevel
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] level in
+                guard let self, self.companionManager.voiceState == .responding else { return }
+                self.viewModel.waveformLevel = CGFloat(level)
+            }
+            .store(in: &cancellables)
+
+        // Tool-call activity drives the left-flank spinner glyph.
+        companionManager.$toolCallActive
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] active in
+                self?.viewModel.isToolActive = active
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Applies a new voice state: sets the activity label, expands or collapses
+    /// the panel, and starts/stops the synthetic "thinking" waveform pulse.
+    private func handleVoiceStateChange(_ state: CompanionVoiceState) {
+        viewModel.activityText = Self.activityText(for: state)
+
+        if state == .idle {
+            collapse()
+        } else {
+            expand()
+        }
+
+        // While thinking there's no real audio signal, so synthesize a gentle
+        // idle pulse. Listening/speaking are driven by their level publishers.
+        if state == .processing {
+            startThinkingPulse()
+        } else {
+            stopThinkingPulse()
+        }
+
+        // Clear the level at idle so a stale value doesn't linger into the next turn.
+        if state == .idle {
+            viewModel.waveformLevel = 0
+        }
+    }
+
+    /// The left-flank label for each voice state. Empty at idle so the flank
+    /// collapses to zero width.
+    private static func activityText(for state: CompanionVoiceState) -> String {
+        switch state {
+        case .idle:       return ""
+        case .listening:  return "Listening"
+        case .processing: return "Thinking"
+        case .responding: return "Speaking"
+        }
+    }
+
+    /// Starts a gentle 0.1s waveform oscillation used while thinking, since that
+    /// state has no real audio level to visualize.
+    private func startThinkingPulse() {
+        stopThinkingPulse()
+        thinkingPulsePhase = 0
+        thinkingPulseCancellable = Timer.publish(every: 0.1, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.thinkingPulsePhase += 0.1
+                // Breathe between ~0.2 and ~0.5 so the bars shimmer softly.
+                self.viewModel.waveformLevel = 0.35 + 0.15 * CGFloat(sin(self.thinkingPulsePhase * .pi * 2))
+            }
+    }
+
+    private func stopThinkingPulse() {
+        thinkingPulseCancellable?.cancel()
+        thinkingPulseCancellable = nil
     }
 
     // MARK: - Panel lifecycle
@@ -280,11 +389,12 @@ final class NotchPanelController {
         let panelHeight = geometry.barHeight + Self.pulseHeadroom
 
         idleFrame = barFrame(width: geometry.idleWidth, panelHeight: panelHeight, screen: screen)
-        expandedFrame = barFrame(width: Self.expandedWidth, panelHeight: panelHeight, screen: screen)
+        expandedFrame = expandedBarFrame(idleFrame: idleFrame, screen: screen, geometry: geometry)
 
-        // Drop panel: 480 wide, centered like the expanded bar, flush below.
+        // Drop panel: 480 wide, centered on the screen, flush below the bar.
+        // Centered independently of the (now possibly asymmetric) expanded bar.
         dropPanelFrame = NSRect(
-            x: expandedFrame.minX,
+            x: screen.frame.midX - Self.dropPanelWidth / 2,
             y: idleFrame.minY - Self.dropPanelHeight,
             width: Self.dropPanelWidth,
             height: Self.dropPanelHeight
@@ -293,8 +403,7 @@ final class NotchPanelController {
         // ── Bar panel ───────────────────────────────────────────────────────
         let barPanel = NotchBarPanel(contentRect: idleFrame)
         let barHosting = NSHostingView(rootView: NotchBarView(
-            companionManager: companionManager,
-            realtimeClient: companionManager.realtimeClient,
+            viewModel: viewModel,
             barHeight: geometry.barHeight,
             onHoverChange: { [weak self] hovering in self?.handleBarHover(hovering) },
             onTap: { [weak self] in self?.toggleDropPanel() }
@@ -331,6 +440,34 @@ final class NotchPanelController {
             y: screen.frame.maxY - panelHeight,
             width: width,
             height: panelHeight
+        )
+    }
+
+    /// Builds the expanded bar frame, anchored to the notch's real center: it
+    /// grows out of the idle notch to the left and right, capping each side's
+    /// growth at that side's menu-bar auxiliary area width minus a small margin.
+    /// Left and right growth are independent, so the expansion may be asymmetric
+    /// when the two sides differ in width. On non-notch displays (no auxiliary
+    /// areas) it falls back to the original centered expanded bar.
+    private func expandedBarFrame(idleFrame: NSRect, screen: NSScreen, geometry: NotchGeometry) -> NSRect {
+        guard geometry.hasNotch,
+              let leftArea = screen.auxiliaryTopLeftArea,
+              let rightArea = screen.auxiliaryTopRightArea else {
+            return barFrame(width: Self.expandedWidth, panelHeight: idleFrame.height, screen: screen)
+        }
+
+        let sideMargin: CGFloat = 8
+        // Each side would grow by half the total expansion to reach expandedWidth,
+        // but is capped at how much room that side's auxiliary area actually has.
+        let desiredGrowthPerSide = max(0, (Self.expandedWidth - idleFrame.width) / 2)
+        let leftGrowth = min(desiredGrowthPerSide, max(0, leftArea.width - sideMargin))
+        let rightGrowth = min(desiredGrowthPerSide, max(0, rightArea.width - sideMargin))
+
+        return NSRect(
+            x: idleFrame.minX - leftGrowth,
+            y: idleFrame.minY,
+            width: idleFrame.width + leftGrowth + rightGrowth,
+            height: idleFrame.height
         )
     }
 }

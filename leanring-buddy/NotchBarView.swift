@@ -16,6 +16,7 @@
 //  pulse (a quick downward stretch-and-snap of the black background only).
 //
 
+import Combine
 import SwiftUI
 
 /// The notch bar outline: flat top, straight sides, rounded bottom corners.
@@ -53,8 +54,9 @@ struct NotchBarShape: Shape {
 }
 
 struct NotchBarView: View {
-    @ObservedObject var companionManager: CompanionManager
-    @ObservedObject var realtimeClient: RealtimeClient
+    /// All bar content is driven by this view model, keeping the bar decoupled
+    /// from CompanionManager / RealtimeClient (the controller feeds the model).
+    @ObservedObject var viewModel: NotchPanelViewModel
     /// Visible height of the black bar. The hosting panel is taller than this by
     /// the pulse headroom, which stays transparent at rest.
     let barHeight: CGFloat
@@ -63,23 +65,31 @@ struct NotchBarView: View {
     /// Reports a click so the controller can toggle the drop panel.
     var onTap: () -> Void = {}
 
+    /// Braille frames for the tool-call spinner, cycled while a tool runs.
+    private let spinnerFrames = ["⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    /// Advances the spinner; only consumed while the spinner is on screen.
+    private let spinnerTimer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+    @State private var spinnerIndex = 0
+
+    /// True when the bar is showing activity (non-idle). Drives flank reveal.
+    private var isActive: Bool { !viewModel.activityText.isEmpty }
+
     var body: some View {
         ZStack(alignment: .top) {
-            // Black background bar. Only this layer pulses on a tool call.
+            // Center notch fill: the black background bar (unchanged shape/corners).
+            // Only this layer pulses on a tool call.
             Color.black
                 .clipShape(NotchBarShape())
                 .frame(height: barHeight)
-                .scaleEffect(y: companionManager.toolCallActive ? 1.15 : 1.0, anchor: .top)
-                .animation(.spring(response: 0.25, dampingFraction: 0.5), value: companionManager.toolCallActive)
+                .scaleEffect(y: viewModel.isToolActive ? 1.15 : 1.0, anchor: .top)
+                .animation(.spring(response: 0.25, dampingFraction: 0.5), value: viewModel.isToolActive)
 
-            // Content: left status text, empty center over the camera, right viz.
+            // Three regions: left flank (text + spinner), center over the camera,
+            // right flank (waveform). Both flanks collapse to zero width at idle.
             HStack(spacing: 0) {
-                StatusTextView(
-                    voiceState: companionManager.voiceState,
-                    narrationText: companionManager.narrationText
-                )
+                leftFlank
                 Spacer(minLength: 0)
-                rightZone
+                rightFlank
             }
             .padding(.horizontal, 12)
             .frame(height: barHeight)
@@ -93,56 +103,38 @@ struct NotchBarView: View {
         .onTapGesture { onTap() }
     }
 
-    /// Audio visualization routed by voice state. Fixed-width and trailing-aligned
-    /// so it hugs the right edge regardless of which indicator is showing.
-    @ViewBuilder
-    private var rightZone: some View {
-        Group {
-            switch companionManager.voiceState {
-            case .idle:
-                EmptyView()
-            case .listening:
-                WaveformView(audioLevel: companionManager.currentAudioPowerLevel)
-            case .processing:
-                ThinkingIndicatorView()
-            case .responding:
-                WaveformView(audioLevel: CGFloat(realtimeClient.playbackAudioLevel))
+    /// Left flank: optional braille spinner (while a tool runs) plus the activity
+    /// label. Collapses to zero width and fades out at idle.
+    private var leftFlank: some View {
+        HStack(spacing: 6) {
+            if viewModel.isToolActive {
+                Text(spinnerFrames[spinnerIndex])
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.85))
+                    .onReceive(spinnerTimer) { _ in
+                        spinnerIndex = (spinnerIndex + 1) % spinnerFrames.count
+                    }
+            }
+            if isActive {
+                Text(viewModel.activityText)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.85))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
         }
-        .frame(width: 165, alignment: .trailing)
-        .animation(.easeInOut(duration: 0.15), value: companionManager.voiceState)
-    }
-}
-
-/// Left-zone status text. Shows the active tool narration when present, otherwise
-/// a word for the current voice state. Empty at idle so the collapsed notch is bare.
-struct StatusTextView: View {
-    let voiceState: CompanionVoiceState
-    let narrationText: String?
-
-    private var displayText: String {
-        if let narration = narrationText, !narration.isEmpty {
-            return narration
-        }
-        switch voiceState {
-        case .idle:       return ""
-        case .listening:  return "listening"
-        case .processing: return "thinking"
-        case .responding: return "speaking"
-        }
+        .frame(maxWidth: isActive ? 160 : 0, alignment: .leading)
+        .opacity(isActive ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.activityText)
+        .animation(.easeInOut(duration: 0.15), value: viewModel.isToolActive)
     }
 
-    var body: some View {
-        Text(displayText)
-            .font(.system(size: 12, weight: .medium, design: .rounded))
-            .foregroundColor(.white.opacity(0.85))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .frame(maxWidth: 165, alignment: .leading)
-            .transition(.asymmetric(
-                insertion: .opacity.combined(with: .offset(x: -4, y: 0)),
-                removal: .opacity
-            ))
-            .animation(.easeInOut(duration: 0.2), value: displayText)
+    /// Right flank: the vocal-cord waveform driven by `waveformLevel`. Collapses
+    /// to zero width and fades out at idle.
+    private var rightFlank: some View {
+        VocalCordWaveformView(level: viewModel.waveformLevel)
+            .frame(width: isActive ? 40 : 0, height: barHeight * 0.7)
+            .opacity(isActive ? 1 : 0)
+            .animation(.easeInOut(duration: 0.2), value: viewModel.activityText)
     }
 }
