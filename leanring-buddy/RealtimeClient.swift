@@ -137,6 +137,7 @@ final class RealtimeClient: ObservableObject {
         registerSystemControlTools()
         registerCalendarTools()
         registerRemindersTools()
+        registerAppLauncherTool()
     }
 
     // MARK: - Tool Registration
@@ -366,6 +367,32 @@ final class RealtimeClient: ObservableObject {
                 dueDateString: arguments["dueDate"] as? String,
                 notes: arguments["notes"] as? String
             )
+        }
+    }
+
+    /// Registers the open_app tool, which launches or activates any installed
+    /// macOS app by name. Backed by AppLauncherIntegration; an unmatched name
+    /// comes back as `{"error": …}` so the model can say it couldn't find the
+    /// app rather than going silent.
+    private func registerAppLauncherTool() {
+        registerTool(
+            name: "open_app",
+            description: "Launch or activate an installed Mac app by name. Call when the user asks to open, launch, start, or switch to an app, e.g. \"open Reminders\", \"open Safari\", or \"open Visual Studio Code\".",
+            schema: [
+                "type": "object",
+                "properties": [
+                    "name": [
+                        "type": "string",
+                        "description": "The app's name as the user said it, e.g. \"Reminders\", \"Safari\", or \"Visual Studio Code\"."
+                    ]
+                ],
+                "required": ["name"]
+            ]
+        ) { arguments in
+            guard let name = arguments["name"] as? String else {
+                return "{\"error\": \"missing name\"}"
+            }
+            return try await AppLauncherIntegration.openApp(named: name)
         }
     }
 
