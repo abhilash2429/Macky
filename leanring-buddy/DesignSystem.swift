@@ -152,6 +152,22 @@ enum DS {
         static let floatingGradientPink = Color(hex: "#E84D9E")
         static let floatingGradientOrange = Color(hex: "#FF8C33")
 
+        // ── Vocal Cord Waveform ──────────────────────────────────────
+        // The four left-to-right bar colors for the voice waveform that lives
+        // in the notch flank. A cool-to-warm sweep (blue → violet → magenta →
+        // rose). Each has a matching glow variant at ~25% opacity for the soft
+        // halo behind its bar.
+
+        static let vocalCordBlue = Color(hex: "#4F9CFF")
+        static let vocalCordViolet = Color(hex: "#8B7CFF")
+        static let vocalCordMagenta = Color(hex: "#C77DFF")
+        static let vocalCordRose = Color(hex: "#FF7DC4")
+
+        static let vocalCordBlueGlow = vocalCordBlue.opacity(0.25)
+        static let vocalCordVioletGlow = vocalCordViolet.opacity(0.25)
+        static let vocalCordMagentaGlow = vocalCordMagenta.opacity(0.25)
+        static let vocalCordRoseGlow = vocalCordRose.opacity(0.25)
+
         // ── Help Chat ──────────────────────────────────────────────
 
         /// User message bubble background in the help chat.
