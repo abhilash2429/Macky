@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import Combine
 import ServiceManagement
 import SwiftUI
 import Sparkle
@@ -37,6 +38,42 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     /// pipeline. Created on launch and never torn down.
     private var notchPanelController: NotchPanelController?
 
+    /// The first-launch sign-in window, shown only while there's no Keychain session.
+    private var authWindow: NSWindow?
+    private var authPhaseCancellable: AnyCancellable?
+
+    /// Registers the custom URL-scheme handler before launch finishes. The Apple
+    /// Event (kAEGetURL) handler is the reliable path for LSUIElement apps;
+    /// `application(_:open:)` below is a belt-and-suspenders fallback. Both route
+    /// into AuthManager, which ignores duplicate deliveries.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleGetURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            AuthManager.shared.handleIncomingURL(url)
+        }
+    }
+
+    @objc private func handleGetURLEvent(
+        _ event: NSAppleEventDescriptor,
+        withReplyEvent: NSAppleEventDescriptor
+    ) {
+        guard let urlString = event
+            .paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?
+            .stringValue,
+            let url = URL(string: urlString) else {
+            return
+        }
+        AuthManager.shared.handleIncomingURL(url)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🎯 Clicky: Starting...")
         print("🎯 Clicky: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
@@ -58,13 +95,60 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
-        // Auto-open the panel if the user still needs to do something:
-        // either they haven't onboarded yet, or permissions were revoked.
+
+        // Gate the app behind magic-link auth. With a stored Keychain session we
+        // jump straight into the normal launch UI; otherwise we show the sign-in
+        // window and defer the panel until auth completes.
+        if AuthManager.shared.hasSession {
+            presentPostAuthUIIfNeeded()
+        } else {
+            showAuthWindow()
+        }
+
+        registerAsLoginItemIfNeeded()
+        // startSparkleUpdater()
+    }
+
+    /// Auto-opens the menu-bar panel if the user still needs to do something:
+    /// either they haven't onboarded yet, or permissions were revoked.
+    private func presentPostAuthUIIfNeeded() {
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             menuBarPanelManager?.showPanelOnLaunch()
         }
-        registerAsLoginItemIfNeeded()
-        // startSparkleUpdater()
+    }
+
+    /// Shows the centered sign-in window and watches for authentication. Once the
+    /// user verifies their magic link, the window closes and the normal launch UI
+    /// takes over.
+    private func showAuthWindow() {
+        authPhaseCancellable = AuthManager.shared.$phase
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] phase in
+                guard let self, phase == .authenticated else { return }
+                self.dismissAuthWindow()
+                self.presentPostAuthUIIfNeeded()
+            }
+
+        let hostingController = NSHostingController(
+            rootView: AuthView(authManager: AuthManager.shared)
+        )
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Sign in to Speed"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.level = .floating
+        authWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func dismissAuthWindow() {
+        authPhaseCancellable?.cancel()
+        authPhaseCancellable = nil
+        authWindow?.close()
+        authWindow = nil
     }
 
     func applicationWillTerminate(_ notification: Notification) {

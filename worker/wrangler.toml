@@ -2,3 +2,12 @@ name = "realtime-proxy"
 main = "src/index.ts"
 compatibility_date = "2025-06-11"
 
+# Stores pending magic-link tokens (token -> email) with a 15-minute TTL.
+# Create the namespaces and paste the returned ids here:
+#   npx wrangler kv namespace create AUTH_TOKENS
+#   npx wrangler kv namespace create AUTH_TOKENS --preview
+[[kv_namespaces]]
+binding = "AUTH_TOKENS"
+id = "c5eb3022f5e84d9ab0e35f73f03db48e"
+preview_id = "ea8c338135f5483799f57060586ea2ac"
+

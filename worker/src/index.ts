@@ -1,6 +1,8 @@
 export interface Env {
   AZURE_OPENAI_API_KEY: string;
   COMPOSIO_API_KEY: string;
+  // Pending magic-link tokens: token -> email, 15-minute TTL.
+  AUTH_TOKENS: KVNamespace;
 }
 
 /// Fixed Composio user for now. M14 (real per-user auth) swaps this one line.
@@ -16,6 +18,14 @@ export default {
 
     if (url.pathname === "/composio-config") {
       return handleComposioConfig(env);
+    }
+
+    if (url.pathname === "/auth/magic-link" && request.method === "POST") {
+      return handleMagicLink(request, env);
+    }
+
+    if (url.pathname === "/auth/verify" && request.method === "POST") {
+      return handleVerify(request, env);
     }
 
     return new Response("Not found", { status: 404 });
@@ -77,6 +87,97 @@ async function handleComposioConfig(env: Env): Promise<Response> {
   } catch (err) {
     console.error("Composio config error", err);
     return new Response("Composio config error", { status: 500 });
+  }
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/// POST /auth/magic-link — stores a one-time token (token -> email) in KV with a
+/// 15-minute TTL and returns the `Speed://auth?token=…` deep link. No email is sent
+/// yet: the link is logged and returned in the response so it can be tested by hand.
+async function handleMagicLink(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  let email: unknown;
+  try {
+    ({ email } = (await request.json()) as { email?: unknown });
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (typeof email !== "string" || !email.includes("@")) {
+    return jsonResponse({ error: "A valid email is required" }, 400);
+  }
+
+  const token = crypto.randomUUID();
+  // Token expires in 15 minutes (900s) — KV's minimum expirationTtl is 60s.
+  await env.AUTH_TOKENS.put(token, email, { expirationTtl: 900 });
+
+  const magicLink = `Speed://auth?token=${token}`;
+  console.log("Magic link for", email, "→", magicLink);
+
+  return jsonResponse({ ok: true, magicLink });
+}
+
+/// POST /auth/verify — validates a magic-link token, provisions the Composio user for
+/// the email, and returns an opaque session token. Tokens are single-use: consumed on
+/// the first successful verify.
+async function handleVerify(request: Request, env: Env): Promise<Response> {
+  let token: unknown;
+  try {
+    ({ token } = (await request.json()) as { token?: unknown });
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (typeof token !== "string" || token.length === 0) {
+    return jsonResponse({ error: "A token is required" }, 400);
+  }
+
+  const email = await env.AUTH_TOKENS.get(token);
+  if (!email) {
+    return jsonResponse({ error: "Token is invalid or expired" }, 401);
+  }
+
+  // One-time use: consume the token so the link can't be replayed.
+  await env.AUTH_TOKENS.delete(token);
+
+  // Provision the Composio user for this email (best-effort — auth still succeeds
+  // even if Composio is briefly unavailable; the user is re-provisioned on next use).
+  await provisionComposioUser(email, env);
+
+  const sessionJWT = crypto.randomUUID();
+  return jsonResponse({ sessionJWT, composioUserId: email });
+}
+
+/// Ensures a Composio user/entity exists for `email` by opening a Tool Router session
+/// with that `user_id` (Composio auto-provisions the entity on first use). Failures are
+/// logged but not surfaced, so a Composio hiccup never blocks login.
+async function provisionComposioUser(email: string, env: Env): Promise<void> {
+  try {
+    const response = await fetch(
+      "https://backend.composio.dev/api/v3.1/tool_router/session",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": env.COMPOSIO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ user_id: email }),
+      }
+    );
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      console.error("Composio user provisioning failed", response.status, body);
+    }
+  } catch (err) {
+    console.error("Composio user provisioning error", err);
   }
 }
 
