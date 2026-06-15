@@ -100,7 +100,8 @@ enum BuddyPushToTalkShortcut {
 
     static func shortcutTransition(
         for event: NSEvent,
-        wasShortcutPreviouslyPressed: Bool
+        wasShortcutPreviouslyPressed: Bool,
+        hotkey: HotkeyConfiguration = .load()
     ) -> ShortcutTransition {
         guard let shortcutEventType = shortcutEventType(for: event.type) else { return .none }
 
@@ -108,7 +109,8 @@ enum BuddyPushToTalkShortcut {
             for: shortcutEventType,
             keyCode: event.keyCode,
             modifierFlags: event.modifierFlags.intersection(.deviceIndependentFlagsMask),
-            wasShortcutPreviouslyPressed: wasShortcutPreviouslyPressed
+            wasShortcutPreviouslyPressed: wasShortcutPreviouslyPressed,
+            hotkey: hotkey
         )
     }
 
@@ -116,7 +118,8 @@ enum BuddyPushToTalkShortcut {
         for eventType: CGEventType,
         keyCode: UInt16,
         modifierFlagsRawValue: UInt64,
-        wasShortcutPreviouslyPressed: Bool
+        wasShortcutPreviouslyPressed: Bool,
+        hotkey: HotkeyConfiguration
     ) -> ShortcutTransition {
         guard let shortcutEventType = shortcutEventType(for: eventType) else { return .none }
 
@@ -125,7 +128,8 @@ enum BuddyPushToTalkShortcut {
             keyCode: keyCode,
             modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
                 .intersection(.deviceIndependentFlagsMask),
-            wasShortcutPreviouslyPressed: wasShortcutPreviouslyPressed
+            wasShortcutPreviouslyPressed: wasShortcutPreviouslyPressed,
+            hotkey: hotkey
         )
     }
 
@@ -159,40 +163,22 @@ enum BuddyPushToTalkShortcut {
         for shortcutEventType: ShortcutEventType,
         keyCode: UInt16,
         modifierFlags: NSEvent.ModifierFlags,
-        wasShortcutPreviouslyPressed: Bool
+        wasShortcutPreviouslyPressed: Bool,
+        hotkey: HotkeyConfiguration
     ) -> ShortcutTransition {
-        if let modifierOnlyFlags = currentShortcutOption.modifierOnlyFlags {
-            guard shortcutEventType == .flagsChanged else { return .none }
+        // Speed only supports modifier-only push-to-talk combos. The shortcut is
+        // "pressed" while at least the configured modifiers are held, and matching
+        // happens on flagsChanged transitions (keyCode is unused here). Holding
+        // extra modifiers still counts as pressed, matching the prior behavior.
+        guard shortcutEventType == .flagsChanged else { return .none }
 
-            let isShortcutCurrentlyPressed = modifierFlags.contains(modifierOnlyFlags)
+        let isShortcutCurrentlyPressed = modifierFlags.contains(hotkey.modifierFlags)
 
-            if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
-                return .pressed
-            }
-
-            if !isShortcutCurrentlyPressed && wasShortcutPreviouslyPressed {
-                return .released
-            }
-
-            return .none
-        }
-
-        guard let pushToTalkModifierFlags = currentShortcutOption.spaceShortcutModifierFlags else {
-            return .none
-        }
-
-        let matchesModifierFlags = modifierFlags.isSuperset(of: pushToTalkModifierFlags)
-
-        if shortcutEventType == .keyDown
-            && keyCode == pushToTalkKeyCode
-            && matchesModifierFlags
-            && !wasShortcutPreviouslyPressed {
+        if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
             return .pressed
         }
 
-        if shortcutEventType == .keyUp
-            && keyCode == pushToTalkKeyCode
-            && wasShortcutPreviouslyPressed {
+        if !isShortcutCurrentlyPressed && wasShortcutPreviouslyPressed {
             return .released
         }
 

@@ -55,6 +55,12 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 16)
 
+                HotkeySettingsView(companionManager: companionManager)
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
                 dmFarzaButton
                     .padding(.horizontal, 16)
             }
@@ -120,7 +126,7 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
+            Text("Hold \(companionManager.globalPushToTalkShortcutMonitor.currentHotkey.displayText) to talk.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
