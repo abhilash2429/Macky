@@ -19,19 +19,24 @@ struct AurenStatusBar: View {
     @ObservedObject var companionManager: CompanionManager
 
     var body: some View {
+        // Same geometry the controller used to size the host window, so the
+        // content fills it exactly: text left, full-width cutout bridge centred,
+        // waveform right. The bar's total width == the window width == m.totalWidth.
+        let m = notch.activeBarMetrics(for: companionManager.activeStatusText)
         HStack(spacing: 0) {
-            // LEFT — animated status text. Unlike the original (which boxed the
-            // text into a tiny square meant for album art), Speed lets it size to
-            // its content so narration like "looking at your screen" reads in full
-            // in the menu-bar space to the left of the cutout.
+            // LEFT — animated status text, capped to m.textWidth so long narration
+            // like "looking at your screen" truncates with "…" instead of clipping.
             statusTextView
-                .padding(.trailing, 8)
+                .frame(width: m.textWidth, alignment: .leading)
+                .padding(.leading, NotchConstants.statusLeadingPad)
+                .padding(.trailing, NotchConstants.statusTrailingGap)
                 .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
 
-            // CENTRE — the physical notch gap, an opaque black bridge
+            // CENTRE — the physical notch gap, an opaque black bridge covering the
+            // full hardware cutout (kept centred on screen by the window origin).
             Rectangle()
                 .fill(Color.black)
-                .frame(width: max(0, notch.closedNotchSize.width - 20))
+                .frame(width: m.bridgeWidth)
 
             // RIGHT — voice waveform
             HStack {
@@ -46,29 +51,18 @@ struct AurenStatusBar: View {
                 height: max(0, notch.effectiveClosedNotchHeight - 12),
                 alignment: .center
             )
+            .padding(.trailing, NotchConstants.waveformTrailingPad)
         }
         .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
     }
 
     // MARK: - Status text
 
-    /// What the closed bar says. A running tool call's narration ("looking at
-    /// your screen") wins; otherwise it reflects the voice state.
-    private var displayText: String {
-        if companionManager.toolCallActive, let narration = companionManager.narrationText {
-            return narration
-        }
-        switch companionManager.voiceState {
-        case .idle:       return ""
-        case .listening:  return "Listening…"
-        case .processing: return "Thinking…"
-        case .responding: return "Speaking…"
-        }
-    }
-
     @ViewBuilder
     private var statusTextView: some View {
-        let text = displayText
+        // Single source of truth, shared with the window-sizing code so the
+        // displayed text and the measured width can never disagree.
+        let text = companionManager.activeStatusText
         ZStack {
             if !text.isEmpty {
                 Text(text)
@@ -76,7 +70,6 @@ struct AurenStatusBar: View {
                     .foregroundStyle(.white.opacity(0.9))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .fixedSize()
                     .id("status_\(text)")
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .offset(y: 4)),

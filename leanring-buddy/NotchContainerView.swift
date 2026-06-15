@@ -37,8 +37,15 @@ struct NotchContainerView: View {
     @State private var isHovering = false
     @State private var collapseTask: Task<Void, Never>?
 
-    private let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
-    private let closeAnimation = Animation.spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)
+    /// One timeline shared with the AppKit window resize (NotchPanelController) so
+    /// the content morph and the host window move together — see NotchConstants.
+    private let morphAnimation = Animation.timingCurve(
+        NotchConstants.morphControlPoints.c0x,
+        NotchConstants.morphControlPoints.c0y,
+        NotchConstants.morphControlPoints.c1x,
+        NotchConstants.morphControlPoints.c1y,
+        duration: NotchConstants.morphDuration
+    )
 
     private var isOpen: Bool { notch.notchState == .open }
 
@@ -66,7 +73,7 @@ struct NotchContainerView: View {
                         .padding(.horizontal, isOpen ? NotchConstants.openedCornerRadius.top : NotchConstants.closedCornerRadius.top)
                 }
                 .shadow(color: (isOpen || isHovering) ? .black.opacity(0.7) : .clear, radius: 6)
-                .animation(isOpen ? openAnimation : closeAnimation, value: notch.notchState)
+                .animation(morphAnimation, value: notch.notchState)
                 .contentShape(Rectangle())
                 .onHover { handleHover($0) }
                 .onTapGesture { open() }
@@ -148,13 +155,16 @@ struct NotchContainerView: View {
     private func open() {
         collapseTask?.cancel()
         guard !isOpen else { return }
-        withAnimation(openAnimation) { notch.open() }
+        // The morph is animated once, by the .animation(morphAnimation, value:)
+        // modifier on the body — no withAnimation here (that double-animated the
+        // state change and interrupted the shape's corner-radius interpolation).
+        notch.open()
     }
 
     private func close() {
         collapseTask?.cancel()
         guard isOpen else { return }
-        withAnimation(closeAnimation) { notch.close() }
+        notch.close()
         // Reset to the home view once collapsed so the next open starts clean.
         openView = .home
         fileDropURLs = []

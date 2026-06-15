@@ -61,6 +61,12 @@ final class RealtimeClient: ObservableObject {
     /// didn't arrive in time.
     var onTurnCompleted: ((_ userPhrase: String, _ modelText: String) -> Void)?
 
+    /// Fired when a Composio `COMPOSIO_MANAGE_CONNECTIONS` MCP call returns a
+    /// Connect Link for a toolkit the user hasn't authorized yet. Carries the
+    /// toolkit slug and the OAuth redirect URL; CompanionManager surfaces a
+    /// "Connect <App>" row in the notch panel.
+    var onConnectionLinkAvailable: ((_ toolkit: String, _ redirectURL: URL) -> Void)?
+
     /// Transcript of the current turn's user speech, captured from
     /// `conversation.item.input_audio_transcription.completed`.
     private var pendingUserPhrase = ""
@@ -109,6 +115,18 @@ final class RealtimeClient: ObservableObject {
     /// Deployed Cloudflare Worker /realtime endpoint (Milestone 1 proxy → Azure
     /// GPT-Realtime-2). All traffic routes through here so no key ships in the binary.
     private let workerRealtimeURL = URL(string: "wss://realtime-proxy.speedmac.workers.dev/realtime")!
+
+    /// Deployed Worker route that mints a Composio Tool Router session and returns
+    /// `{ url, key }` for the MCP tool entry. Fetched once per session on connect.
+    private let composioConfigURL = URL(string: "https://realtime-proxy.speedmac.workers.dev/composio-config")!
+    /// Cached Composio MCP session URL + project API key for this session, populated
+    /// by the one-time `/composio-config` fetch. Nil if the fetch failed/timed out —
+    /// in which case the mcp tool entry is simply omitted and local tools still work.
+    private var composioMCPURL: String?
+    private var composioKey: String?
+    /// True once the per-session `/composio-config` fetch has been attempted, so
+    /// heartbeat-driven reconnects don't re-fetch (cache or its absence persists).
+    private var composioConfigAttempted = false
 
     private let urlSession: URLSession
     private var webSocketTask: URLSessionWebSocketTask?
@@ -456,6 +474,23 @@ final class RealtimeClient: ObservableObject {
         isStopped = false
         isReconnecting = false
 
+        // Fetch the Composio MCP config exactly once per session, before opening
+        // the socket. Reconnects (via scheduleReconnect → connect) skip the fetch,
+        // so the cache (or its absence) persists for the session's lifetime.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if !self.composioConfigAttempted {
+                self.composioConfigAttempted = true
+                await self.fetchComposioConfig()
+            }
+            guard !self.isStopped else { return }
+            self.openSocket()
+        }
+    }
+
+    /// Opens the WebSocket and starts the receive loop + heartbeat. Split out from
+    /// `connect()` so the one-time Composio config fetch can run first.
+    private func openSocket() {
         let task = urlSession.webSocketTask(with: workerRealtimeURL)
         webSocketTask = task
         task.resume()
@@ -463,6 +498,29 @@ final class RealtimeClient: ObservableObject {
 
         startReceiving(on: task)
         startHeartbeat()
+    }
+
+    /// One-time fetch of the Composio Tool Router session config from the Worker.
+    /// Short timeout — a slow/unreachable Composio must not block voice. On any
+    /// failure the cache stays nil and the session proceeds without the mcp tool.
+    private func fetchComposioConfig() async {
+        var request = URLRequest(url: composioConfigURL)
+        request.timeoutInterval = 5
+        do {
+            let (data, response) = try await urlSession.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let url = json["url"] as? String,
+                  let key = json["key"] as? String else {
+                print("⚠️ RealtimeClient: composio-config returned no usable config; proceeding without MCP")
+                return
+            }
+            composioMCPURL = url
+            composioKey = key
+            print("🧩 RealtimeClient: Composio MCP config loaded")
+        } catch {
+            print("⚠️ RealtimeClient: composio-config fetch failed: \(error); proceeding without MCP")
+        }
     }
 
     /// Closes the connection and stops the heartbeat. Called on app termination.
@@ -536,6 +594,14 @@ final class RealtimeClient: ObservableObject {
             return
         }
 
+        // TEMP (Milestone 11 capture): log raw frames for any MCP meta-tool traffic
+        // and output-item completions so we can confirm the exact event/field shape
+        // Azure surfaces for COMPOSIO_MANAGE_CONNECTIONS. Remove once the parser in
+        // handleMCPOutputItem is locked to the observed shape.
+        if type.contains("mcp") || type == "response.output_item.done" {
+            print("🧩 [MCP-CAPTURE] \(text)")
+        }
+
         switch type {
         case "session.created":
             print("session.created received")
@@ -581,6 +647,11 @@ final class RealtimeClient: ObservableObject {
             }
         case "response.function_call_arguments.done":
             dispatchFunctionCall(json)
+        // Completed MCP tool calls arrive here with `item.type == "mcp_call"`. When
+        // the call is COMPOSIO_MANAGE_CONNECTIONS, its output carries a Connect Link
+        // for an unauthorized toolkit, which we surface as a "Connect <App>" row.
+        case "response.output_item.done":
+            handleMCPOutputItem(json)
         case "error":
             let message = (json["error"] as? [String: Any])?["message"] as? String ?? text
             print("⚠️ RealtimeClient: server error: \(message)")
@@ -590,18 +661,109 @@ final class RealtimeClient: ObservableObject {
         }
     }
 
+    /// Handles a completed output item. Only acts on MCP tool calls
+    /// (`item.type == "mcp_call"`): when a COMPOSIO_MANAGE_CONNECTIONS call returns
+    /// a Connect Link, parse the toolkit + redirect URL and notify the owner.
+    ///
+    /// NOTE (Milestone 11): the exact `item.output` shape is being confirmed from
+    /// captured Azure frames. `parseConnectionLink` is intentionally tolerant of
+    /// several shapes until the observed one is locked in.
+    private func handleMCPOutputItem(_ json: [String: Any]) {
+        guard let item = json["item"] as? [String: Any],
+              (item["type"] as? String) == "mcp_call" else {
+            return
+        }
+        guard let output = item["output"] else { return }
+        guard let (toolkit, url) = parseConnectionLink(fromOutput: output) else { return }
+        let toolName = item["name"] as? String ?? "mcp_call"
+        print("🧩 RealtimeClient: connect link from \(toolName) → \(toolkit): \(url.absoluteString)")
+        onConnectionLinkAvailable?(toolkit, url)
+    }
+
+    /// Extracts a (toolkit slug, Connect Link URL) pair from an MCP call's output.
+    /// `output` may be a JSON string, a dict, or an MCP content array — we normalize
+    /// to a searchable string for the URL and probe likely JSON fields for both.
+    private func parseConnectionLink(fromOutput output: Any) -> (toolkit: String, url: URL)? {
+        // Normalize the output into (a) a flat text blob and (b) a JSON object if any.
+        var text = ""
+        var object: [String: Any]?
+
+        if let str = output as? String {
+            text = str
+            object = (try? JSONSerialization.jsonObject(with: Data(str.utf8))) as? [String: Any]
+        } else if let dict = output as? [String: Any] {
+            object = dict
+            if let data = try? JSONSerialization.data(withJSONObject: dict),
+               let s = String(data: data, encoding: .utf8) {
+                text = s
+            }
+        } else if let arr = output as? [Any] {
+            // MCP content arrays: [{ "type": "text", "text": "..." }, ...]
+            for entry in arr {
+                if let entryDict = entry as? [String: Any],
+                   let t = entryDict["text"] as? String {
+                    text += t + "\n"
+                }
+            }
+            if object == nil {
+                object = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
+            }
+        }
+
+        // Find the redirect URL: prefer explicit JSON fields, fall back to a regex
+        // over the text blob for a Composio Connect Link.
+        let urlKeys = ["redirect_url", "redirectUrl", "connect_url", "connectUrl", "url"]
+        var urlString = object.flatMap { obj in urlKeys.lazy.compactMap { obj[$0] as? String }.first }
+        if urlString == nil {
+            urlString = Self.firstConnectLink(in: text)
+        }
+        guard let urlString, let url = URL(string: urlString) else { return nil }
+
+        // Find the toolkit slug from likely JSON fields; fall back to "app".
+        let toolkitKeys = ["toolkit", "toolkit_slug", "toolkitSlug", "app", "app_name", "appName"]
+        let toolkit = object.flatMap { obj in
+            toolkitKeys.lazy.compactMap { obj[$0] as? String }.first
+        } ?? "app"
+
+        return (toolkit, url)
+    }
+
+    /// Regex-extracts the first Composio Connect Link from arbitrary text.
+    private static func firstConnectLink(in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: "https://connect\\.composio\\.dev/link/[^\\s\"']+"
+        ) else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              let matchRange = Range(match.range, in: text) else { return nil }
+        return String(text[matchRange])
+    }
+
     // MARK: - Session Configuration
 
     /// Sent immediately after `session.created` to configure the session with
     /// the registered tools. Instructions (system prompt) are added in Milestone 13.
     private func sendSessionUpdate() {
-        let tools: [[String: Any]] = registeredTools.values.map { tool in
+        var tools: [[String: Any]] = registeredTools.values.map { tool in
             [
                 "type": "function",
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.schema
             ]
+        }
+
+        // Wire Composio's Tool Router session as an MCP tool — gives the model the
+        // full Composio catalog for the connected user. Only added when the
+        // one-time /composio-config fetch succeeded; otherwise local tools run alone.
+        if let composioMCPURL, let composioKey {
+            tools.append([
+                "type": "mcp",
+                "server_label": "composio",
+                "server_url": composioMCPURL,
+                "headers": ["x-api-key": composioKey],
+                "require_approval": "never"
+            ])
         }
 
         // GA gpt-realtime session schema: `type` is required, audio formats and

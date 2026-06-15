@@ -38,6 +38,41 @@ enum NotchConstants {
     static let fallbackNotchWidth: CGFloat = 185
     /// Width of the floating bar on displays that have no physical notch.
     static let nonNotchBarWidth: CGFloat = 220
+
+    // MARK: - Active closed-bar layout
+
+    /// Leading inset for the status text so it clears the shape's rounded corner.
+    static let statusLeadingPad: CGFloat = 8
+    /// Gap between the status text and the cutout bridge.
+    static let statusTrailingGap: CGFloat = 8
+    /// Inset to the right of the waveform on the active bar's right flank.
+    static let waveformTrailingPad: CGFloat = 8
+    /// Max width the status text may occupy before it truncates with "…".
+    static let maxStatusTextWidth: CGFloat = 180
+
+    // MARK: - Open/close morph timing
+
+    /// Shared morph timing. The SwiftUI content morph (NotchContainerView) and the
+    /// AppKit window-frame animation (NotchPanelController) use the SAME curve and
+    /// duration so they move as one. No spring — a SwiftUI spring can't be matched
+    /// by a Core Animation timing function, which is what caused the open/close
+    /// desync (lag + transient sharp corners).
+    static let morphDuration: Double = 0.36
+    /// Cubic-bezier control points (shared by Animation.timingCurve and
+    /// CAMediaTimingFunction). The slight y>1 gives a gentle overshoot.
+    static let morphControlPoints: (c0x: Double, c0y: Double, c1x: Double, c1y: Double) = (0.34, 1.1, 0.64, 1.0)
+}
+
+/// Geometry for the active closed bar, derived from the current status text.
+/// Both the SwiftUI layout (AurenStatusBar) and the host-window frame
+/// (NotchPanelController) derive from this, so the displayed content and the
+/// window can never disagree (no clipping, cutout stays centered).
+struct ActiveBarMetrics: Equatable {
+    var totalWidth: CGFloat
+    var leftFlankWidth: CGFloat
+    var textWidth: CGFloat
+    var bridgeWidth: CGFloat
+    var rightFlankWidth: CGFloat
 }
 
 @MainActor
@@ -61,6 +96,56 @@ final class NotchUIModel: ObservableObject {
 
     /// Convenience the Auren views read, matching BoringViewModel's API name.
     var effectiveClosedNotchHeight: CGFloat { closedNotchSize.height }
+
+    // MARK: - Active bar geometry
+
+    /// The font AurenStatusBar renders the status text in, resolved for AppKit so
+    /// `measureStatusWidth` matches SwiftUI's
+    /// `.system(size: 9, weight: .semibold, design: .rounded)` to sub-pixel.
+    private static let statusFont: NSFont = {
+        let base = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        if let descriptor = base.fontDescriptor.withDesign(.rounded),
+           let rounded = NSFont(descriptor: descriptor, size: 9) {
+            return rounded
+        }
+        return base
+    }()
+
+    static func measureStatusWidth(_ text: String) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: statusFont]).width
+    }
+
+    /// Computes the active closed-bar geometry for `text`. Left flank is sized to
+    /// the (capped) text, right flank to the waveform, the bridge to the full
+    /// cutout. Empty text → no flanks (the caller falls back to the idle frame).
+    func activeBarMetrics(for text: String) -> ActiveBarMetrics {
+        let waveformBox = max(0, effectiveClosedNotchHeight - 12)
+        let rightFlank = waveformBox + NotchConstants.waveformTrailingPad
+        let bridge = max(0, closedNotchSize.width)
+
+        guard !text.isEmpty else {
+            return ActiveBarMetrics(
+                totalWidth: bridge,
+                leftFlankWidth: 0,
+                textWidth: 0,
+                bridgeWidth: bridge,
+                rightFlankWidth: rightFlank
+            )
+        }
+
+        // +1 absorbs rounding so SwiftUI never truncates a string the window was
+        // sized to fit; the cap then truncates anything genuinely too long.
+        let measured = ceil(Self.measureStatusWidth(text)) + 1
+        let textW = min(measured, NotchConstants.maxStatusTextWidth)
+        let leftFlank = NotchConstants.statusLeadingPad + textW + NotchConstants.statusTrailingGap
+        return ActiveBarMetrics(
+            totalWidth: leftFlank + bridge + rightFlank,
+            leftFlankWidth: leftFlank,
+            textWidth: textW,
+            bridgeWidth: bridge,
+            rightFlankWidth: rightFlank
+        )
+    }
 
     init(screen: NSScreen?) {
         let resolved = Self.resolveClosedNotchSize(for: screen)

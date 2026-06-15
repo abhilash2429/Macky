@@ -8,6 +8,7 @@
 //
 
 import AVFoundation
+import AppKit
 import Combine
 import Foundation
 import PostHog
@@ -38,6 +39,15 @@ struct HistoryEntry: Identifiable {
     let summary: String
 }
 
+/// A toolkit the user hasn't connected yet, surfaced as a "Connect <App>" row in
+/// the notch panel after the model's COMPOSIO_MANAGE_CONNECTIONS call returned an
+/// OAuth Connect Link. Tapping the row opens `redirectURL` in the default browser.
+struct PendingConnection: Identifiable {
+    let id = UUID()
+    let toolkit: String
+    let redirectURL: URL
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -48,6 +58,22 @@ final class CompanionManager: ObservableObject {
     /// (e.g. "looking at your screen"), overriding the plain state text. Cleared
     /// when the tool call resolves.
     @Published private(set) var narrationText: String? = nil
+
+    /// The text shown in the closed notch bar. A running tool call's narration
+    /// wins; otherwise it reflects the voice state. Empty when idle. Single source
+    /// of truth shared by AurenStatusBar (display) and NotchPanelController (which
+    /// sizes the host window to fit it).
+    var activeStatusText: String {
+        if toolCallActive, let narration = narrationText {
+            return narration
+        }
+        switch voiceState {
+        case .idle:       return ""
+        case .listening:  return "Listening…"
+        case .processing: return "Thinking…"
+        case .responding: return "Speaking…"
+        }
+    }
 
     // MARK: - Drop Panel State (history + queued file context)
 
@@ -68,6 +94,11 @@ final class CompanionManager: ObservableObject {
     @Published var pendingDroppedFiles: [URL] = []
     /// Filenames of currently queued attachments, shown as confirmation chips.
     @Published private(set) var pendingAttachmentNames: [String] = []
+
+    /// Toolkits awaiting OAuth, shown as "Connect <App>" rows in the notch panel.
+    /// Populated when RealtimeClient surfaces a Composio Connect Link; deduped by
+    /// toolkit so repeated asks don't stack duplicate rows.
+    @Published private(set) var pendingConnections: [PendingConnection] = []
 
     /// Most interactions to keep in the history list.
     private static let maxRecentInteractions = 5
@@ -91,6 +122,16 @@ final class CompanionManager: ObservableObject {
         guard !data.isEmpty else { return }
         pendingImageContext.append(data)
         pendingAttachmentNames.append(name)
+    }
+
+    /// Opens a pending connection's OAuth Connect Link in the default browser.
+    func openPendingConnection(_ connection: PendingConnection) {
+        NSWorkspace.shared.open(connection.redirectURL)
+    }
+
+    /// Removes a pending connection row (manual dismiss via the "x" button).
+    func dismissPendingConnection(_ connection: PendingConnection) {
+        pendingConnections.removeAll { $0.id == connection.id }
     }
 
     /// Clears all queued attachments (after they're injected into a turn).
@@ -306,6 +347,13 @@ final class CompanionManager: ObservableObject {
         realtimeClient.onToolCallEnded = { [weak self] in
             self?.toolCallActive = false
             self?.narrationText = nil
+        }
+        // A Composio Connect Link for an unauthorized toolkit becomes a "Connect
+        // <App>" row in the panel. Dedupe by toolkit so repeated asks don't stack.
+        realtimeClient.onConnectionLinkAvailable = { [weak self] toolkit, url in
+            guard let self else { return }
+            self.pendingConnections.removeAll { $0.toolkit == toolkit }
+            self.pendingConnections.append(PendingConnection(toolkit: toolkit, redirectURL: url))
         }
         // A completed turn becomes a history entry in the drop panel.
         realtimeClient.onTurnCompleted = { [weak self] userPhrase, modelText in

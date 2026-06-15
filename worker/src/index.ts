@@ -1,6 +1,10 @@
 export interface Env {
   AZURE_OPENAI_API_KEY: string;
+  COMPOSIO_API_KEY: string;
 }
+
+/// Fixed Composio user for now. M14 (real per-user auth) swaps this one line.
+const COMPOSIO_USER_ID = "auren-test-user";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -10,9 +14,71 @@ export default {
       return handleRealtimeProxy(request, env);
     }
 
+    if (url.pathname === "/composio-config") {
+      return handleComposioConfig(env);
+    }
+
     return new Response("Not found", { status: 404 });
   },
 };
+
+/// Creates a fresh Composio Tool Router session for COMPOSIO_USER_ID and returns
+/// the session's MCP URL plus the project API key, which the Swift client wires
+/// into the Realtime `session.update` as an `mcp` tool entry.
+///
+/// No `toolkits` allowlist is sent, so the agent gets the full Composio catalog via
+/// COMPOSIO_SEARCH_TOOLS. `manage_connections` lets the agent call
+/// COMPOSIO_MANAGE_CONNECTIONS mid-turn to get a Connect Link for an app the user
+/// hasn't authorized; `enable_wait_for_connections: false` so a voice turn never
+/// blocks on the user finishing OAuth in the browser.
+async function handleComposioConfig(env: Env): Promise<Response> {
+  try {
+    const sessionResponse = await fetch(
+      "https://backend.composio.dev/api/v3.1/tool_router/session",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": env.COMPOSIO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_id: COMPOSIO_USER_ID,
+          manage_connections: {
+            enable: true,
+            enable_connection_removal: true,
+            enable_wait_for_connections: false,
+          },
+        }),
+      }
+    );
+
+    if (!sessionResponse.ok) {
+      const body = await sessionResponse.text().catch(() => "");
+      console.error(
+        "Composio session create failed",
+        sessionResponse.status,
+        body
+      );
+      return new Response("Composio session create failed", { status: 500 });
+    }
+
+    const data = (await sessionResponse.json()) as { mcp?: { url?: string } };
+    const mcpUrl = data.mcp?.url;
+
+    if (!mcpUrl) {
+      console.error("Composio session response missing mcp.url", data);
+      return new Response("Composio session missing mcp url", { status: 500 });
+    }
+
+    return new Response(
+      JSON.stringify({ url: mcpUrl, key: env.COMPOSIO_API_KEY }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    console.error("Composio config error", err);
+    return new Response("Composio config error", { status: 500 });
+  }
+}
 
 async function handleRealtimeProxy(
   request: Request,

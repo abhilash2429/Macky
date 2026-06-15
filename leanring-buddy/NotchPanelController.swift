@@ -60,9 +60,6 @@ final class NotchHostPanel: NSPanel {
 
 @MainActor
 final class NotchPanelController {
-    /// Extra width added on each closed flank when the assistant is active, so
-    /// the status text and waveform have menu-bar room beside the cutout.
-    static let activeClosedFlankWidth: CGFloat = 200
     /// A little vertical headroom under the closed bar so the shape's bottom
     /// corner flare isn't clipped.
     static let closedBottomHeadroom: CGFloat = 8
@@ -72,13 +69,11 @@ final class NotchPanelController {
     private var cancellables = Set<AnyCancellable>()
 
     private var panel: NotchHostPanel?
+    /// The screen the frames are computed against (cached so the dynamic active
+    /// frame can be recomputed as the status text changes).
+    private var screen: NSScreen?
     private var idleClosedFrame: NSRect = .zero
-    private var activeClosedFrame: NSRect = .zero
     private var openFrame: NSRect = .zero
-
-    /// Cached so we only resize when the closed size actually needs to change.
-    private var lastClosedWasActive = false
-    private var shrinkTask: Task<Void, Never>?
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -94,6 +89,7 @@ final class NotchPanelController {
             print("⚠️ NotchPanel: no main screen; panel not created")
             return
         }
+        self.screen = screen
 
         computeFrames(for: screen)
 
@@ -138,15 +134,32 @@ final class NotchPanelController {
         }
 
         idleClosedFrame = centered(width: closedSize.width, height: closedHeight)
-        activeClosedFrame = centered(width: closedSize.width + Self.activeClosedFlankWidth, height: closedHeight)
         openFrame = centered(width: NotchConstants.windowSize.width, height: NotchConstants.windowSize.height)
+    }
+
+    /// The closed-bar frame sized to fit `text`, positioned so the cutout bridge
+    /// stays centered on `screen.midX` even though the bar extends asymmetrically
+    /// (more to the left when the text is longer than the waveform).
+    private func activeFrame(for screen: NSScreen, text: String) -> NSRect {
+        let m = notchModel.activeBarMetrics(for: text)
+        let height = notchModel.closedNotchSize.height + Self.closedBottomHeadroom
+        let top = screen.frame.maxY
+        let originX = screen.frame.midX - m.leftFlankWidth - m.bridgeWidth / 2
+        return NSRect(x: originX, y: top - height, width: m.totalWidth, height: height)
+    }
+
+    /// The frame the closed notch should occupy right now, given the live status
+    /// text (idle footprint when there's nothing to show).
+    private func closedTargetFrame(for screen: NSScreen) -> NSRect {
+        let text = companionManager.activeStatusText
+        return text.isEmpty ? idleClosedFrame : activeFrame(for: screen, text: text)
     }
 
     // MARK: - State observation
 
     private func observeState() {
-        // Open/close drives the big morph: grow the window the instant we open,
-        // shrink it only after the SwiftUI collapse animation has played out.
+        // Open/close drives the big morph: the window animates in lockstep with
+        // the SwiftUI content over the shared morph timeline (no blind delay).
         notchModel.$notchState
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
@@ -154,50 +167,43 @@ final class NotchPanelController {
             }
             .store(in: &cancellables)
 
-        // While closed, widen/narrow the window between the active and idle
-        // footprints as the assistant becomes active or returns to idle.
-        Publishers.CombineLatest(companionManager.$voiceState, companionManager.$toolCallActive)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] voiceState, toolActive in
-                guard let self else { return }
-                let active = voiceState != .idle || toolActive
-                self.applyClosedActivity(active)
-            }
-            .store(in: &cancellables)
+        // While closed, resize the window to fit the live status text (or the
+        // idle cutout when there's nothing to show). Narration changes the text
+        // too, so it's part of the trigger.
+        Publishers.CombineLatest3(
+            companionManager.$voiceState,
+            companionManager.$toolCallActive,
+            companionManager.$narrationText
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _, _, _ in
+            self?.applyClosedActivity()
+        }
+        .store(in: &cancellables)
     }
 
     private func handleNotchState(_ state: NotchUIModel.NotchState) {
-        guard let panel else { return }
-        shrinkTask?.cancel()
-
-        switch state {
-        case .open:
-            // Grow first so the expanding content is never clipped.
-            panel.setFrame(openFrame, display: true)
-        case .closed:
-            // Let the SwiftUI shape finish collapsing, then shrink the window
-            // back to the appropriate closed footprint.
-            shrinkTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled, self.notchModel.notchState == .closed else { return }
-                let target = self.lastClosedWasActive ? self.activeClosedFrame : self.idleClosedFrame
-                self.animate(panel, to: target)
-            }
-        }
+        guard let panel, let screen else { return }
+        let target = state == .open ? openFrame : closedTargetFrame(for: screen)
+        animateMorph(panel, to: target)
     }
 
-    private func applyClosedActivity(_ active: Bool) {
-        lastClosedWasActive = active
-        guard let panel, notchModel.notchState == .closed else { return }
-        let target = active ? activeClosedFrame : idleClosedFrame
-        guard panel.frame.width != target.width else { return }
-        animate(panel, to: target)
+    private func applyClosedActivity() {
+        guard let panel, let screen, notchModel.notchState == .closed else { return }
+        let target = closedTargetFrame(for: screen)
+        // Compare the full rect: the origin moves (not just the width) as the
+        // left flank grows, so a width-only check would miss the re-centering.
+        guard panel.frame != target else { return }
+        animateMorph(panel, to: target)
     }
 
-    private func animate(_ panel: NotchHostPanel, to target: NSRect) {
+    private func animateMorph(_ panel: NotchHostPanel, to target: NSRect) {
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.3
-            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.1, 0.64, 1.0)
+            ctx.duration = NotchConstants.morphDuration
+            let p = NotchConstants.morphControlPoints
+            ctx.timingFunction = CAMediaTimingFunction(
+                controlPoints: Float(p.c0x), Float(p.c0y), Float(p.c1x), Float(p.c1y)
+            )
             panel.animator().setFrame(target, display: true)
         }
     }

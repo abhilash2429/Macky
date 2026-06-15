@@ -28,6 +28,18 @@ struct AurenPanel: View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: 16) {
 
+                if !companionManager.pendingConnections.isEmpty {
+                    PanelSection("Connect Accounts") {
+                        ForEach(companionManager.pendingConnections) { connection in
+                            ConnectAccountRow(
+                                connection: connection,
+                                onConnect: { companionManager.openPendingConnection(connection) },
+                                onDismiss: { companionManager.dismissPendingConnection(connection) }
+                            )
+                        }
+                    }
+                }
+
                 if !companionManager.recentInteractions.isEmpty {
                     PanelSection("Recent Activity") {
                         ForEach(companionManager.recentInteractions) { interaction in
@@ -72,6 +84,48 @@ private struct PanelSection<Content: View>: View {
                 .textCase(.uppercase)
                 .tracking(0.9)
             content()
+        }
+    }
+}
+
+// MARK: - Connect Account Row (Composio pending OAuth)
+
+/// One "Connect <App>" row: the toolkit name, an accent "Connect" pill that opens
+/// the OAuth link, and a small "x" to dismiss. Styling mirrors the "Grant" pills in
+/// CompanionPanelView and FileChip's remove button in AurenFileDropPanel.
+private struct ConnectAccountRow: View {
+    let connection: PendingConnection
+    let onConnect: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(connection.toolkit.capitalized)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 4)
+
+            Button(action: onConnect) {
+                Text("Connect")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(DS.Colors.textOnAccent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(DS.Colors.accent))
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.gray)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
         }
     }
 }
