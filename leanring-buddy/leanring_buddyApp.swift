@@ -42,6 +42,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var authWindow: NSWindow?
     private var authPhaseCancellable: AnyCancellable?
 
+    /// The first-run onboarding flow, shown once after first auth until the user
+    /// completes it (tracked under UserDefaults "onboardingCompleted").
+    private var onboardingManager: OnboardingManager?
+
     /// Registers the custom URL-scheme handler before launch finishes. The Apple
     /// Event (kAEGetURL) handler is the reliable path for LSUIElement apps;
     /// `application(_:open:)` below is a belt-and-suspenders fallback. Both route
@@ -109,9 +113,22 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         // startSparkleUpdater()
     }
 
-    /// Auto-opens the menu-bar panel if the user still needs to do something:
-    /// either they haven't onboarded yet, or permissions were revoked.
+    /// Drives the post-auth UI. On first run (before "onboardingCompleted") this
+    /// shows the dedicated onboarding flow; once that's done — or on every launch
+    /// thereafter — it falls back to auto-opening the menu-bar panel when the user
+    /// still has something to do (incomplete cursor-overlay intro or revoked perms).
     private func presentPostAuthUIIfNeeded() {
+        if !OnboardingManager.isComplete {
+            let manager = OnboardingManager(companionManager: companionManager)
+            manager.onFinished = { [weak self] in
+                self?.onboardingManager = nil
+                self?.presentPostAuthUIIfNeeded()
+            }
+            onboardingManager = manager
+            manager.show()
+            return
+        }
+
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             menuBarPanelManager?.showPanelOnLaunch()
         }
