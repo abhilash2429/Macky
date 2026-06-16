@@ -106,6 +106,18 @@ final class CompanionManager: ObservableObject {
     /// observes this; transitions to `.modelOutput` / `.fileDrop` auto-open it.
     @Published var panelDisplayState: PanelDisplayState = .idle
 
+    /// The live onboarding state machine while the `.onboarding` surface is showing,
+    /// so AurenPanel can reach it to render OnboardingView. Nil once onboarding is
+    /// complete (or never started).
+    @Published private(set) var onboardingManager: OnboardingManager?
+
+    /// Watches AuthManager for the magic-link verification that ends the gate.
+    private var authPhaseCancellable: AnyCancellable?
+    /// Mirrors the onboarding manager's current step into `panelDisplayState`.
+    private var onboardingStepCancellable: AnyCancellable?
+    /// Holds the transient post-onboarding welcome before settling to idle.
+    private var welcomeTask: Task<Void, Never>?
+
     /// Minimal now-playing model. The idle panel renders a music chip only while
     /// this is non-nil; no producer wires it yet (voice handles playback), so the
     /// section stays hidden for now.
@@ -156,6 +168,72 @@ final class CompanionManager: ObservableObject {
     func confirmDroppedFiles(_ urls: [URL]) {
         enqueueDroppedFiles(urls)
         panelDisplayState = .idle
+    }
+
+    // MARK: - Launch gate (auth + onboarding)
+
+    /// Decides what the panel shows on launch: the sign-in gate when there's no
+    /// Keychain session, the onboarding flow on first run, otherwise the idle
+    /// dashboard. Replaces the old standalone auth window / onboarding panel.
+    func resolveInitialPanelState() {
+        if !AuthManager.shared.hasSession {
+            beginAuthGate()
+        } else if !OnboardingManager.isComplete {
+            beginOnboarding()
+        } else {
+            panelDisplayState = .idle
+        }
+    }
+
+    /// Shows the auth surface and watches for the magic-link verification. Once the
+    /// user authenticates, proceeds to onboarding (first run) or the idle dashboard.
+    private func beginAuthGate() {
+        authPhaseCancellable = AuthManager.shared.$phase
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] phase in
+                guard let self, phase == .authenticated else { return }
+                self.authPhaseCancellable = nil
+                self.proceedAfterAuth()
+            }
+        panelDisplayState = .auth
+    }
+
+    private func proceedAfterAuth() {
+        if OnboardingManager.isComplete {
+            panelDisplayState = .idle
+        } else {
+            beginOnboarding()
+        }
+    }
+
+    /// Spins up the onboarding state machine and drives the panel from it. Each step
+    /// change is mirrored into `panelDisplayState` so the panel re-measures; finishing
+    /// runs the brief welcome before settling to idle.
+    private func beginOnboarding() {
+        let manager = OnboardingManager(companionManager: self)
+        manager.onFinished = { [weak self] in
+            self?.completeOnboarding()
+        }
+        onboardingStepCancellable = manager.$currentStep
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] step in
+                self?.panelDisplayState = .onboarding(step: step)
+            }
+        onboardingManager = manager
+        panelDisplayState = .onboarding(step: manager.currentStep)
+    }
+
+    /// Holds the onboarding "You're all set" screen briefly as a welcome, then
+    /// settles into the idle dashboard and tears down the onboarding machine.
+    private func completeOnboarding() {
+        welcomeTask?.cancel()
+        welcomeTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            self.onboardingStepCancellable = nil
+            self.onboardingManager = nil
+            self.panelDisplayState = .idle
+        }
     }
 
     /// Most interactions to keep in the history list.

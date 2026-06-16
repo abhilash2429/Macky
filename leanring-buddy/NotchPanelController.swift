@@ -34,6 +34,13 @@ import SwiftUI
 /// file-input panel can't receive typed input. Dropping files and sending works;
 /// typed prompts need a focus-toggling variant (a documented follow-up).
 final class NotchHostPanel: NSPanel {
+    /// Normally false so the panel never steals focus from the frontmost app. The
+    /// controller flips this on while the panel hosts the auth/onboarding surface,
+    /// which need keyboard input (email field, hotkey recorder). The
+    /// `.nonactivatingPanel` style means becoming key routes key events without
+    /// activating Speed or backgrounding the user's current app.
+    var allowsKeyboardFocus = false
+
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
@@ -55,7 +62,7 @@ final class NotchHostPanel: NSPanel {
         self.titlebarAppearsTransparent = true
     }
 
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { allowsKeyboardFocus }
     override var canBecomeMain: Bool { false }
 }
 
@@ -202,6 +209,31 @@ final class NotchPanelController {
                 self?.applyOpenHeight()
             }
             .store(in: &cancellables)
+
+        // Auth/onboarding need keyboard input (email field, hotkey recorder), so
+        // make the panel key while those surfaces show and give focus back to the
+        // user's app otherwise.
+        companionManager.$panelDisplayState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.applyKeyboardFocus(for: state)
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Lets the panel become key only for the auth/onboarding surfaces. Leaving
+    /// those surfaces just clears the flag — once `canBecomeKey` is false again the
+    /// system hands key status back to the user's app on their next interaction
+    /// (AppKit forbids invoking `resignKey()` directly).
+    private func applyKeyboardFocus(for state: PanelDisplayState) {
+        guard let panel else { return }
+        switch state {
+        case .auth, .onboarding:
+            panel.allowsKeyboardFocus = true
+            panel.makeKey()
+        default:
+            panel.allowsKeyboardFocus = false
+        }
     }
 
     private func handleNotchState(_ state: NotchUIModel.NotchState) {

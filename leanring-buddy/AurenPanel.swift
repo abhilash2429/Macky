@@ -101,6 +101,12 @@ struct AurenPanel: View {
             connectorsContent
         case .settings:
             settingsContent
+        case .auth:
+            AuthView(authManager: .shared)
+        case .onboarding:
+            if let manager = companionManager.onboardingManager {
+                OnboardingView(manager: manager, companionManager: companionManager)
+            }
         }
     }
 

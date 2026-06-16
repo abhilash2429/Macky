@@ -15,9 +15,19 @@ struct PanelHeader: View {
     /// Invoked by the back chevron — returns the panel to its idle dashboard.
     var onBack: () -> Void
 
-    /// The back chevron only makes sense when we've navigated away from idle.
+    /// The first-run gate (auth/onboarding) is a no-exit surface: hide the back
+    /// chevron and the nav buttons so the user can't wander off mid-flow.
+    private var isGated: Bool {
+        switch companionManager.panelDisplayState {
+        case .auth, .onboarding: return true
+        default: return false
+        }
+    }
+
+    /// The back chevron only makes sense when we've navigated away from idle (and
+    /// not while gated).
     private var showsBack: Bool {
-        companionManager.panelDisplayState != .idle
+        !isGated && companionManager.panelDisplayState != .idle
     }
 
     var body: some View {
@@ -37,17 +47,19 @@ struct PanelHeader: View {
 
             Spacer(minLength: DS.Spacing.sm)
 
-            Button { companionManager.panelDisplayState = .connectors } label: {
-                Image(systemName: "puzzlepiece.extension")
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .dsIconButtonStyle(size: 24, tooltip: "Connectors", tooltipAlignment: .trailing)
+            if !isGated {
+                Button { companionManager.panelDisplayState = .connectors } label: {
+                    Image(systemName: "puzzlepiece.extension")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .dsIconButtonStyle(size: 24, tooltip: "Connectors", tooltipAlignment: .trailing)
 
-            Button { companionManager.panelDisplayState = .settings } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12, weight: .medium))
+                Button { companionManager.panelDisplayState = .settings } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .dsIconButtonStyle(size: 24, tooltip: "Settings", tooltipAlignment: .trailing)
             }
-            .dsIconButtonStyle(size: 24, tooltip: "Settings", tooltipAlignment: .trailing)
         }
         .padding(.horizontal, DS.Spacing.md)
         .padding(.vertical, DS.Spacing.sm)

@@ -8,7 +8,6 @@
 //
 
 import AppKit
-import Combine
 import ServiceManagement
 import SwiftUI
 import Sparkle
@@ -36,14 +35,6 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     /// Owns the notch panel for the app's lifetime, independent of the voice
     /// pipeline. Created on launch and never torn down.
     private var notchPanelController: NotchPanelController?
-
-    /// The first-launch sign-in window, shown only while there's no Keychain session.
-    private var authWindow: NSWindow?
-    private var authPhaseCancellable: AnyCancellable?
-
-    /// The first-run onboarding flow, shown once after first auth until the user
-    /// completes it (tracked under UserDefaults "onboardingCompleted").
-    private var onboardingManager: OnboardingManager?
 
     /// Registers the custom URL-scheme handler before launch finishes. The Apple
     /// Event (kAEGetURL) handler is the reliable path for LSUIElement apps;
@@ -98,68 +89,13 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         companionManager.start()
 
-        // Gate the app behind magic-link auth. With a stored Keychain session we
-        // jump straight into the normal launch UI; otherwise we show the sign-in
-        // window and defer the panel until auth completes.
-        if AuthManager.shared.hasSession {
-            presentPostAuthUIIfNeeded()
-        } else {
-            showAuthWindow()
-        }
+        // Gate the app behind magic-link auth and first-run onboarding, all inside
+        // the notch panel: CompanionManager picks the panel's initial state (auth,
+        // onboarding, or idle) and drives the transitions itself.
+        companionManager.resolveInitialPanelState()
 
         registerAsLoginItemIfNeeded()
         // startSparkleUpdater()
-    }
-
-    /// Drives the post-auth UI. On first run (before "onboardingCompleted") this
-    /// shows the dedicated onboarding flow. Once that's done — or on every launch
-    /// thereafter — there's nothing more to present here: the notch panel surfaces
-    /// any remaining work (permissions, intro) on its own.
-    private func presentPostAuthUIIfNeeded() {
-        if !OnboardingManager.isComplete {
-            let manager = OnboardingManager(companionManager: companionManager)
-            manager.onFinished = { [weak self] in
-                self?.onboardingManager = nil
-                self?.presentPostAuthUIIfNeeded()
-            }
-            onboardingManager = manager
-            manager.show()
-            return
-        }
-    }
-
-    /// Shows the centered sign-in window and watches for authentication. Once the
-    /// user verifies their magic link, the window closes and the normal launch UI
-    /// takes over.
-    private func showAuthWindow() {
-        authPhaseCancellable = AuthManager.shared.$phase
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] phase in
-                guard let self, phase == .authenticated else { return }
-                self.dismissAuthWindow()
-                self.presentPostAuthUIIfNeeded()
-            }
-
-        let hostingController = NSHostingController(
-            rootView: AuthView(authManager: AuthManager.shared)
-        )
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "Sign in to Speed"
-        window.styleMask = [.titled, .closable]
-        window.isReleasedWhenClosed = false
-        window.center()
-        window.level = .floating
-        authWindow = window
-
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    private func dismissAuthWindow() {
-        authPhaseCancellable?.cancel()
-        authPhaseCancellable = nil
-        authWindow?.close()
-        authWindow = nil
     }
 
     func applicationWillTerminate(_ notification: Notification) {

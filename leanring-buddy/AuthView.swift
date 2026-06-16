@@ -2,10 +2,10 @@
 //  AuthView.swift
 //  leanring-buddy
 //
-//  First-launch sign-in screen, hosted in a standalone centered window by the app
-//  delegate when there's no Keychain session. Collects the user's email, asks the
-//  Worker for a magic link, then shows a "check your email" waiting state until the
-//  `Speed://auth?token=…` link is opened and verified.
+//  First-launch sign-in screen, hosted inside the notch panel (the `.auth`
+//  PanelDisplayState) when there's no Keychain session. Collects the user's email,
+//  asks the Worker for a magic link, then shows a "check your email" waiting state
+//  until the `Speed://auth?token=…` link is opened and verified.
 //
 
 import SwiftUI
@@ -25,9 +25,8 @@ struct AuthView: View {
                 emailInputState
             }
         }
-        .padding(28)
-        .frame(width: 380)
-        .background(DS.Colors.background)
+        .padding(.vertical, DS.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Email input

@@ -84,7 +84,7 @@ struct NotchContainerView: View {
         // auto-open the panel onto that content. open() is idempotent (guards !isOpen).
         .onChange(of: companionManager.panelDisplayState) { _, newState in
             switch newState {
-            case .modelOutput, .fileDrop: open()
+            case .modelOutput, .fileDrop, .auth, .onboarding: open()
             default: break
             }
         }
@@ -180,7 +180,7 @@ struct NotchContainerView: View {
             try? await Task.sleep(for: .milliseconds(450))
             guard !Task.isCancelled, !isHovering else { return }
             switch companionManager.panelDisplayState {
-            case .modelOutput, .fileDrop: return
+            case .modelOutput, .fileDrop, .auth, .onboarding: return
             default: close()
             }
         }

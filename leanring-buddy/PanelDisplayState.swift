@@ -36,5 +36,8 @@ enum PanelDisplayState: Equatable {
     case fileDrop(files: [URL])
     case connectors
     case settings
-    // Session 3 will add `onboarding` / `auth` cases here.
+    /// First-launch magic-link sign-in. AuthView renders every AuthManager.phase.
+    case auth
+    /// First-run onboarding; carries the step so the panel re-measures per step.
+    case onboarding(step: OnboardingManager.Step)
 }

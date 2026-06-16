@@ -4,7 +4,9 @@
 //
 //  First-run onboarding (Milestone 15). After the user's first successful
 //  magic-link auth, this walks them through OS permissions and service
-//  connections in a dedicated center-screen panel before they reach the notch UI.
+//  connections one step at a time inside the notch panel. This type is the state
+//  machine only; CompanionManager drives the `.onboarding` PanelDisplayState off
+//  `currentStep` and OnboardingView renders it.
 //
 //  Completion is tracked under the UserDefaults key "onboardingCompleted" — a
 //  separate flag from CompanionManager.hasCompletedOnboarding (which gates the
@@ -16,9 +18,9 @@ import AppKit
 import AVFoundation
 import Combine
 import EventKit
-import SwiftUI
 
-/// Drives the step-by-step onboarding flow and owns its floating panel.
+/// Drives the step-by-step onboarding flow (permission requests + navigation). The
+/// notch panel hosts the UI off `currentStep`; this type owns no window.
 @MainActor
 final class OnboardingManager: ObservableObject {
     /// The onboarding steps, in the exact order they're presented.
@@ -69,67 +71,21 @@ final class OnboardingManager: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "onboardingCompleted") }
     }
 
-    /// Invoked once the user finishes (or the flow is otherwise dismissed) so the
-    /// app delegate can tear down the panel and resume the normal launch UI.
+    /// Invoked once the user finishes the flow so the driver (CompanionManager) can
+    /// run the welcome and settle the panel back to idle. The onboarding surface is
+    /// hosted by the notch panel, driven off `currentStep`; this manager no longer
+    /// owns a window.
     var onFinished: (() -> Void)?
 
     let companionManager: CompanionManager
 
     private let eventStore = EKEventStore()
-    private var panel: NSPanel?
     private var permissionCancellables = Set<AnyCancellable>()
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
         observePermissionFlags()
         seedInitialStatuses()
-    }
-
-    // MARK: - Panel lifecycle
-
-    /// Builds and shows the centered onboarding panel. Keyable so the embedded
-    /// HotkeySettingsView can record modifier combos via its local event monitor.
-    func show() {
-        guard panel == nil else {
-            panel?.makeKeyAndOrderFront(nil)
-            return
-        }
-
-        let hosting = NSHostingView(
-            rootView: OnboardingView(manager: self, companionManager: companionManager)
-        )
-
-        let size = NSSize(width: 480, height: 560)
-        let panel = OnboardingPanel(
-            contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        // Match the notch panel's level so onboarding floats above normal windows.
-        panel.level = NSWindow.Level(rawValue: Int(NSWindow.Level.mainMenu.rawValue) + 3)
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.hidesOnDeactivate = false
-        panel.isMovableByWindowBackground = true
-        panel.isExcludedFromWindowsMenu = true
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.contentView = hosting
-        panel.setContentSize(size)
-        panel.center()
-        self.panel = panel
-
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-    }
-
-    private func dismiss() {
-        panel?.close()
-        panel = nil
-        permissionCancellables.removeAll()
     }
 
     // MARK: - Navigation
@@ -155,10 +111,11 @@ final class OnboardingManager: ObservableObject {
         advance()
     }
 
-    /// Completes onboarding permanently and tears down the panel.
+    /// Completes onboarding permanently. The driver runs the welcome and returns
+    /// the panel to idle; this manager just records completion and stops observing.
     func finish() {
         OnboardingManager.isComplete = true
-        dismiss()
+        permissionCancellables.removeAll()
         onFinished?()
     }
 
@@ -318,11 +275,4 @@ final class OnboardingManager: ObservableObject {
             }
             .store(in: &permissionCancellables)
     }
-}
-
-/// Borderless panel that can become key so the embedded hotkey recorder receives
-/// keyboard events.
-private final class OnboardingPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
 }

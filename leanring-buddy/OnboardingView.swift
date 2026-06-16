@@ -3,8 +3,9 @@
 //  leanring-buddy
 //
 //  Step-by-step first-run UI (Milestone 15). Presents one permission/connection
-//  step at a time inside the onboarding panel, reusing the design system and the
-//  embeddable HotkeySettingsView for the push-to-talk step.
+//  step at a time inside the notch panel (the `.onboarding` PanelDisplayState),
+//  reusing the design system and the embeddable HotkeySettingsView for the
+//  push-to-talk step.
 //
 
 import SwiftUI
@@ -18,17 +19,10 @@ struct OnboardingView: View {
             header
             Divider().overlay(DS.Colors.borderSubtle)
             stepContent
-            Spacer(minLength: 0)
             footer
         }
-        .padding(DS.Spacing.xxl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(DS.Colors.background)
-        .clipShape(RoundedRectangle(cornerRadius: DS.CornerRadius.extraLarge))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.CornerRadius.extraLarge)
-                .stroke(DS.Colors.borderSubtle, lineWidth: 1)
-        )
+        .padding(.vertical, DS.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: - Header
@@ -36,6 +30,7 @@ struct OnboardingView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.xs) {
             if manager.currentStep != .done {
+                progressDots
                 Text("Step \(manager.currentStep.displayIndex) of \(OnboardingManager.Step.workingStepCount)")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(DS.Colors.textTertiary)
@@ -43,6 +38,17 @@ struct OnboardingView: View {
             Text(title(for: manager.currentStep))
                 .font(.system(size: 20, weight: .bold))
                 .foregroundColor(DS.Colors.textPrimary)
+        }
+    }
+
+    /// A segmented bar — one pill per working step, filled up to the current one.
+    private var progressDots: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<OnboardingManager.Step.workingStepCount, id: \.self) { index in
+                Capsule()
+                    .fill(index <= manager.currentStep.rawValue ? DS.Colors.accent : DS.Colors.surface2)
+                    .frame(height: 3)
+            }
         }
     }
 
