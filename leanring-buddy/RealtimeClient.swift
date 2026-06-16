@@ -612,6 +612,11 @@ final class RealtimeClient: ObservableObject {
             isResponseCancelled = false
         case "response.done":
             hasActiveResponse = false
+            // Don't end the turn while a tool call is still in flight: the response
+            // that just finished only carried the tool invocation; the follow-up
+            // confirmation response is still coming. Ending here would reset the turn
+            // transcripts mid-chain and fire turn-completion twice.
+            guard !isToolActive else { break }
             // A full turn finished: hand the captured transcripts to the owner for
             // the history list, then reset for the next turn.
             onTurnCompleted?(pendingUserPhrase, pendingModelTranscript)

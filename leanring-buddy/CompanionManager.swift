@@ -232,7 +232,6 @@ final class CompanionManager: ObservableObject {
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
-    let overlayWindowManager = OverlayWindowManager()
 
     /// Persistent GPT-Realtime-2 WebSocket (proxied through the Cloudflare
     /// Worker). Opens on launch and stays connected for the whole session.
@@ -281,11 +280,8 @@ final class CompanionManager: ObservableObject {
         transientHideTask = nil
 
         if enabled {
-            overlayWindowManager.hasShownOverlayBefore = true
-            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         } else {
-            overlayWindowManager.hideOverlay()
             isOverlayVisible = false
         }
     }
@@ -385,8 +381,6 @@ final class CompanionManager: ObservableObject {
         // were revoked (e.g. signing change), don't show the cursor — the
         // panel will show the permissions UI instead.
         if hasCompletedOnboarding && allPermissionsGranted && isClickyCursorEnabled {
-            overlayWindowManager.hasShownOverlayBefore = true
-            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         }
     }
@@ -396,9 +390,6 @@ final class CompanionManager: ObservableObject {
     /// Triggers the onboarding sequence — dismisses the panel and restarts
     /// the overlay so the welcome animation and intro video play.
     func triggerOnboarding() {
-        // Post notification so the panel manager can dismiss the panel
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-
         // Mark onboarding as completed so the Start button won't appear
         // again on future launches — the cursor will auto-show instead
         hasCompletedOnboarding = true
@@ -408,9 +399,6 @@ final class CompanionManager: ObservableObject {
         // Play Besaid theme at 60% volume, fade out after 1m 30s
         startOnboardingMusic()
 
-        // Show the overlay for the first time — isFirstAppearance triggers
-        // the welcome animation and onboarding video
-        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
         isOverlayVisible = true
     }
 
@@ -418,12 +406,8 @@ final class CompanionManager: ObservableObject {
     /// footer link. Same flow as triggerOnboarding but the cursor overlay
     /// is already visible so we just restart the welcome animation and video.
     func replayOnboarding() {
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
         ClickyAnalytics.trackOnboardingReplayed()
         startOnboardingMusic()
-        // Tear down any existing overlays and recreate with isFirstAppearance = true
-        overlayWindowManager.hasShownOverlayBefore = false
-        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
         isOverlayVisible = true
     }
 
@@ -497,7 +481,6 @@ final class CompanionManager: ObservableObject {
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
-        overlayWindowManager.hideOverlay()
         realtimeClient.disconnect()
         transientHideTask?.cancel()
 
@@ -586,10 +569,8 @@ final class CompanionManager: ObservableObject {
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
                     ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
-                    // If onboarding was already completed, show the cursor overlay now
+                    // If onboarding was already completed, mark the cursor visible now
                     if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
-                        overlayWindowManager.hasShownOverlayBefore = true
-                        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
                     }
                 }
@@ -658,13 +639,8 @@ final class CompanionManager: ObservableObject {
 
             // If the cursor is hidden, bring it back transiently for this interaction
             if !isClickyCursorEnabled && !isOverlayVisible {
-                overlayWindowManager.hasShownOverlayBefore = true
-                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
             }
-
-            // Dismiss the menu bar panel so it doesn't cover the screen
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
             // Barge-in: cut off any audio the model is still playing, and clear
             // any leftover pointing target from a previous interaction.
@@ -766,7 +742,6 @@ final class CompanionManager: ObservableObject {
             // Pause 1s after everything finishes, then fade out
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard !Task.isCancelled else { return }
-            overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
         }
     }

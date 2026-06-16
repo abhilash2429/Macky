@@ -2,9 +2,9 @@
 //  leanring_buddyApp.swift
 //  leanring-buddy
 //
-//  Menu bar-only companion app. No dock icon, no main window — just an
-//  always-available status item in the macOS menu bar. Clicking the icon
-//  opens a floating panel with companion voice controls.
+//  Notch-panel-only companion app. No dock icon, no main window, no menu bar
+//  status item — the companion lives entirely in the floating notch panel
+//  managed by NotchPanelController, which observes the voice pipeline.
 //
 
 import AppKit
@@ -18,7 +18,7 @@ struct leanring_buddyApp: App {
     @NSApplicationDelegateAdaptor(CompanionAppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // The app lives entirely in the menu bar panel managed by the AppDelegate.
+        // The app lives entirely in the notch panel managed by the AppDelegate.
         // This empty Settings scene satisfies SwiftUI's requirement for at least
         // one scene but is never shown (LSUIElement=true removes the app menu).
         Settings {
@@ -31,7 +31,6 @@ struct leanring_buddyApp: App {
 /// the companion voice pipeline on launch.
 @MainActor
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
-    private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
     /// Owns the notch panel for the app's lifetime, independent of the voice
@@ -97,7 +96,6 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         // voiceState (read-only) to drive expand/collapse.
         notchPanelController = NotchPanelController(companionManager: companionManager)
 
-        menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
 
         // Gate the app behind magic-link auth. With a stored Keychain session we
@@ -114,9 +112,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Drives the post-auth UI. On first run (before "onboardingCompleted") this
-    /// shows the dedicated onboarding flow; once that's done — or on every launch
-    /// thereafter — it falls back to auto-opening the menu-bar panel when the user
-    /// still has something to do (incomplete cursor-overlay intro or revoked perms).
+    /// shows the dedicated onboarding flow. Once that's done — or on every launch
+    /// thereafter — there's nothing more to present here: the notch panel surfaces
+    /// any remaining work (permissions, intro) on its own.
     private func presentPostAuthUIIfNeeded() {
         if !OnboardingManager.isComplete {
             let manager = OnboardingManager(companionManager: companionManager)
@@ -127,10 +125,6 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             onboardingManager = manager
             manager.show()
             return
-        }
-
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
-            menuBarPanelManager?.showPanelOnLaunch()
         }
     }
 
