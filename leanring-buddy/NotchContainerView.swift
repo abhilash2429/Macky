@@ -7,32 +7,24 @@
 //  black NotchShape and swaps its contents by state:
 //
 //    • closed → AurenStatusBar when the assistant is active, else a bare notch
-//    • open   → a slim header + either AurenPanel (history/calendar/reminders)
-//               or AurenFileDropPanel (when files were dragged in)
+//    • open   → AurenPanel, which owns its own header and switches content by
+//               CompanionManager.panelDisplayState (idle / modelOutput / fileDrop
+//               / connectors / settings).
 //
 //  Interaction: hovering or tapping the notch opens it; the cursor leaving
-//  collapses it after a short delay; dragging a file onto it opens the
-//  file-input view. Opening/closing just flips NotchUIModel.notchState — the
-//  controller resizes the host panel frame in response.
-//
-//  Ingestion (PDF/text/image extraction) and the pipeline hand-off live here so
-//  AurenFileDropPanel stays a dumb collector. The extraction mirrors Speed's old
-//  FileDropZone, and the hand-off reuses RealtimeClient.sendUserContext +
-//  requestResponse plus CompanionManager's pending-context queues.
+//  collapses it after a short delay (except mid-review or mid-drop). Dragging a
+//  file routes through CompanionManager.beginFileDrop, which flips
+//  panelDisplayState to .fileDrop and auto-opens the panel via the .onChange
+//  observer. Opening/closing just flips NotchUIModel.notchState — the controller
+//  resizes the host panel frame in response.
 //
 
-import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct NotchContainerView: View {
     @EnvironmentObject var notch: NotchUIModel
     @ObservedObject var companionManager: CompanionManager
-
-    /// Which view fills the open panel. Drag-in switches to .fileInput.
-    private enum OpenView { case home, fileInput }
-    @State private var openView: OpenView = .home
-    @State private var fileDropURLs: [URL] = []
 
     @State private var isHovering = false
     @State private var collapseTask: Task<Void, Never>?
@@ -78,18 +70,24 @@ struct NotchContainerView: View {
                 .onHover { handleHover($0) }
                 .onTapGesture { open() }
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                    openView = .fileInput
-                    open()
                     ingestDroppedProviders(providers)
                     return true
                 }
         }
         .frame(
             maxWidth: NotchConstants.windowSize.width,
-            maxHeight: NotchConstants.windowSize.height,
+            maxHeight: NotchConstants.maxOpenHeight + NotchConstants.shadowPadding,
             alignment: .top
         )
         .preferredColorScheme(.dark)
+        // The model pushing output or a file being dropped flips panelDisplayState;
+        // auto-open the panel onto that content. open() is idempotent (guards !isOpen).
+        .onChange(of: companionManager.panelDisplayState) { _, newState in
+            switch newState {
+            case .modelOutput, .fileDrop: open()
+            default: break
+            }
+        }
     }
 
     // MARK: - Morphing body
@@ -110,21 +108,22 @@ struct NotchContainerView: View {
                     .allowsHitTesting(true)
             }
         }
+        // Inset open content so it clears the shape's rounded corners. The height
+        // is exact (driven by the measured openContentHeight), so no bottom inset.
         .padding(.horizontal, isOpen ? NotchConstants.openedCornerRadius.bottom : 0)
-        .padding([.horizontal, .bottom], isOpen ? 12 : 0)
         .frame(
             width: isOpen ? NotchConstants.openNotchSize.width : nil,
-            height: isOpen ? NotchConstants.openNotchSize.height : nil,
+            height: isOpen ? notch.openContentHeight : nil,
             alignment: .top
         )
     }
 
-    /// Top zone: the active status bar when closed, a slim header when open.
+    /// Top zone: the active status bar when closed. When open, AurenPanel provides
+    /// its own pinned header, so this stays empty.
     @ViewBuilder
     private var headerOrStatus: some View {
         if isOpen {
-            AurenHeader(onClose: close)
-                .frame(height: max(24, notch.effectiveClosedNotchHeight))
+            EmptyView()
         } else if isAssistantActive {
             AurenStatusBar(companionManager: companionManager)
         } else {
@@ -138,16 +137,10 @@ struct NotchContainerView: View {
         }
     }
 
-    @ViewBuilder
+    /// AurenPanel owns the header + separator + scroll area and switches its inner
+    /// content by CompanionManager.panelDisplayState.
     private var openContent: some View {
-        switch openView {
-        case .home:
-            AurenPanel(companionManager: companionManager)
-        case .fileInput:
-            AurenFileDropPanel(droppedURLs: $fileDropURLs) { urls, prompt in
-                handleSend(urls: urls, prompt: prompt)
-            }
-        }
+        AurenPanel(companionManager: companionManager)
     }
 
     // MARK: - Open / close
@@ -165,9 +158,8 @@ struct NotchContainerView: View {
         collapseTask?.cancel()
         guard isOpen else { return }
         notch.close()
-        // Reset to the home view once collapsed so the next open starts clean.
-        openView = .home
-        fileDropURLs = []
+        // Collapse ≠ discard: leave panelDisplayState as-is so reopening resumes a
+        // pending review/drop. Idle/connectors/settings simply reopen where they were.
     }
 
     private func handleHover(_ hovering: Bool) {
@@ -180,45 +172,25 @@ struct NotchContainerView: View {
         }
     }
 
-    /// Collapse shortly after the cursor leaves — unless a file-input session is
-    /// mid-flight (the user may be reaching for the text field).
+    /// Collapse shortly after the cursor leaves — unless a model-output review or a
+    /// file drop is in progress (those stay put until the user acts on them).
     private func scheduleCollapse() {
         collapseTask?.cancel()
         collapseTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(450))
             guard !Task.isCancelled, !isHovering else { return }
-            if openView == .fileInput && !fileDropURLs.isEmpty { return }
-            close()
+            switch companionManager.panelDisplayState {
+            case .modelOutput, .fileDrop: return
+            default: close()
+            }
         }
     }
 
-    // MARK: - File ingestion + pipeline hand-off
+    // MARK: - File drop
 
-    /// Called on Send: queue the files as Speed context, attach the typed prompt,
-    /// then ask the model to respond — the same path push-to-talk uses, minus the
-    /// audio commit. Empty input is a no-op.
-    private func handleSend(urls: [URL], prompt: String) {
-        Task { @MainActor in
-            for url in urls { await ingest(url: url) }
-
-            let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-            var texts = companionManager.pendingFileContext
-            if !trimmedPrompt.isEmpty { texts.append(trimmedPrompt) }
-            let images = companionManager.pendingImageContext
-
-            guard !texts.isEmpty || !images.isEmpty else { close(); return }
-
-            companionManager.realtimeClient.sendUserContext(texts: texts, images: images)
-            companionManager.realtimeClient.requestResponse()
-            // Clear the queues so the next push-to-talk turn doesn't re-inject
-            // this context. (pendingAttachmentNames is private(set) and only read
-            // by the retired drop panel, so leaving it is harmless.)
-            companionManager.pendingFileContext = []
-            companionManager.pendingImageContext = []
-            close()
-        }
-    }
-
+    /// Resolves dropped providers to file URLs and hands them to CompanionManager,
+    /// which flips panelDisplayState to .fileDrop (auto-opening the panel via the
+    /// .onChange observer). Extraction happens later, in RealtimeClient.sendDroppedFiles.
     private func ingestDroppedProviders(_ providers: [NSItemProvider]) {
         for provider in providers {
             provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
@@ -227,61 +199,10 @@ struct NotchContainerView: View {
                     let urlString = String(data: data, encoding: .utf8),
                     let url = URL(string: urlString)
                 else { return }
-                DispatchQueue.main.async {
-                    if !self.fileDropURLs.contains(url) { self.fileDropURLs.append(url) }
+                Task { @MainActor in
+                    companionManager.beginFileDrop([url])
                 }
             }
         }
-    }
-
-    /// Mirrors Speed's old FileDropZone routing: images → PNG, PDF → extracted
-    /// text (filename note on failure), everything else → UTF-8 text.
-    private func ingest(url: URL) async {
-        let name = url.lastPathComponent
-        let contentType = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
-            ?? UTType(filenameExtension: url.pathExtension)
-
-        if let contentType, contentType.conforms(to: .image) {
-            if let image = NSImage(contentsOf: url),
-               let tiff = image.tiffRepresentation,
-               let bitmap = NSBitmapImageRep(data: tiff),
-               let png = bitmap.representation(using: .png, properties: [:]) {
-                companionManager.attachDroppedImage(png, name: name)
-            }
-        } else if let contentType, contentType.conforms(to: .pdf) {
-            let extracted = PDFDocument(url: url)?.string ?? ""
-            companionManager.attachDroppedText(
-                extracted.isEmpty ? "(attached PDF, text not extractable)" : extracted,
-                name: name
-            )
-        } else {
-            let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-            companionManager.attachDroppedText(
-                text.isEmpty ? "(attached file \"\(name)\", contents unreadable)" : text,
-                name: name
-            )
-        }
-    }
-}
-
-// MARK: - Slim open-state header
-
-private struct AurenHeader: View {
-    var onClose: () -> Void
-
-    var body: some View {
-        HStack {
-            Text("Auren")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.85))
-            Spacer()
-            Button(action: onClose) {
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.gray)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 4)
     }
 }

@@ -67,6 +67,11 @@ final class RealtimeClient: ObservableObject {
     /// "Connect <App>" row in the notch panel.
     var onConnectionLinkAvailable: ((_ toolkit: String, _ redirectURL: URL) -> Void)?
 
+    /// Fired when the model calls `present_for_review` with a draft to approve.
+    /// Carries the content and the raw type string (`email_draft` / `message_draft`
+    /// / `text`); CompanionManager maps the type and opens the review card.
+    var onPresentForReview: ((_ content: String, _ type: String) -> Void)?
+
     /// Transcript of the current turn's user speech, captured from
     /// `conversation.item.input_audio_transcription.completed`.
     private var pendingUserPhrase = ""
@@ -199,6 +204,33 @@ final class RealtimeClient: ObservableObject {
             // separate user message before the function result is sent.
             self.sendScreenContext(captures)
             return "{\"status\": \"captured\", \"screen_count\": \(captures.count)}"
+        }
+
+        registerTool(
+            name: "present_for_review",
+            description: "Present a drafted email, message, or block of text to the user for approval before it is sent or used. Call this whenever you've composed something the user should review and approve, instead of acting immediately.",
+            schema: [
+                "type": "object",
+                "properties": [
+                    "content": [
+                        "type": "string",
+                        "description": "The full drafted text to show the user."
+                    ],
+                    "type": [
+                        "type": "string",
+                        "enum": ["email_draft", "message_draft", "text"],
+                        "description": "What kind of content this is."
+                    ]
+                ],
+                "required": ["content"]
+            ]
+        ) { [weak self] arguments in
+            let content = arguments["content"] as? String ?? ""
+            let type = arguments["type"] as? String ?? "text"
+            // Dispatch runs on the main actor (see dispatchFunctionCall), so the
+            // callback fires there too.
+            self?.onPresentForReview?(content, type)
+            return "{\"status\": \"presented_for_review\"}"
         }
     }
 
@@ -773,6 +805,9 @@ final class RealtimeClient: ObservableObject {
         screen otherwise.
         - Never speak raw JSON, code, IDs, or system internals. Translate every result into \
         plain spoken language.
+        - Put drafts up for review. When you compose an email, a message, or any text the user \
+        should approve before it's sent or used, call present_for_review with the full draft \
+        instead of just reading it aloud, then briefly tell them you've put it up for review.
         - Reply in the same language the user speaks.
 
         Personality: warm, quick, and competent — already moving before the user finishes \

@@ -22,11 +22,19 @@ import SwiftUI
 
 /// Fixed geometry constants, mirroring BoringNotch's `sizing/matters.swift`.
 enum NotchConstants {
-    /// The expanded panel's content size (matches BoringNotch's openNotchSize).
+    /// The expanded panel's content size. Width is fixed; height is now dynamic
+    /// (the panel hugs its content up to `maxOpenHeight`), so this height is only
+    /// the first-open default — see `NotchUIModel.openContentHeight`.
     static let openNotchSize = CGSize(width: 640, height: 190)
+    /// Tallest the open panel may grow. Beyond this, content scrolls inside.
+    static let maxOpenHeight: CGFloat = 420
+    /// Shortest the open panel may shrink, so the header + a line of content
+    /// always has room even when the idle dashboard is nearly empty.
+    static let minOpenHeight: CGFloat = 120
     /// Transparent breathing room around the panel so the drop shadow isn't clipped.
     static let shadowPadding: CGFloat = 20
-    /// Total host-window size when open (content + shadow padding).
+    /// Open host-window WIDTH (content + shadow padding). The open window height is
+    /// derived per-frame from `NotchUIModel.openContentHeight`, not from here.
     static let windowSize = CGSize(
         width: openNotchSize.width,
         height: openNotchSize.height + shadowPadding
@@ -93,6 +101,12 @@ final class NotchUIModel: ObservableObject {
     /// True only on displays with a real hardware notch — used to decide whether
     /// the closed bar hugs a real cutout or renders as a standalone floating bar.
     let hasPhysicalNotch: Bool
+
+    /// The open panel's desired content height, measured by AurenPanel and clamped
+    /// to [minOpenHeight, maxOpenHeight]. The SwiftUI content frame and the AppKit
+    /// host window (NotchPanelController) both derive the open height from this, so
+    /// the panel hugs its content instead of always being a fixed tall box.
+    @Published var openContentHeight: CGFloat = NotchConstants.openNotchSize.height
 
     /// Convenience the Auren views read, matching BoringViewModel's API name.
     var effectiveClosedNotchHeight: CGFloat { closedNotchSize.height }

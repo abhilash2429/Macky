@@ -13,12 +13,13 @@
 //                         apps underneath when the assistant is idle.
 //    • activeClosedFrame — the notch plus room on either flank for the status
 //                          text + waveform while the assistant is active.
-//    • openFrame        — the full 640×210 panel that drops below the notch.
+//    • openFrame        — 640 wide and as tall as the panel's measured content
+//                          (up to maxOpenHeight), dropping below the notch.
 //
-//  It observes NotchUIModel.notchState (open/close) and CompanionManager's
-//  voiceState/toolCallActive (active/idle) to pick the right frame. The panel is
-//  made large the instant it opens (so the expanding SwiftUI content is never
-//  clipped) and shrunk only after the collapse animation finishes.
+//  It observes NotchUIModel.notchState (open/close), NotchUIModel.openContentHeight
+//  (the measured open height) and CompanionManager's voiceState/toolCallActive
+//  (active/idle) to pick the right frame. While open, the frame re-animates to hug
+//  the content as it changes.
 //
 
 import AppKit
@@ -73,7 +74,6 @@ final class NotchPanelController {
     /// frame can be recomputed as the status text changes).
     private var screen: NSScreen?
     private var idleClosedFrame: NSRect = .zero
-    private var openFrame: NSRect = .zero
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -119,11 +119,13 @@ final class NotchPanelController {
         panel.orderFrontRegardless()
         self.panel = panel
 
-        print("🪟 NotchPanel (Auren) created — notch=\(notchModel.hasPhysicalNotch), idle=\(idleClosedFrame), open=\(openFrame)")
+        print("🪟 NotchPanel (Auren) created — notch=\(notchModel.hasPhysicalNotch), idle=\(idleClosedFrame), open=\(openTargetFrame(for: screen))")
     }
 
-    /// Computes the three centered, top-flush frames. AppKit coords: y=0 is the
-    /// bottom of the screen, so the top edge is `screen.frame.maxY`.
+    /// Computes the static idle closed frame (the notch footprint). The active
+    /// closed bar and the open frame are computed on demand (the latter from the
+    /// measured content height). AppKit coords: y=0 is the bottom of the screen,
+    /// so the top edge is `screen.frame.maxY`.
     private func computeFrames(for screen: NSScreen) {
         let closedSize = notchModel.closedNotchSize
         let closedHeight = closedSize.height + Self.closedBottomHeadroom
@@ -134,7 +136,17 @@ final class NotchPanelController {
         }
 
         idleClosedFrame = centered(width: closedSize.width, height: closedHeight)
-        openFrame = centered(width: NotchConstants.windowSize.width, height: NotchConstants.windowSize.height)
+    }
+
+    /// The open frame, sized to the panel's current measured content height
+    /// (clamped to [minOpenHeight, maxOpenHeight]) plus shadow padding. Recomputed
+    /// on demand so the window hugs the content as it changes.
+    private func openTargetFrame(for screen: NSScreen) -> NSRect {
+        let width = NotchConstants.windowSize.width
+        let clamped = min(max(notchModel.openContentHeight, NotchConstants.minOpenHeight), NotchConstants.maxOpenHeight)
+        let height = clamped + NotchConstants.shadowPadding
+        let top = screen.frame.maxY
+        return NSRect(x: screen.frame.midX - width / 2, y: top - height, width: width, height: height)
     }
 
     /// The closed-bar frame sized to fit `text`, positioned so the cutout bridge
@@ -180,11 +192,28 @@ final class NotchPanelController {
             self?.applyClosedActivity()
         }
         .store(in: &cancellables)
+
+        // While open, the panel hugs its content: re-animate the frame to fit the
+        // measured content height as it changes (idle ↔ review ↔ drop, data loads).
+        notchModel.$openContentHeight
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.applyOpenHeight()
+            }
+            .store(in: &cancellables)
     }
 
     private func handleNotchState(_ state: NotchUIModel.NotchState) {
         guard let panel, let screen else { return }
-        let target = state == .open ? openFrame : closedTargetFrame(for: screen)
+        let target = state == .open ? openTargetFrame(for: screen) : closedTargetFrame(for: screen)
+        animateMorph(panel, to: target)
+    }
+
+    private func applyOpenHeight() {
+        guard let panel, let screen, notchModel.notchState == .open else { return }
+        let target = openTargetFrame(for: screen)
+        guard panel.frame != target else { return }
         animateMorph(panel, to: target)
     }
 

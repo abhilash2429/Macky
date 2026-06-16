@@ -100,6 +100,64 @@ final class CompanionManager: ObservableObject {
     /// toolkit so repeated asks don't stack duplicate rows.
     @Published private(set) var pendingConnections: [PendingConnection] = []
 
+    // MARK: - Panel Display State
+
+    /// Single source of truth for what the open notch panel is showing. The panel
+    /// observes this; transitions to `.modelOutput` / `.fileDrop` auto-open it.
+    @Published var panelDisplayState: PanelDisplayState = .idle
+
+    /// Minimal now-playing model. The idle panel renders a music chip only while
+    /// this is non-nil; no producer wires it yet (voice handles playback), so the
+    /// section stays hidden for now.
+    struct NowPlayingState: Equatable {
+        var title: String
+        var artist: String
+        var artworkData: Data?
+    }
+    @Published var nowPlaying: NowPlayingState? = nil
+
+    /// Pushes model-generated content into the panel for the user to review. Sets
+    /// `panelDisplayState`; NotchContainerView observes it and opens the panel.
+    func pushModelOutput(content: String, type: PanelOutputType) {
+        panelDisplayState = .modelOutput(content: content, type: type)
+    }
+
+    /// Approve: execute the pending model output. For now this just logs and
+    /// returns to idle — per-type send/insert logic is wired in a later session.
+    func executePendingModelOutput() {
+        if case let .modelOutput(content, type) = panelDisplayState {
+            print("✅ CompanionManager: approved model output (\(type)) — \(content.prefix(80))")
+        }
+        panelDisplayState = .idle
+    }
+
+    /// Discard the pending model output and return to the idle dashboard.
+    func discardModelOutput() {
+        panelDisplayState = .idle
+    }
+
+    /// Enters (or extends) the file-drop surface. Merges new URLs into any files
+    /// already collected this session, deduped, and flips the panel to `.fileDrop`.
+    func beginFileDrop(_ urls: [URL]) {
+        var files: [URL] = { if case let .fileDrop(existing) = panelDisplayState { return existing } else { return [] } }()
+        for url in urls where !files.contains(url) { files.append(url) }
+        panelDisplayState = .fileDrop(files: files)
+    }
+
+    /// Replaces the current file-drop list (used by per-file remove). No-op if the
+    /// panel isn't currently showing the drop surface.
+    func setDroppedFiles(_ urls: [URL]) {
+        guard case .fileDrop = panelDisplayState else { return }
+        panelDisplayState = .fileDrop(files: urls)
+    }
+
+    /// Confirm: queue the collected files for the next voice turn and return to
+    /// idle. RealtimeClient.sendDroppedFiles extracts them on the next shortcut release.
+    func confirmDroppedFiles(_ urls: [URL]) {
+        enqueueDroppedFiles(urls)
+        panelDisplayState = .idle
+    }
+
     /// Most interactions to keep in the history list.
     private static let maxRecentInteractions = 5
     private static let maxHistoryEntries = 20
@@ -343,6 +401,18 @@ final class CompanionManager: ObservableObject {
         realtimeClient.onToolCallEnded = { [weak self] in
             self?.toolCallActive = false
             self?.narrationText = nil
+        }
+        // The model called present_for_review with a draft: open the panel onto
+        // the review card. The raw type string maps to a PanelOutputType.
+        realtimeClient.onPresentForReview = { [weak self] content, type in
+            guard let self else { return }
+            let mapped: PanelOutputType
+            switch type {
+            case "email_draft":   mapped = .emailDraft
+            case "message_draft": mapped = .messageDraft
+            default:              mapped = .genericText
+            }
+            self.pushModelOutput(content: content, type: mapped)
         }
         // A Composio Connect Link for an unauthorized toolkit becomes a "Connect
         // <App>" row in the panel. Dedupe by toolkit so repeated asks don't stack.
