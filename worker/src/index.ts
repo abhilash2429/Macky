@@ -1,0 +1,448 @@
+export interface Env {
+  AZURE_OPENAI_API_KEY: string;
+  COMPOSIO_API_KEY: string;
+  // Pending magic-link tokens: token -> email, 15-minute TTL.
+  AUTH_TOKENS: KVNamespace;
+  // Resend API key, used to deliver magic-link emails. No domain required: with
+  // the shared onboarding@resend.dev sender, Resend delivers to the address you
+  // signed up with. Set as a secret: `npx wrangler secret put RESEND_API_KEY`.
+  RESEND_API_KEY: string;
+  // Sender for magic-link emails. Default onboarding@resend.dev works with no
+  // domain; switch to an address on your own verified Resend domain later.
+  MAGIC_LINK_FROM: string;
+  // Public origin of this Worker, used to build the clickable https link in the
+  // email (e.g. https://realtime-proxy.speedmac.workers.dev).
+  PUBLIC_BASE_URL: string;
+}
+
+/// Fixed Composio user for now. M14 (real per-user auth) swaps this one line.
+const COMPOSIO_USER_ID = "speed-test-user";
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/realtime") {
+      return handleRealtimeProxy(request, env);
+    }
+
+    if (url.pathname === "/composio-config") {
+      return handleComposioConfig(env);
+    }
+
+    if (url.pathname === "/auth/magic-link" && request.method === "POST") {
+      return handleMagicLink(request, env);
+    }
+
+    if (url.pathname === "/auth/verify" && request.method === "POST") {
+      return handleVerify(request, env);
+    }
+
+    // Clickable https link from the email; bounces the browser into the app via
+    // the Speed:// custom scheme. Custom-scheme links aren't clickable in Gmail,
+    // so the email always points here instead.
+    if (url.pathname === "/auth/open" && request.method === "GET") {
+      return handleAuthOpen(url);
+    }
+
+    return new Response("Not found", { status: 404 });
+  },
+};
+
+/// Creates a fresh Composio Tool Router session for COMPOSIO_USER_ID and returns
+/// the session's MCP URL plus the project API key, which the Swift client wires
+/// into the Realtime `session.update` as an `mcp` tool entry.
+///
+/// No `toolkits` allowlist is sent, so the agent gets the full Composio catalog via
+/// COMPOSIO_SEARCH_TOOLS. `manage_connections` lets the agent call
+/// COMPOSIO_MANAGE_CONNECTIONS mid-turn to get a Connect Link for an app the user
+/// hasn't authorized; `enable_wait_for_connections: false` so a voice turn never
+/// blocks on the user finishing OAuth in the browser.
+async function handleComposioConfig(env: Env): Promise<Response> {
+  try {
+    const sessionResponse = await fetch(
+      "https://backend.composio.dev/api/v3.1/tool_router/session",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": env.COMPOSIO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_id: COMPOSIO_USER_ID,
+          manage_connections: {
+            enable: true,
+            enable_connection_removal: true,
+            enable_wait_for_connections: false,
+          },
+        }),
+      }
+    );
+
+    if (!sessionResponse.ok) {
+      const body = await sessionResponse.text().catch(() => "");
+      console.error(
+        "Composio session create failed",
+        sessionResponse.status,
+        body
+      );
+      return new Response("Composio session create failed", { status: 500 });
+    }
+
+    const data = (await sessionResponse.json()) as { mcp?: { url?: string } };
+    const mcpUrl = data.mcp?.url;
+
+    if (!mcpUrl) {
+      console.error("Composio session response missing mcp.url", data);
+      return new Response("Composio session missing mcp url", { status: 500 });
+    }
+
+    return new Response(
+      JSON.stringify({ url: mcpUrl, key: env.COMPOSIO_API_KEY }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    console.error("Composio config error", err);
+    return new Response("Composio config error", { status: 500 });
+  }
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/// POST /auth/magic-link — stores a one-time token (token -> email) in KV with a
+/// 15-minute TTL and emails the user a clickable link that opens the app. The link
+/// points at the https `/auth/open` endpoint (custom Speed:// schemes aren't
+/// clickable in webmail) which redirects into `Speed://auth?token=…`.
+async function handleMagicLink(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  let email: unknown;
+  try {
+    ({ email } = (await request.json()) as { email?: unknown });
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (typeof email !== "string" || !email.includes("@")) {
+    return jsonResponse({ error: "A valid email is required" }, 400);
+  }
+
+  const token = crypto.randomUUID();
+  // Token expires in 15 minutes (900s) — KV's minimum expirationTtl is 60s.
+  await env.AUTH_TOKENS.put(token, email, { expirationTtl: 900 });
+
+  const base = (env.PUBLIC_BASE_URL || new URL(request.url).origin).replace(
+    /\/$/,
+    ""
+  );
+  const clickableLink = `${base}/auth/open?token=${token}`;
+  console.log("Magic link for", email, "→", clickableLink);
+
+  try {
+    await sendMagicLinkEmail(email, clickableLink, env);
+  } catch (err) {
+    console.error("Magic link email send failed", err);
+    return jsonResponse({ error: "Could not send the magic link email" }, 502);
+  }
+
+  return jsonResponse({ ok: true });
+}
+
+/// Sends the magic-link email via the Resend HTTP API. With the default
+/// onboarding@resend.dev sender, Resend only delivers to the address the API key's
+/// account signed up with — fine for single-user/testing without a domain. Add a
+/// verified domain in Resend later to send to anyone.
+async function sendMagicLinkEmail(
+  email: string,
+  link: string,
+  env: Env
+): Promise<void> {
+  const subject = "Your Speed sign-in link";
+  const text = [
+    "Sign in to Speed",
+    "",
+    "Click the link below to finish signing in. It expires in 15 minutes and can be used once.",
+    "",
+    link,
+    "",
+    "If you didn't request this, you can safely ignore this email.",
+  ].join("\n");
+
+  const html = `<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:0;background:#0b0b0c;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0b0b0c;padding:40px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="420" cellpadding="0" cellspacing="0" style="background:#151517;border-radius:16px;padding:32px;">
+            <tr><td style="color:#ffffff;font-size:20px;font-weight:700;padding-bottom:8px;">Sign in to Speed</td></tr>
+            <tr><td style="color:#a1a1aa;font-size:14px;line-height:20px;padding-bottom:24px;">Click the button below to finish signing in. This link expires in 15 minutes and can only be used once.</td></tr>
+            <tr>
+              <td style="padding-bottom:24px;">
+                <a href="${link}" style="display:inline-block;background:#6d5efc;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 24px;border-radius:10px;">Sign in to Speed</a>
+              </td>
+            </tr>
+            <tr><td style="color:#71717a;font-size:12px;line-height:18px;">If the button doesn't work, copy and paste this link:<br><a href="${link}" style="color:#8b7dff;word-break:break-all;">${link}</a></td></tr>
+            <tr><td style="color:#52525b;font-size:12px;padding-top:24px;">If you didn't request this, you can safely ignore this email.</td></tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  if (!env.RESEND_API_KEY) {
+    throw new Error("RESEND_API_KEY is not configured");
+  }
+
+  const from = env.MAGIC_LINK_FROM.includes("<")
+    ? env.MAGIC_LINK_FROM
+    : `Speed <${env.MAGIC_LINK_FROM}>`;
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ from, to: [email], subject, html, text }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Resend send failed ${response.status}: ${body}`);
+  }
+}
+
+/// GET /auth/open?token=… — minimal HTML bridge that hands the browser off to the
+/// app via the Speed:// scheme. Custom schemes can't be a plain 3xx redirect target
+/// in every browser, so we trigger it from the page and also offer a manual button.
+function handleAuthOpen(url: URL): Response {
+  const token = url.searchParams.get("token") ?? "";
+  // Only allow the UUID token shape through into the deep link to avoid reflecting
+  // arbitrary content into the Speed:// URL.
+  const safeToken = /^[A-Za-z0-9-]+$/.test(token) ? token : "";
+  if (!safeToken) {
+    return new Response("Invalid or missing token", { status: 400 });
+  }
+
+  const deepLink = `Speed://auth?token=${safeToken}`;
+  const html = `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Opening Speed…</title>
+    <meta http-equiv="refresh" content="0;url=${deepLink}">
+    <style>
+      body{margin:0;background:#0b0b0c;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;}
+      .card{text-align:center;padding:32px;}
+      a.btn{display:inline-block;margin-top:16px;background:#6d5efc;color:#fff;text-decoration:none;font-weight:600;padding:12px 24px;border-radius:10px;}
+      p{color:#a1a1aa;font-size:14px;}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Opening Speed…</h2>
+      <p>If the app didn't open automatically, click below.</p>
+      <a class="btn" href="${deepLink}">Open Speed</a>
+    </div>
+    <script>window.location.href = ${JSON.stringify(deepLink)};</script>
+  </body>
+</html>`;
+
+  return new Response(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
+/// POST /auth/verify — validates a magic-link token, provisions the Composio user for
+/// the email, and returns an opaque session token. Tokens are single-use: consumed on
+/// the first successful verify.
+async function handleVerify(request: Request, env: Env): Promise<Response> {
+  let token: unknown;
+  try {
+    ({ token } = (await request.json()) as { token?: unknown });
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (typeof token !== "string" || token.length === 0) {
+    return jsonResponse({ error: "A token is required" }, 400);
+  }
+
+  const email = await env.AUTH_TOKENS.get(token);
+  if (!email) {
+    return jsonResponse({ error: "Token is invalid or expired" }, 401);
+  }
+
+  // One-time use: consume the token so the link can't be replayed.
+  await env.AUTH_TOKENS.delete(token);
+
+  // Provision the Composio user for this email (best-effort — auth still succeeds
+  // even if Composio is briefly unavailable; the user is re-provisioned on next use).
+  await provisionComposioUser(email, env);
+
+  const sessionJWT = crypto.randomUUID();
+  return jsonResponse({ sessionJWT, composioUserId: email });
+}
+
+/// Ensures a Composio user/entity exists for `email` by opening a Tool Router session
+/// with that `user_id` (Composio auto-provisions the entity on first use). Failures are
+/// logged but not surfaced, so a Composio hiccup never blocks login.
+async function provisionComposioUser(email: string, env: Env): Promise<void> {
+  try {
+    const response = await fetch(
+      "https://backend.composio.dev/api/v3.1/tool_router/session",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": env.COMPOSIO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ user_id: email }),
+      }
+    );
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      console.error("Composio user provisioning failed", response.status, body);
+    }
+  } catch (err) {
+    console.error("Composio user provisioning error", err);
+  }
+}
+
+async function handleRealtimeProxy(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const upgrade = request.headers.get("Upgrade");
+
+  if (upgrade?.toLowerCase() !== "websocket") {
+    return new Response("Expected WebSocket upgrade", {
+      status: 426,
+    });
+  }
+
+  const azureUrl =
+    "https://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2";
+
+  console.log("Connecting to Azure:", azureUrl);
+
+  let azureResponse: Response;
+
+  try {
+    azureResponse = await fetch(azureUrl, {
+      headers: {
+        Upgrade: "websocket",
+        "api-key": env.AZURE_OPENAI_API_KEY,
+      },
+    });
+  } catch (err) {
+    console.error("Azure fetch failed:", err);
+
+    return new Response(
+      `Azure connection failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      { status: 502 }
+    );
+  }
+
+  console.log("Azure status:", azureResponse.status);
+
+  if (azureResponse.status !== 101) {
+    const body = await azureResponse.text().catch(() => "");
+
+    console.error("Azure upgrade rejected");
+    console.error("Status:", azureResponse.status);
+    console.error("Body:", body);
+
+    return new Response(
+      `Azure websocket upgrade failed.\nStatus: ${azureResponse.status}\nBody: ${body}`,
+      { status: 502 }
+    );
+  }
+
+  const azureSocket = (azureResponse as any).webSocket;
+
+  if (!azureSocket) {
+    console.error("Azure returned 101 but no websocket object");
+
+    return new Response(
+      "Azure returned 101 but no websocket instance",
+      { status: 502 }
+    );
+  }
+
+  azureSocket.accept();
+
+  const pair = new (globalThis as any).WebSocketPair();
+
+  const clientSocket = pair[0];
+  const workerSocket = pair[1];
+
+  workerSocket.accept();
+
+  let closed = false;
+
+  function shutdown(code?: number, reason?: string) {
+    if (closed) return;
+    closed = true;
+
+    try {
+      workerSocket.close(code, reason);
+    } catch {}
+
+    try {
+      azureSocket.close(code, reason);
+    } catch {}
+  }
+
+  workerSocket.addEventListener("message", (event: MessageEvent) => {
+    try {
+      azureSocket.send(event.data);
+    } catch (err) {
+      console.error("Client -> Azure send failed", err);
+      shutdown();
+    }
+  });
+
+  azureSocket.addEventListener("message", (event: MessageEvent) => {
+    try {
+      workerSocket.send(event.data);
+    } catch (err) {
+      console.error("Azure -> Client send failed", err);
+      shutdown();
+    }
+  });
+
+  workerSocket.addEventListener("close", (event: CloseEvent) => {
+    shutdown(event.code, event.reason);
+  });
+
+  azureSocket.addEventListener("close", (event: CloseEvent) => {
+    shutdown(event.code, event.reason);
+  });
+
+  workerSocket.addEventListener("error", (err: Event) => {
+    console.error("Client socket error", err);
+    shutdown();
+  });
+
+  azureSocket.addEventListener("error", (err: Event) => {
+    console.error("Azure socket error", err);
+    shutdown();
+  });
+
+  return new Response(null, {
+    status: 101,
+    webSocket: clientSocket,
+  } as any);
+}

@@ -1,0 +1,1368 @@
+//
+//  AurenPanel.swift
+//  leanring-buddy
+//
+//  Expanded notch panel content for Speed. The filename is kept for now per the
+//  project constraint, but all visible UI is Speed-branded and notch-first.
+//
+
+import AppKit
+import Combine
+import EventKit
+import SwiftUI
+
+enum SpeedPanelPage {
+    case home
+    case connectors
+    case settings
+}
+
+struct AurenPanel: View {
+    @ObservedObject var companionManager: CompanionManager
+    let page: SpeedPanelPage
+    @StateObject private var sidebar = AurenSidebarData()
+    @StateObject private var music = SpeedMusicManager()
+
+    var body: some View {
+        Group {
+            switch page {
+            case .home:
+                home
+            case .connectors:
+                ConnectorsPanel(companionManager: companionManager)
+            case .settings:
+                SettingsPanel(companionManager: companionManager)
+            }
+        }
+        .task {
+            await sidebar.refresh()
+            music.refresh()
+        }
+    }
+
+    private var home: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 14) {
+                if companionManager.isAssistantActive {
+                    AssistantActivityCard(companionManager: companionManager)
+                }
+
+                HStack(alignment: .top, spacing: 14) {
+                    BoringStyleMusicCard(music: music)
+                        .frame(width: 330)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        CalendarCard(sidebar: sidebar)
+                        RemindersCard(sidebar: sidebar)
+                    }
+                }
+
+                if !companionManager.pendingConnections.isEmpty {
+                    PanelSection("Connect Accounts") {
+                        ForEach(companionManager.pendingConnections) { connection in
+                            PendingConnectionRow(
+                                connection: connection,
+                                onConnect: { companionManager.openPendingConnection(connection) },
+                                onDismiss: { companionManager.dismissPendingConnection(connection) }
+                            )
+                        }
+                    }
+                }
+
+                if !companionManager.recentInteractions.isEmpty {
+                    PanelSection("Recent Activity") {
+                        ForEach(companionManager.recentInteractions) { interaction in
+                            ActivityRow(interaction: interaction)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 14)
+        }
+    }
+}
+
+private struct AssistantActivityCard: View {
+    @ObservedObject var companionManager: CompanionManager
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VoiceActivityView(companionManager: companionManager, realtimeClient: companionManager.realtimeClient)
+                .frame(width: 24, height: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(companionManager.activeStatusText.isEmpty ? "Ready" : companionManager.activeStatusText)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("Speed is working in the notch.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.52))
+            }
+            Spacer()
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.07)))
+    }
+}
+
+private struct BoringStyleMusicCard: View {
+    @ObservedObject var music: SpeedMusicManager
+    @State private var isDragging = false
+    @State private var sliderValue: Double = 0
+
+    var body: some View {
+        HStack(spacing: 14) {
+            albumArt
+                .frame(width: 132, height: 132)
+
+            VStack(alignment: .leading, spacing: 10) {
+                songInfo
+                TimelineView(.animation(minimumInterval: music.isPlaying ? 0.5 : nil)) { _ in
+                    progressSlider
+                }
+                controlToolbar
+
+                Button {
+                    music.openActiveMusicApp()
+                } label: {
+                    Label(music.activeAppName, systemImage: "arrow.up.forward.app")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.48))
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(
+            ZStack {
+                Image(nsImage: music.albumArt)
+                    .resizable()
+                    .scaledToFill()
+                    .blur(radius: 28)
+                    .opacity(music.isPlaying ? 0.24 : 0.08)
+                Color.white.opacity(0.055)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .onReceive(music.$elapsedTime) { elapsedTime in
+            if !isDragging {
+                sliderValue = elapsedTime
+            }
+        }
+    }
+
+    private var albumArt: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image(nsImage: music.albumArt)
+                .resizable()
+                .aspectRatio(1, contentMode: .fill)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .scaleEffect(music.isPlaying ? 1 : 0.92)
+                .animation(.smooth(duration: 0.24), value: music.isPlaying)
+
+            if !music.isPlaying {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.black.opacity(0.38))
+            }
+
+            Image(nsImage: music.activeAppIcon)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 24, height: 24)
+                .padding(5)
+                .background(Circle().fill(Color.black.opacity(0.78)))
+                .offset(x: 8, y: 8)
+        }
+    }
+
+    private var songInfo: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(music.title)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text(music.artist)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.58))
+                .lineLimit(1)
+            Text(music.album)
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.36))
+                .lineLimit(1)
+        }
+    }
+
+    private var progressSlider: some View {
+        VStack(spacing: 4) {
+            Slider(
+                value: Binding(
+                    get: { music.duration > 0 ? min(isDragging ? sliderValue : music.currentElapsedTime, music.duration) : 0 },
+                    set: { sliderValue = $0 }
+                ),
+                in: 0...max(music.duration, 1),
+                onEditingChanged: { editing in
+                    isDragging = editing
+                    if !editing {
+                        music.seek(to: sliderValue)
+                    }
+                }
+            )
+            .controlSize(.mini)
+            .tint(.white)
+
+            HStack {
+                Text(music.timeString(from: music.currentElapsedTime))
+                Spacer()
+                Text(music.timeString(from: music.duration))
+            }
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(.white.opacity(0.42))
+        }
+    }
+
+    private var controlToolbar: some View {
+        HStack(spacing: 7) {
+            MusicButton(icon: "shuffle", isActive: music.isShuffled) { music.toggleShuffle() }
+            MusicButton(icon: "backward.fill") { music.previous() }
+            MusicButton(icon: music.isPlaying ? "pause.fill" : "play.fill", isPrimary: true) { music.togglePlay() }
+            MusicButton(icon: "forward.fill") { music.next() }
+            MusicButton(icon: music.repeatIcon, isActive: music.isRepeatEnabled) { music.toggleRepeat() }
+        }
+    }
+}
+
+private struct MusicButton: View {
+    let icon: String
+    var isPrimary = false
+    var isActive = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: isPrimary ? 15 : 12, weight: .semibold))
+                .foregroundStyle(isPrimary ? .black : (isActive ? .red : .white))
+                .frame(width: isPrimary ? 34 : 26, height: isPrimary ? 34 : 26)
+                .background(Circle().fill(isPrimary ? Color.white : Color.white.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct CalendarCard: View {
+    @ObservedObject var sidebar: AurenSidebarData
+    @State private var selectedDate = Date()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(selectedDate.formatted(.dateTime.month(.abbreviated)))
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    Text(selectedDate.formatted(.dateTime.year()))
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(0.52))
+                }
+                Spacer()
+                SpeedDateWheel(selectedDate: $selectedDate)
+            }
+            .foregroundStyle(.white)
+
+            if sidebar.selectedEvents.isEmpty {
+                EmptyPanelLine(
+                    icon: "calendar.badge.checkmark",
+                    title: Calendar.current.isDateInToday(selectedDate) ? "No events today" : "No events"
+                )
+            } else {
+                ForEach(sidebar.selectedEvents.prefix(3)) { event in
+                    HStack(spacing: 8) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(event.color)
+                            .frame(width: 3, height: 28)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(event.title)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.92))
+                                .lineLimit(1)
+                            Text(event.timeString)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.white.opacity(0.45))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
+        .task { await sidebar.loadEvents(for: selectedDate) }
+        .onChange(of: selectedDate) { _, newDate in
+            Task { await sidebar.loadEvents(for: newDate) }
+        }
+    }
+}
+
+private struct SpeedDateWheel: View {
+    @Binding var selectedDate: Date
+    @State private var scrollPosition: Int?
+
+    private let days: [Date] = {
+        let calendar = Calendar.current
+        return (-7...14).compactMap { calendar.date(byAdding: .day, value: $0, to: Date()) }
+    }()
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 1) {
+                ForEach(Array(days.enumerated()), id: \.offset) { index, day in
+                    let isSelected = Calendar.current.isDate(day, inSameDayAs: selectedDate)
+                    let isToday = Calendar.current.isDateInToday(day)
+                    Button {
+                        selectedDate = day
+                        withAnimation(.smooth(duration: 0.2)) {
+                            scrollPosition = index
+                        }
+                    } label: {
+                        VStack(spacing: 5) {
+                            Text(day.formatted(.dateTime.weekday(.narrow)))
+                                .font(.system(size: 8, weight: .medium))
+                            Text(day.formatted(.dateTime.day()))
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundStyle(isSelected ? .white : Color(white: isToday ? 0.92 : 0.62))
+                        .frame(width: 25, height: 40)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(isSelected ? Color.white.opacity(0.14) : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .id(index)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .frame(width: 178, height: 44)
+        .scrollPosition(id: $scrollPosition, anchor: .center)
+        .scrollTargetBehavior(.viewAligned)
+        .onAppear {
+            selectedDate = Date()
+            scrollPosition = 7
+        }
+    }
+}
+
+private struct RemindersCard: View {
+    @ObservedObject var sidebar: AurenSidebarData
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Reminders")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.55))
+                .textCase(.uppercase)
+
+            if sidebar.reminders.isEmpty {
+                EmptyPanelLine(icon: "checklist", title: "No open reminders")
+            } else {
+                ForEach(sidebar.reminders.prefix(4)) { reminder in
+                    Button {
+                        withAnimation(.smooth(duration: 0.16)) {
+                            sidebar.complete(reminder)
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "circle")
+                                .font(.system(size: 12))
+                            Text(reminder.title)
+                                .font(.system(size: 11))
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                        .foregroundStyle(.white.opacity(0.82))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
+    }
+}
+
+private struct EmptyPanelLine: View {
+    let icon: String
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 13))
+                .foregroundStyle(.white.opacity(0.42))
+            Text(title)
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.52))
+            Spacer()
+        }
+        .frame(height: 28)
+    }
+}
+
+private struct ConnectorsPanel: View {
+    @ObservedObject var companionManager: CompanionManager
+    @State private var selectedConnectorID = SpeedConnectorCatalog.items.first?.id ?? "gmail"
+
+    private var selectedConnector: SpeedConnector {
+        SpeedConnectorCatalog.items.first { $0.id == selectedConnectorID } ?? SpeedConnectorCatalog.items[0]
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                PanelTitle("Connectors", subtitle: "Composio apps Speed can connect when a task needs them.")
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(SpeedConnectorCatalog.items) { connector in
+                            ConnectorPickerRow(
+                                connector: connector,
+                                isSelected: connector.id == selectedConnectorID,
+                                isPending: hasPendingConnection(for: connector)
+                            ) {
+                                withAnimation(.smooth(duration: 0.2)) {
+                                    selectedConnectorID = connector.id
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(width: 265, alignment: .topLeading)
+
+            ConnectorDetailCard(
+                connector: selectedConnector,
+                pendingConnection: pendingConnection(for: selectedConnector),
+                onConnect: { requestConnector(selectedConnector.slug) },
+                onOpenPending: { connection in companionManager.openPendingConnection(connection) },
+                onDismissPending: { connection in companionManager.dismissPendingConnection(connection) }
+            )
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 10)
+        .padding(.bottom, 14)
+    }
+
+    private func hasPendingConnection(for connector: SpeedConnector) -> Bool {
+        pendingConnection(for: connector) != nil
+    }
+
+    private func pendingConnection(for connector: SpeedConnector) -> PendingConnection? {
+        let connectorSlug = normalizedConnectorKey(connector.slug)
+        let connectorName = normalizedConnectorKey(connector.name)
+        return companionManager.pendingConnections.first {
+            let toolkit = normalizedConnectorKey($0.toolkit)
+            return toolkit == connectorSlug || toolkit == connectorName
+        }
+    }
+
+    private func requestConnector(_ slug: String) {
+        companionManager.requestConnectorConnection(slug: slug)
+    }
+
+    private func normalizedConnectorKey(_ rawValue: String) -> String {
+        rawValue
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+    }
+}
+
+private struct SpeedConnector: Identifiable {
+    let id: String
+    let name: String
+    let slug: String
+    let icon: String
+    let category: String
+    let description: String
+    let accent: Color
+    let examples: [String]
+}
+
+private enum SpeedConnectorCatalog {
+    static let items: [SpeedConnector] = [
+        SpeedConnector(
+            id: "gmail",
+            name: "Gmail",
+            slug: "gmail",
+            icon: "envelope.fill",
+            category: "Communication",
+            description: "Draft, send, search, and summarize email from voice requests.",
+            accent: Color(hex: "#EA4335"),
+            examples: ["Write a follow-up to John", "Find the latest client email", "Summarize unread mail"]
+        ),
+        SpeedConnector(
+            id: "slack",
+            name: "Slack",
+            slug: "slack",
+            icon: "number",
+            category: "Communication",
+            description: "Send messages, look up channels, and turn threads into next actions.",
+            accent: Color(hex: "#36C5F0"),
+            examples: ["Send the standup update", "Catch me up on design", "Post a reminder"]
+        ),
+        SpeedConnector(
+            id: "calendar",
+            name: "Google Calendar",
+            slug: "googlecalendar",
+            icon: "calendar",
+            category: "Planning",
+            description: "Create meetings and inspect availability through Composio.",
+            accent: Color(hex: "#34A853"),
+            examples: ["Schedule a call tomorrow", "Move my 3 PM meeting", "Find open time Friday"]
+        ),
+        SpeedConnector(
+            id: "notion",
+            name: "Notion",
+            slug: "notion",
+            icon: "doc.text.fill",
+            category: "Knowledge",
+            description: "Create pages, update notes, and pull workspace context into Speed.",
+            accent: Color.white.opacity(0.92),
+            examples: ["Add this to product notes", "Find the launch checklist", "Create a meeting page"]
+        ),
+        SpeedConnector(
+            id: "github",
+            name: "GitHub",
+            slug: "github",
+            icon: "chevron.left.forwardslash.chevron.right",
+            category: "Developer",
+            description: "Read issues, create pull requests, and work with repositories.",
+            accent: Color(hex: "#A78BFA"),
+            examples: ["Open a bug issue", "Summarize recent PRs", "Find failing checks"]
+        ),
+        SpeedConnector(
+            id: "linear",
+            name: "Linear",
+            slug: "linear",
+            icon: "line.3.horizontal.decrease.circle.fill",
+            category: "Planning",
+            description: "Create issues, inspect cycles, and keep project status moving.",
+            accent: Color(hex: "#5E6AD2"),
+            examples: ["Create a task for this", "Move it to in progress", "List urgent bugs"]
+        ),
+        SpeedConnector(
+            id: "spotify",
+            name: "Spotify",
+            slug: "spotify",
+            icon: "music.note",
+            category: "Media",
+            description: "Control playback and use music context without leaving the notch.",
+            accent: Color(hex: "#1DB954"),
+            examples: ["Play focus music", "Pause Spotify", "Skip this track"]
+        )
+    ]
+}
+
+private struct ConnectorPickerRow: View {
+    let connector: SpeedConnector
+    let isSelected: Bool
+    let isPending: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                ConnectorIcon(connector: connector, size: 32, iconSize: 14)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(connector.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(isPending ? "Connect link ready" : connector.category)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(isPending ? DS.Colors.accentText : .white.opacity(0.42))
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(isSelected ? DS.Colors.accentText : .white.opacity(0.28))
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isSelected ? DS.Colors.accentSubtle : Color.white.opacity(0.045))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(isSelected ? DS.Colors.accentText.opacity(0.65) : Color.white.opacity(0.07), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ConnectorDetailCard: View {
+    let connector: SpeedConnector
+    let pendingConnection: PendingConnection?
+    let onConnect: () -> Void
+    let onOpenPending: (PendingConnection) -> Void
+    let onDismissPending: (PendingConnection) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                ConnectorIcon(connector: connector, size: 54, iconSize: 24)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(connector.name)
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(connector.category)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(connector.accent)
+                        .textCase(.uppercase)
+                    Text(connector.description)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.58))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let pendingConnection {
+                PendingConnectorBanner(
+                    connection: pendingConnection,
+                    onOpen: { onOpenPending(pendingConnection) },
+                    onDismiss: { onDismissPending(pendingConnection) }
+                )
+            } else {
+                Button(action: onConnect) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .bold))
+                        Text("Connect \(connector.name)")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+                }
+                .buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Try Asking")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .textCase(.uppercase)
+
+                ForEach(connector.examples, id: \.self) { example in
+                    HStack(spacing: 8) {
+                        Image(systemName: "quote.opening")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(connector.accent.opacity(0.85))
+                            .frame(width: 14)
+                        Text(example)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.82))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.045)))
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(14)
+        .background(
+            ZStack(alignment: .topTrailing) {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.white.opacity(0.055))
+                Circle()
+                    .fill(connector.accent.opacity(0.28))
+                    .frame(width: 150, height: 150)
+                    .blur(radius: 36)
+                    .offset(x: 58, y: -64)
+            }
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+}
+
+private struct ConnectorIcon: View {
+    let connector: SpeedConnector
+    let size: CGFloat
+    let iconSize: CGFloat
+
+    var body: some View {
+        Image(systemName: connector.icon)
+            .font(.system(size: iconSize, weight: .semibold))
+            .foregroundStyle(connector.accent)
+            .frame(width: size, height: size)
+            .background(
+                RoundedRectangle(cornerRadius: min(14, size * 0.28), style: .continuous)
+                    .fill(connector.accent.opacity(0.14))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: min(14, size * 0.28), style: .continuous)
+                    .strokeBorder(connector.accent.opacity(0.22), lineWidth: 1)
+            )
+    }
+}
+
+private struct PendingConnectorBanner: View {
+    let connection: PendingConnection
+    let onOpen: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(DS.Colors.accentText)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(DS.Colors.accentSubtle))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Authorization Ready")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text(connection.toolkit.capitalized)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+            Spacer()
+            Button("Open") {
+                onOpen()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.black)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.white))
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.42))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(DS.Colors.accentSubtle)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(DS.Colors.accentText.opacity(0.32), lineWidth: 1)
+        )
+    }
+
+    private var icon: String {
+        "link.badge.plus"
+    }
+}
+
+private struct SettingsPanel: View {
+    @ObservedObject var companionManager: CompanionManager
+    @ObservedObject private var authManager = AuthManager.shared
+    @State private var selectedTab: SettingsTab = .general
+
+    private enum SettingsTab: String, CaseIterable {
+        case general = "General"
+        case permissions = "Permissions"
+        case shortcuts = "Shortcuts"
+        case account = "Account"
+
+        var icon: String {
+            switch self {
+            case .general: return "gear"
+            case .permissions: return "hand.raised.fill"
+            case .shortcuts: return "keyboard"
+            case .account: return "person.crop.circle"
+            }
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(SettingsTab.allCases, id: \.self) { tab in
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: tab.icon)
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(width: 16)
+                            Text(tab.rawValue)
+                                .font(.system(size: 12, weight: .medium))
+                            Spacer()
+                        }
+                        .foregroundStyle(selectedTab == tab ? .white : .white.opacity(0.55))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(selectedTab == tab ? Color.white.opacity(0.12) : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(width: 150, alignment: .topLeading)
+            .padding(.top, 10)
+
+            Divider().background(Color.white.opacity(0.12))
+
+            ScrollView(.vertical, showsIndicators: false) {
+                settingsDetail
+                    .padding(.top, 10)
+                    .padding(.bottom, 14)
+            }
+        }
+        .padding(.horizontal, 18)
+    }
+
+    @ViewBuilder
+    private var settingsDetail: some View {
+        switch selectedTab {
+        case .general:
+            VStack(alignment: .leading, spacing: 12) {
+                PanelTitle("General", subtitle: "Panel, status, and active-state controls.")
+                SettingsInfoRow(icon: "capsule.portrait.fill", title: "Notch UI", value: "Enabled")
+                SettingsInfoRow(icon: "waveform", title: "Active state", value: companionManager.activeStatusText.isEmpty ? "Idle" : companionManager.activeStatusText)
+                SettingsInfoRow(icon: "puzzlepiece.extension.fill", title: "Connectors", value: "\(companionManager.pendingConnections.count) pending")
+            }
+        case .permissions:
+            VStack(alignment: .leading, spacing: 10) {
+                PanelTitle("Permissions", subtitle: "Grant access without leaving the panel flow.")
+                SettingsPermissionRow(title: "Microphone", granted: companionManager.hasMicrophonePermission) {
+                    companionManager.requestMicrophonePermission()
+                }
+                SettingsPermissionRow(title: "Screen Recording", granted: companionManager.hasScreenRecordingPermission) {
+                    companionManager.requestScreenRecordingPermission()
+                }
+                SettingsPermissionRow(title: "Screen Content", granted: companionManager.hasScreenContentPermission) {
+                    companionManager.requestScreenContentPermission()
+                }
+                SettingsPermissionRow(title: "Accessibility", granted: companionManager.hasAccessibilityPermission) {
+                    companionManager.requestAccessibilityPermission()
+                }
+                SettingsPermissionRow(title: "Calendar", granted: companionManager.hasCalendarPermission) {
+                    companionManager.requestCalendarPermission()
+                }
+                SettingsPermissionRow(title: "Reminders", granted: companionManager.hasRemindersPermission) {
+                    companionManager.requestRemindersPermission()
+                }
+            }
+        case .shortcuts:
+            VStack(alignment: .leading, spacing: 12) {
+                PanelTitle("Shortcuts", subtitle: "Push-to-talk listens globally while Speed is running.")
+                HotkeySettingsView(companionManager: companionManager)
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
+            }
+        case .account:
+            VStack(alignment: .leading, spacing: 12) {
+                PanelTitle("Account", subtitle: "Session and app controls.")
+                Button("Reset onboarding") {
+                    companionManager.setPanelOnboardingComplete(false)
+                }
+                .speedSettingsButton()
+
+                Button("Sign out") {
+                    authManager.clearSession()
+                    companionManager.setPanelOnboardingComplete(false)
+                }
+                .speedSettingsButton()
+
+                Button("Quit Speed") {
+                    NSApp.terminate(nil)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.red.opacity(0.85))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
+            }
+        }
+    }
+}
+
+private struct SettingsInfoRow: View {
+    let icon: String
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.58))
+                .frame(width: 18)
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.82))
+            Spacer()
+            Text(value)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.46))
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.055)))
+    }
+}
+
+private extension View {
+    func speedSettingsButton() -> some View {
+        self
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.78))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
+    }
+}
+
+private struct SettingsPermissionRow: View {
+    let title: String
+    let granted: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack {
+            Label(title, systemImage: granted ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(granted ? Color.green : Color.white.opacity(0.72))
+            Spacer()
+            Button(granted ? "Granted" : "Grant") { action() }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(granted ? .white.opacity(0.38) : .black)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(granted ? Color.white.opacity(0.08) : Color.white))
+                .disabled(granted)
+        }
+    }
+}
+
+private struct PanelTitle: View {
+    let title: String
+    let subtitle: String
+
+    init(_ title: String, subtitle: String) {
+        self.title = title
+        self.subtitle = subtitle
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+            Text(subtitle)
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.52))
+        }
+    }
+}
+
+private struct PanelSection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: () -> Content
+
+    init(_ title: String, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.45))
+                .textCase(.uppercase)
+            content()
+        }
+    }
+}
+
+private struct PendingConnectionRow: View {
+    let connection: PendingConnection
+    let onConnect: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(connection.toolkit.capitalized)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.9))
+            Spacer()
+            Button("Open link", action: onConnect)
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(Color.white))
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+struct ActivityRow: View {
+    let interaction: Interaction
+    @State private var isExpanded = false
+
+    private var timeString: String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter.string(from: interaction.timestamp)
+    }
+
+    private var title: String {
+        interaction.userPhrase.isEmpty ? interaction.modelSummary : interaction.userPhrase
+    }
+
+    private var detail: String? {
+        guard !interaction.userPhrase.isEmpty, !interaction.modelSummary.isEmpty else { return nil }
+        return interaction.modelSummary
+    }
+
+    var body: some View {
+        Button {
+            withAnimation(.smooth(duration: 0.18)) { isExpanded.toggle() }
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Spacer()
+                    Text(timeString)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.42))
+                }
+                if isExpanded, let detail {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.055)))
+        }
+        .buttonStyle(.plain)
+        .disabled(detail == nil)
+    }
+}
+
+@MainActor
+final class SpeedMusicManager: ObservableObject {
+    @Published var title = "Nothing playing"
+    @Published var artist = "Spotify or Music"
+    @Published var album = "Open a player to control it here"
+    @Published var isPlaying = false
+    @Published var duration: Double = 0
+    @Published var elapsedTime: Double = 0
+    @Published var timestampDate = Date()
+    @Published var playbackRate: Double = 0
+    @Published var isShuffled = false
+    @Published var repeatMode = "off"
+    @Published var activeAppName = "Music"
+    @Published var activeBundleIdentifier = "com.apple.Music"
+    @Published var activeAppIcon: NSImage = NSWorkspace.shared.icon(forFile: "/System/Applications/Music.app")
+    @Published var albumArt: NSImage = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Album Art")!
+
+    var currentElapsedTime: Double {
+        guard isPlaying else { return elapsedTime }
+        return min(max(elapsedTime + Date().timeIntervalSince(timestampDate) * playbackRate, 0), duration)
+    }
+
+    var isRepeatEnabled: Bool { repeatMode != "off" }
+
+    var repeatIcon: String {
+        repeatMode == "one" ? "repeat.1" : "repeat"
+    }
+
+    func refresh() {
+        if updateFromSpotify() { return }
+        if updateFromMusic() { return }
+        title = "Nothing playing"
+        artist = "Spotify or Music"
+        album = "Open a player to control it here"
+        isPlaying = false
+        duration = 0
+        elapsedTime = 0
+        playbackRate = 0
+        activeBundleIdentifier = "com.apple.Music"
+        activeAppName = "Music"
+        activeAppIcon = icon(forBundleIdentifier: activeBundleIdentifier)
+    }
+
+    func togglePlay() {
+        runScript(command: "playpause", in: activeAppName)
+        refresh()
+    }
+
+    func next() {
+        runScript(command: "next track", in: activeAppName)
+        refresh()
+    }
+
+    func previous() {
+        runScript(command: "previous track", in: activeAppName)
+        refresh()
+    }
+
+    func toggleShuffle() {
+        if activeAppName == "Spotify" {
+            _ = scriptValue("tell application \"Spotify\" to set shuffling to not shuffling")
+        }
+        refresh()
+    }
+
+    func toggleRepeat() {
+        if activeAppName == "Spotify" {
+            _ = scriptValue("tell application \"Spotify\" to set repeating to not repeating")
+        } else {
+            let targetMode = repeatMode == "off" ? "all" : "off"
+            _ = scriptValue("tell application \"Music\" to set song repeat to \(targetMode)")
+        }
+        refresh()
+    }
+
+    func seek(to seconds: Double) {
+        guard duration > 0 else { return }
+        if activeAppName == "Spotify" {
+            _ = scriptValue("tell application \"Spotify\" to set player position to \(seconds)")
+        } else {
+            _ = scriptValue("tell application \"Music\" to set player position to \(seconds)")
+        }
+        elapsedTime = seconds
+        timestampDate = Date()
+    }
+
+    func openActiveMusicApp() {
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: activeBundleIdentifier) {
+            NSWorkspace.shared.open(appURL)
+        }
+    }
+
+    func timeString(from seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "0:00" }
+        let totalSeconds = Int(seconds)
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let secs = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%d:%02d", minutes, secs)
+    }
+
+    private func updateFromSpotify() -> Bool {
+        guard isRunning(bundleIdentifier: "com.spotify.client") else { return false }
+
+        activeAppName = "Spotify"
+        activeBundleIdentifier = "com.spotify.client"
+        activeAppIcon = icon(forBundleIdentifier: activeBundleIdentifier)
+        title = scriptValue("tell application \"Spotify\" to name of current track") ?? "Spotify"
+        artist = scriptValue("tell application \"Spotify\" to artist of current track") ?? "Ready"
+        album = scriptValue("tell application \"Spotify\" to album of current track") ?? ""
+        isPlaying = scriptValue("tell application \"Spotify\" to player state as string") == "playing"
+        duration = (Double(scriptValue("tell application \"Spotify\" to duration of current track") ?? "") ?? 0) / 1000
+        elapsedTime = Double(scriptValue("tell application \"Spotify\" to player position") ?? "") ?? 0
+        timestampDate = Date()
+        playbackRate = isPlaying ? 1 : 0
+        isShuffled = scriptValue("tell application \"Spotify\" to shuffling as string") == "true"
+        repeatMode = scriptValue("tell application \"Spotify\" to repeating as string") == "true" ? "all" : "off"
+        if let artworkURLString = scriptValue("tell application \"Spotify\" to artwork url of current track") {
+            updateArtwork(from: artworkURLString)
+        }
+        return true
+    }
+
+    private func updateFromMusic() -> Bool {
+        guard isRunning(bundleIdentifier: "com.apple.Music") else { return false }
+
+        activeAppName = "Music"
+        activeBundleIdentifier = "com.apple.Music"
+        activeAppIcon = icon(forBundleIdentifier: activeBundleIdentifier)
+        title = scriptValue("tell application \"Music\" to name of current track") ?? "Music"
+        artist = scriptValue("tell application \"Music\" to artist of current track") ?? "Ready"
+        album = scriptValue("tell application \"Music\" to album of current track") ?? ""
+        isPlaying = scriptValue("tell application \"Music\" to player state as string") == "playing"
+        duration = Double(scriptValue("tell application \"Music\" to duration of current track") ?? "") ?? 0
+        elapsedTime = Double(scriptValue("tell application \"Music\" to player position") ?? "") ?? 0
+        timestampDate = Date()
+        playbackRate = isPlaying ? 1 : 0
+        isShuffled = false
+        repeatMode = (scriptValue("tell application \"Music\" to song repeat as string") ?? "off").lowercased()
+        albumArt = icon(forBundleIdentifier: activeBundleIdentifier)
+        return true
+    }
+
+    private func isRunning(bundleIdentifier: String) -> Bool {
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleIdentifier }
+    }
+
+    private func icon(forBundleIdentifier bundleIdentifier: String) -> NSImage {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSImage(systemSymbolName: "music.note", accessibilityDescription: "Music")!
+    }
+
+    private func updateArtwork(from urlString: String) {
+        guard let url = URL(string: urlString) else { return }
+        Task {
+            guard let data = try? Data(contentsOf: url), let image = NSImage(data: data) else { return }
+            await MainActor.run {
+                self.albumArt = image
+            }
+        }
+    }
+
+    private func runScript(command: String, in appName: String) {
+        _ = scriptValue("tell application \"\(appName)\" to \(command)")
+    }
+
+    private func scriptValue(_ source: String) -> String? {
+        var error: NSDictionary?
+        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
+        return result?.stringValue
+    }
+}
+
+@MainActor
+final class AurenSidebarData: ObservableObject {
+    struct CalEvent: Identifiable {
+        let id: String
+        let title: String
+        let timeString: String
+        let color: Color
+    }
+
+    struct ReminderItem: Identifiable {
+        let id: String
+        let title: String
+    }
+
+    @Published private(set) var todaysEvents: [CalEvent] = []
+    @Published private(set) var selectedEvents: [CalEvent] = []
+    @Published private(set) var reminders: [ReminderItem] = []
+
+    private let store = EKEventStore()
+
+    func refresh() async {
+        await loadEvents(for: Date())
+        await loadReminders()
+    }
+
+    func loadEvents(for date: Date) async {
+        guard await ensureAccess(.event) else {
+            todaysEvents = []
+            selectedEvents = []
+            return
+        }
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: date)
+        guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return }
+
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        let timeFormatter = DateFormatter()
+        timeFormatter.timeStyle = .short
+        timeFormatter.dateStyle = .none
+
+        let events = store.events(matching: predicate)
+            .sorted { $0.startDate < $1.startDate }
+            .map { event in
+                let nsColor = event.calendar.cgColor.flatMap { NSColor(cgColor: $0) } ?? .systemBlue
+                return CalEvent(
+                    id: event.eventIdentifier ?? UUID().uuidString,
+                    title: event.title ?? "(untitled)",
+                    timeString: event.isAllDay ? "All day" : timeFormatter.string(from: event.startDate),
+                    color: Color(nsColor: nsColor)
+                )
+            }
+        selectedEvents = events
+        if calendar.isDateInToday(date) {
+            todaysEvents = events
+        }
+    }
+
+    private func loadReminders() async {
+        guard await ensureAccess(.reminder) else {
+            reminders = []
+            return
+        }
+        let predicate = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: nil)
+        let fetched: [EKReminder] = await withCheckedContinuation { continuation in
+            store.fetchReminders(matching: predicate) { result in
+                continuation.resume(returning: result ?? [])
+            }
+        }
+        reminders = fetched.prefix(8).map { ReminderItem(id: $0.calendarItemIdentifier, title: $0.title ?? "(untitled)") }
+    }
+
+    func complete(_ item: ReminderItem) {
+        guard let reminder = store.calendarItem(withIdentifier: item.id) as? EKReminder else {
+            reminders.removeAll { $0.id == item.id }
+            return
+        }
+        reminder.isCompleted = true
+        try? store.save(reminder, commit: true)
+        reminders.removeAll { $0.id == item.id }
+    }
+
+    private func ensureAccess(_ type: EKEntityType) async -> Bool {
+        switch EKEventStore.authorizationStatus(for: type) {
+        case .fullAccess:
+            return true
+        case .notDetermined:
+            do {
+                if type == .event {
+                    return try await store.requestFullAccessToEvents()
+                }
+                return try await store.requestFullAccessToReminders()
+            } catch {
+                return false
+            }
+        case .writeOnly:
+            return type == .reminder
+        default:
+            return false
+        }
+    }
+}

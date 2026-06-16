@@ -1,0 +1,27 @@
+name = "realtime-proxy"
+main = "src/index.ts"
+compatibility_date = "2025-06-11"
+
+# Stores pending magic-link tokens (token -> email) with a 15-minute TTL.
+# Create the namespaces and paste the returned ids here:
+#   npx wrangler kv namespace create AUTH_TOKENS
+#   npx wrangler kv namespace create AUTH_TOKENS --preview
+[[kv_namespaces]]
+binding = "AUTH_TOKENS"
+id = "c5eb3022f5e84d9ab0e35f73f03db48e"
+preview_id = "ea8c338135f5483799f57060586ea2ac"
+
+# Magic-link emails are sent via Resend (no domain required).
+# One-time setup before this works:
+#   1. Create a free account at https://resend.com using the email you want the
+#      link delivered to, then create an API key.
+#   2. Store it as a secret (NOT in this file):
+#        npx wrangler secret put RESEND_API_KEY
+# With the default onboarding@resend.dev sender below, Resend delivers only to the
+# email that account signed up with. Add a verified domain in Resend later to send
+# to anyone, then change MAGIC_LINK_FROM to an address on that domain.
+[vars]
+MAGIC_LINK_FROM = "onboarding@resend.dev"
+# Public origin of this Worker, used to build the clickable link in the email.
+PUBLIC_BASE_URL = "https://realtime-proxy.speedmac.workers.dev"
+
