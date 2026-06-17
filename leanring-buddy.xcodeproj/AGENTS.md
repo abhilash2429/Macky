@@ -1,30 +1,84 @@
-# AGENTS.md - leanring-buddy.xcodeproj
+# AGENTS.md — leanring-buddy.xcodeproj (Xcode project metadata)
 
-Scope: Xcode project metadata only. Root instructions still apply.
+README and operating manual for the Xcode project configuration. Root `AGENTS.md` still
+applies. A **User Instructions** section for humans is at the end.
 
-## Purpose
+---
 
-This folder defines app targets, build settings, package products, resources, entitlements wiring, and file membership for the active macOS app.
+## 1. Purpose
 
-## Current Project Facts
+This folder defines the app target, build settings, Swift Package products, resources,
+entitlements wiring, and source-file membership for the Speed macOS app. Everything that
+tells Xcode *how* to build `leanring-buddy/` lives here.
 
-- Main app target: `leanring-buddy`
-- Test targets may be absent or deleted in the current working tree. Verify before relying on them.
-- Bundle identifier currently uses Speed branding: `com.speedmac.Speed`.
-- Minimum macOS target is 14.2.
-- Swift version is 5.0 in project settings.
-- Swift Package pins include Sparkle, PostHog, and PLCrashReporter.
+---
 
-## Rules
+## 2. Layout
 
-- Do not rename the project, scheme, target, or legacy `leanring-buddy` paths unless explicitly asked.
-- Edit `project.pbxproj` only when necessary, such as adding/removing source files, resources, build settings, package products, or entitlements references.
-- When adding Swift files under `leanring-buddy/`, verify they are part of the app target.
-- Keep package changes intentional. Adding or updating Swift Packages is a dependency decision and should be called out.
-- Preserve signing and bundle settings unless the task is specifically about distribution or identity.
+- `project.pbxproj` — the project graph: targets, build phases, build settings, file
+  references, and SPM product links. The authoritative file; most edits here are made by
+  Xcode, not by hand.
+- `project.xcworkspace/` — workspace wrapper, including `xcshareddata/swiftpm/` which pins
+  resolved Swift Package versions (`Package.resolved`).
+- `xcuserdata/` — per-user Xcode state (breakpoints, schemes, window layout). Personal and
+  noisy in diffs; avoid touching unless intentionally changing a shared scheme.
 
-## Validation
+---
 
-- After project metadata edits, inspect the changed `project.pbxproj` hunk manually.
+## 3. Current Project Facts
+
+- **Main app target:** `leanring-buddy` (builds a product named `Speed.app`).
+- **Bundle identifier:** `com.speedmac.Speed` (Speed branding).
+- **Minimum macOS target:** 14.2.
+- **Swift version:** 5.0 in project settings.
+- **Swift Package pins:** Sparkle (auto-update), PostHog (analytics), PLCrashReporter
+  (crash reporting).
+- **Test targets** may be absent or deleted in the current working tree — verify before
+  relying on them.
+
+---
+
+## 4. Rules
+
+- Do **not** rename the project, scheme, target, or the legacy `leanring-buddy` paths
+  unless explicitly asked. The folder/scheme/project names are intentional legacy.
+- Edit `project.pbxproj` only when necessary: adding/removing source files, resources,
+  build settings, package products, or entitlements references.
+- When adding Swift files under `leanring-buddy/`, verify they are members of the
+  `leanring-buddy` app target — a file not in the target silently won't compile into the
+  app.
+- Keep package changes intentional. Adding or updating a Swift Package is a dependency
+  decision; call it out.
+- Preserve signing and bundle settings unless the task is specifically about distribution
+  or identity.
+
+---
+
+## 5. Validation
+
+- After any `project.pbxproj` edit, inspect the changed hunk manually — these diffs are
+  easy to corrupt.
 - On macOS, prefer opening the project in Xcode and building there.
-- In this Windows workspace, report that Xcode validation was not run if you cannot open/build the project.
+- When you cannot open/build the project, say so explicitly and rely on static review of
+  the `project.pbxproj` diff.
+- The CI workflow (`.github/workflows/macos-build.yml`) resolves packages and builds the
+  `leanring-buddy` target with signing disabled — a good cross-check that the project
+  graph is still valid.
+
+---
+
+## User Instructions
+
+For a human working with the project.
+
+- **Open:** double-click `leanring-buddy.xcodeproj` (or `open leanring-buddy.xcodeproj`
+  from the repo root) to launch it in Xcode.
+- **First build:** run a build once so Swift Package Manager downloads Sparkle, PostHog,
+  and PLCrashReporter. The Sparkle CLI tools fetched here are also what the release script
+  depends on.
+- **Add a source file:** add it to the `leanring-buddy` group in Xcode and confirm the
+  `leanring-buddy` target checkbox is ticked under *Target Membership*.
+- **Update dependencies:** use *File ▸ Packages ▸ Update to Latest Package Versions* in
+  Xcode; commit the resulting `Package.resolved` change deliberately.
+- **Reset package state** if SPM gets stuck: *File ▸ Packages ▸ Reset Package Caches*, then
+  rebuild.
