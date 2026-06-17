@@ -62,6 +62,12 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var toolCallActive = false
     @Published private(set) var narrationText: String?
 
+    /// True while continuous-listening mode is active: the mic stays open and the
+    /// model auto-detects turns via server VAD, so push-to-talk is suspended and
+    /// the notch never collapses to invisible idle. Toggled by the triple-Control
+    /// gesture; non-persistent (always starts off on launch).
+    @Published private(set) var isContinuousListeningActive = false
+
     @Published private(set) var recentInteractions: [Interaction] = []
     @Published private(set) var historyLog: [HistoryEntry] = []
     @Published var pendingFileContext: [String] = []
@@ -93,11 +99,31 @@ final class CompanionManager: ObservableObject {
     let realtimeClient = RealtimeClient()
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var controlTriplePressCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var realtimeActivityCancellables = Set<AnyCancellable>()
     private var accessibilityCheckTimer: Timer?
     private var didBecomeActiveObserver: NSObjectProtocol?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
+
+    /// Half-duplex tail for continuous mode: after the model finishes speaking we
+    /// hold off re-forwarding mic audio this long, so the speaker's acoustic tail
+    /// can't echo back into server VAD and re-trigger a turn. See `micResumeAfterUptime`.
+    private static let continuousMicResumeCooldown: TimeInterval = 0.25
+    /// Earliest `systemUptime` at which continuous mode may resume forwarding mic
+    /// audio. Pushed forward while playback is active; `0` means no hold.
+    private var micResumeAfterUptime: TimeInterval = 0
+
+    /// Watchdog for continuous mode: if a turn never completes (e.g. a tool call or
+    /// response that stalls, or a dropped connection), we'd otherwise sit frozen in a
+    /// non-listening state forever. If we stay non-listening with nothing actually
+    /// playing for this long, snap back to listening so the notch un-sticks and the
+    /// next utterance can proceed. Generous enough not to cut off a legitimately slow
+    /// tool call.
+    private static let continuousStuckTimeout: TimeInterval = 15
+    /// `systemUptime` when continuous mode last entered a non-listening state with no
+    /// audio playing; `0` while listening or actively speaking. Drives the watchdog.
+    private var continuousStuckSince: TimeInterval = 0
     private var lastNarration: String?
     private var turnUsedTool = false
     private var activeToolCount = 0
@@ -112,7 +138,9 @@ final class CompanionManager: ObservableObject {
     }
 
     var isAssistantActive: Bool {
-        voiceState != .idle || toolCallActive || operationState != .idle
+        // Continuous-listening mode keeps the notch live even between turns so it
+        // never collapses to fully invisible idle while the mic is open.
+        isContinuousListeningActive || voiceState != .idle || toolCallActive || operationState != .idle
     }
 
     var activeStatusText: String {
@@ -155,6 +183,7 @@ final class CompanionManager: ObservableObject {
         realtimeClient.disconnect()
         pendingKeyboardShortcutStartTask?.cancel()
         shortcutTransitionCancellable?.cancel()
+        controlTriplePressCancellable?.cancel()
         audioPowerCancellable?.cancel()
         realtimeActivityCancellables.removeAll()
         accessibilityCheckTimer?.invalidate()
@@ -413,8 +442,29 @@ final class CompanionManager: ObservableObject {
                 self.operationState = .executing(self.narrationText)
                 return
             }
+            // Continuous mode never goes idle between turns: settle back to
+            // "Listening" so the mic-open state stays visible in the notch. (The
+            // half-duplex tail is handled by the mic gate, keyed on real playback.)
+            if self.isContinuousListeningActive {
+                self.voiceState = .listening
+                self.operationState = .listening
+                return
+            }
             self.voiceState = .idle
             self.operationState = .idle
+        }
+
+        realtimeClient.onSpeechStarted = { [weak self] in
+            guard let self, self.isContinuousListeningActive else { return }
+            self.voiceState = .listening
+            self.operationState = .listening
+            self.turnUsedTool = false
+        }
+
+        realtimeClient.onSpeechStopped = { [weak self] in
+            guard let self, self.isContinuousListeningActive else { return }
+            self.voiceState = .processing
+            self.operationState = .thinking
         }
 
         realtimeClient.onToolCallStarted = { [weak self] toolName in
@@ -485,6 +535,10 @@ final class CompanionManager: ObservableObject {
             operationState = .speaking
         } else if voiceState == .processing {
             operationState = .thinking
+        } else if isContinuousListeningActive {
+            // Continuous mode never goes idle between turns — stay on "Listening".
+            operationState = .listening
+            voiceState = .listening
         } else {
             operationState = .idle
             voiceState = .idle
@@ -539,9 +593,19 @@ final class CompanionManager: ObservableObject {
             .sink { [weak self] transition in
                 self?.handleShortcutTransition(transition)
             }
+
+        controlTriplePressCancellable = globalPushToTalkShortcutMonitor
+            .controlTriplePressPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.toggleContinuousListening()
+            }
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
+        // Push-to-talk is suspended while continuous-listening mode is active so the
+        // two modes never run at once.
+        guard !isContinuousListeningActive else { return }
         switch transition {
         case .pressed:
             guard !buddyDictationManager.isDictationInProgress else { return }
@@ -589,6 +653,107 @@ final class CompanionManager: ObservableObject {
         case .none:
             break
         }
+    }
+
+    /// Toggles continuous-listening mode (triple-Control gesture). On: suspend
+    /// push-to-talk, enable server VAD, and hold the mic open so the model handles
+    /// turns hands-free while the notch stays on "Listening". Off: close the mic,
+    /// restore manual push-to-talk, and let the notch return to invisible idle.
+    func toggleContinuousListening() {
+        if isContinuousListeningActive {
+            // Turn off → back to push-to-talk.
+            isContinuousListeningActive = false
+            buddyDictationManager.stopRealtimeAudioStreaming()
+            realtimeClient.setContinuousTurnDetection(false)
+            realtimeClient.interruptPlayback()
+            voiceState = .idle
+            operationState = .idle
+            return
+        }
+
+        // Turn on → continuous listening. Clear any in-flight push-to-talk capture
+        // first so the mic isn't double-started (startRealtimeAudioStreaming no-ops
+        // if a handler is already installed).
+        pendingKeyboardShortcutStartTask?.cancel()
+        pendingKeyboardShortcutStartTask = nil
+        buddyDictationManager.stopRealtimeAudioStreaming()
+        realtimeClient.interruptPlayback()
+        realtimeClient.clearAudioBuffer()
+
+        micResumeAfterUptime = 0
+        continuousStuckSince = 0
+        isContinuousListeningActive = true
+        realtimeClient.setContinuousTurnDetection(true)
+        voiceState = .listening
+        operationState = .listening
+        turnUsedTool = false
+
+        pendingKeyboardShortcutStartTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.buddyDictationManager.startRealtimeAudioStreaming { [weak self] pcm16Chunk in
+                    DispatchQueue.main.async {
+                        self?.forwardContinuousMicChunk(pcm16Chunk)
+                    }
+                }
+            } catch {
+                print("⚠️ Companion: couldn't start continuous audio streaming: \(error)")
+                self.isContinuousListeningActive = false
+                self.realtimeClient.setContinuousTurnDetection(false)
+                self.buddyDictationManager.stopRealtimeAudioStreaming()
+                self.voiceState = .idle
+                self.operationState = .error(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Forwards one continuous-mode mic chunk, applying half-duplex echo gating and
+    /// the stuck-turn watchdog. Runs on the main actor (mic tap → main dispatch).
+    private func forwardContinuousMicChunk(_ pcm16Chunk: Data) {
+        guard isContinuousListeningActive else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+
+        // Half-duplex echo gate: while the speakers are emitting the model's reply
+        // (and for a short acoustic tail after), don't forward mic audio — otherwise
+        // the open mic feeds the model's own voice back into server VAD, which treats
+        // the echo as a new turn, interrupts the reply, and stutters playback. Keyed
+        // on real playback (self-clearing), never on UI state, so a stalled turn can
+        // never leave the mic muted.
+        if realtimeClient.isPlayingResponseAudio {
+            micResumeAfterUptime = now + Self.continuousMicResumeCooldown
+            continuousStuckSince = 0
+            return
+        }
+        if now < micResumeAfterUptime { return }
+
+        // Stuck-turn watchdog: nothing is playing. If we've been parked in a
+        // non-listening state for too long — a tool call or response that never
+        // completed, or a dropped connection — snap back to listening so the notch
+        // recovers and the next utterance can proceed.
+        if voiceState != .listening {
+            if continuousStuckSince == 0 {
+                continuousStuckSince = now
+            } else if now - continuousStuckSince > Self.continuousStuckTimeout {
+                recoverContinuousListening()
+            }
+        } else {
+            continuousStuckSince = 0
+        }
+
+        realtimeClient.sendAudio(pcm16Chunk)
+    }
+
+    /// Clears a stalled continuous-mode turn back to a clean listening state so the
+    /// notch un-sticks and the session is ready for the next utterance.
+    private func recoverContinuousListening() {
+        print("⚠️ Companion: continuous-mode turn stalled, recovering to listening")
+        continuousStuckSince = 0
+        activeToolCount = 0
+        toolCallActive = false
+        narrationText = nil
+        turnUsedTool = false
+        voiceState = .listening
+        operationState = .listening
     }
 
     private func recordInteraction(userPhrase: String, modelText: String) {

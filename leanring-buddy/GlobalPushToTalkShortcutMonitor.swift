@@ -69,6 +69,28 @@ struct HotkeyConfiguration: Equatable {
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
 
+    /// Fires when the user taps Control three times in quick succession (a
+    /// modifier-only gesture, separate from the push-to-talk hotkey). Drives the
+    /// continuous-listening mode toggle in `CompanionManager`.
+    let controlTriplePressPublisher = PassthroughSubject<Void, Never>()
+
+    /// How many pure-Control taps toggle continuous mode, and the window each
+    /// consecutive tap must land within. A "tap" is a down→up cycle of Control with
+    /// no other modifier held.
+    private static let controlTapsToToggle = 3
+    private static let controlTapMaxGap: TimeInterval = 0.4
+
+    /// Whether Control was down as of the previous `.flagsChanged`, so we can detect
+    /// the down/up edges of the Control key itself.
+    private var wasControlDown = false
+    /// Whether the in-progress Control press has stayed "pure" — Control held with no
+    /// other modifier at any point. Cleared the moment another modifier joins, so
+    /// engaging ctrl+option (Control then Option) is never mistaken for a Control tap.
+    private var currentControlPressIsPure = false
+    /// Timestamps of recent completed pure-Control taps. Trimmed to the most recent
+    /// `controlTapsToToggle` and reset when a gap exceeds `controlTapMaxGap`.
+    private var recentControlTapTimes: [TimeInterval] = []
+
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
     /// Mutated exclusively from the CGEvent tap callback, which runs on
@@ -150,6 +172,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     func stop() {
         isShortcutCurrentlyPressed = false
+        wasControlDown = false
+        currentControlPressIsPure = false
+        recentControlTapTimes.removeAll()
 
         if let globalEventTapRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
@@ -193,6 +218,59 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             shortcutTransitionPublisher.send(.released)
         }
 
+        detectControlTriplePress(eventType: eventType, modifierFlagsRawValue: event.flags.rawValue)
+
         return Unmanaged.passUnretained(event)
+    }
+
+    /// Detects three quick Control-only taps and emits `controlTriplePressPublisher`.
+    /// A "tap" is a down→up cycle of the Control key during which no other modifier
+    /// was ever held, so the gesture never collides with the ctrl+option push-to-talk
+    /// hotkey: pressing Control then adding Option taints the press (Option is
+    /// another modifier) and it isn't counted. Skipped entirely when the user has
+    /// configured push-to-talk to Control-only, so the two can't fight over the key.
+    private func detectControlTriplePress(eventType: CGEventType, modifierFlagsRawValue: UInt64) {
+        guard eventType == .flagsChanged else { return }
+        guard currentHotkey.modifierFlags != [.control] else { return }
+
+        let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
+            .intersection(.deviceIndependentFlagsMask)
+        let controlDown = flags.contains(.control)
+        let otherModifierHeld = !flags.subtracting(.control).isEmpty
+
+        defer { wasControlDown = controlDown }
+
+        if controlDown && !wasControlDown {
+            // Control pressed: pure only if nothing else is held at that instant.
+            currentControlPressIsPure = !otherModifierHeld
+        } else if controlDown {
+            // Another modifier changed while Control stays down — taint the press.
+            if otherModifierHeld { currentControlPressIsPure = false }
+        } else if wasControlDown {
+            // Control released → completes a tap. Count it only if it stayed pure.
+            guard currentControlPressIsPure else {
+                currentControlPressIsPure = false
+                return
+            }
+            currentControlPressIsPure = false
+            registerControlTap()
+        }
+    }
+
+    /// Records one completed pure-Control tap and toggles when three land within the
+    /// window. Consecutive taps must each land within `controlTapMaxGap` of the prior.
+    private func registerControlTap() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last = recentControlTapTimes.last, now - last > Self.controlTapMaxGap {
+            recentControlTapTimes.removeAll()
+        }
+        recentControlTapTimes.append(now)
+        if recentControlTapTimes.count > Self.controlTapsToToggle {
+            recentControlTapTimes.removeFirst(recentControlTapTimes.count - Self.controlTapsToToggle)
+        }
+        if recentControlTapTimes.count == Self.controlTapsToToggle {
+            recentControlTapTimes.removeAll()
+            controlTriplePressPublisher.send(())
+        }
     }
 }

@@ -126,7 +126,7 @@ struct NotchContainerView: View {
     @ViewBuilder
     private var headerOrStatus: some View {
         if isOpen {
-            MackyPanelHeader(selectedPage: $panelPage, onClose: close)
+            MackyPanelHeader(selectedPage: $panelPage, onClose: { close(userInitiated: true) })
                 .frame(height: max(32, notch.effectiveClosedNotchHeight))
         } else if companionManager.isAssistantActive {
             AurenStatusBar(companionManager: companionManager)
@@ -164,15 +164,23 @@ struct NotchContainerView: View {
         notch.open()
     }
 
-    private func close() {
+    /// Collapses the expanded panel back to the closed notch bar. `userInitiated` is
+    /// the explicit close button (top-right arrow): it always collapses. Automatic
+    /// callers (the hover collapse timer) leave it false so the panel stays open
+    /// mid-turn — but note continuous-listening mode keeps `isAssistantActive` true
+    /// for the whole session, so without the explicit bypass the close button would
+    /// never work while that mode is on. Collapsing doesn't go fully invisible while
+    /// the assistant is active: the closed bar still shows the live status.
+    private func close(userInitiated: Bool = false) {
         collapseTask?.cancel()
         guard !setupRequiresPanel else {
             open()
             return
         }
-        // Never collapse mid-turn: keep the live status bar (Listening → Thinking →
-        // Speaking) visible for the whole interaction instead of flickering closed.
-        guard !companionManager.isAssistantActive else { return }
+        // Never auto-collapse mid-turn: keep the live status bar (Listening →
+        // Thinking → Speaking) visible for the whole interaction instead of
+        // flickering closed. The explicit close button overrides this.
+        guard userInitiated || !companionManager.isAssistantActive else { return }
         guard isOpen else { return }
         notch.close()
         panelPage = .home

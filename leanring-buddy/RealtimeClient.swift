@@ -34,6 +34,11 @@ final class RealtimeClient: ObservableObject {
     var onResponseAudioStarted: (() -> Void)?
     /// Fired when the model finishes producing audio for a response.
     var onResponseCompleted: (() -> Void)?
+    /// Fired when server VAD detects the user has started / stopped speaking. Only
+    /// emitted while continuous turn detection is enabled (push-to-talk omits it);
+    /// the owner uses them to drive listening/thinking UI in continuous mode.
+    var onSpeechStarted: (() -> Void)?
+    var onSpeechStopped: (() -> Void)?
     /// Fired (with the tool name) when a function-call handler starts executing,
     /// and again when it resolves, so the owner can pulse UI for tool activity and
     /// show a narration label. CompanionManager owns `toolCallActive`/`narrationText`.
@@ -120,6 +125,23 @@ final class RealtimeClient: ObservableObject {
     private var isResponseCancelled = false
     /// Count of audio chunks appended since the last commit (diagnostics).
     private var appendedAudioChunkCount = 0
+
+    /// When true, the session enables server-side VAD (`turn_detection`) so the
+    /// model auto-detects turn boundaries and responds without a manual commit —
+    /// this powers continuous-listening mode. Push-to-talk leaves it false and
+    /// drives commit + response.create by hand. Toggled via
+    /// `setContinuousTurnDetection(_:)`.
+    private var continuousTurnDetectionEnabled = false
+
+    /// True while the model's response audio is actively streaming in or still
+    /// draining from the player node — i.e. while the speakers are emitting. Used by
+    /// continuous mode to gate the mic (half-duplex) so the open mic can't feed
+    /// playback back into server VAD. Crucially this is self-clearing: playback
+    /// buffers always drain, so it can never leave the mic stuck muted the way a
+    /// UI-state flag could if a turn never completes.
+    var isPlayingResponseAudio: Bool {
+        isReceivingResponseAudio || scheduledPlaybackBufferCount > 0
+    }
 
     /// Deployed Cloudflare Worker /realtime endpoint (Milestone 1 proxy → Azure
     /// GPT-Realtime-2). All traffic routes through here so no key ships in the binary.
@@ -643,6 +665,14 @@ final class RealtimeClient: ObservableObject {
             }
         case "response.audio.done", "response.output_audio.done":
             handleResponseAudioDone()
+        // Server VAD turn boundaries (continuous-listening mode only). On speech
+        // start, flush local playback so the model stops talking the instant the
+        // user barges in; the server auto-commits and auto-creates the response.
+        case "input_audio_buffer.speech_started":
+            interruptPlayback()
+            onSpeechStarted?()
+        case "input_audio_buffer.speech_stopped":
+            onSpeechStopped?()
         // Transcript of the user's speech for this turn (input transcription).
         case "conversation.item.input_audio_transcription.completed":
             if let transcript = json["transcript"] as? String {
@@ -847,10 +877,29 @@ final class RealtimeClient: ObservableObject {
         }
 
         // GA gpt-realtime session schema: `type` is required, audio formats and
-        // turn detection are nested under `audio.input` / `audio.output`. Server
-        // VAD is disabled by OMITTING turn_detection — push-to-talk drives commit
-        // + response.create manually. Audio is PCM16 24kHz mono in both directions.
+        // turn detection are nested under `audio.input` / `audio.output`. In
+        // push-to-talk mode `turn_detection` is OMITTED so commit + response.create
+        // are driven manually. Continuous-listening mode sets it to server VAD so
+        // the model auto-detects turns and replies hands-free. Audio is PCM16 24kHz
+        // mono in both directions.
         let pcmFormat: [String: Any] = ["type": "audio/pcm", "rate": 24_000]
+        // Enable input transcription so we receive a text transcript of the user's
+        // speech (drives the drop panel's history). This adds a transcript channel
+        // only — capture/streaming are unchanged.
+        var inputAudio: [String: Any] = [
+            "format": pcmFormat,
+            "transcription": ["model": "whisper-1"]
+        ]
+        if continuousTurnDetectionEnabled {
+            inputAudio["turn_detection"] = [
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": 500,
+                "create_response": true,
+                "interrupt_response": true
+            ]
+        }
         sendJSON([
             "type": "session.update",
             "session": [
@@ -860,18 +909,21 @@ final class RealtimeClient: ObservableObject {
                 "tools": tools,
                 "tool_choice": "auto",
                 "audio": [
-                    // Enable input transcription so we receive a text transcript of
-                    // the user's speech (drives the drop panel's history). This adds
-                    // a transcript channel only — capture/streaming are unchanged.
-                    "input": [
-                        "format": pcmFormat,
-                        "transcription": ["model": "whisper-1"]
-                    ],
+                    "input": inputAudio,
                     // A voice is required for the model to produce audio output.
                     "output": ["format": pcmFormat, "voice": "alloy"]
                 ]
             ]
         ])
+    }
+
+    /// Enables or disables server-side VAD (`turn_detection`) for the live session
+    /// and re-sends the full `session.update` so the change takes effect mid-session.
+    /// Continuous-listening mode turns this on; push-to-talk turns it off.
+    func setContinuousTurnDetection(_ enabled: Bool) {
+        guard continuousTurnDetectionEnabled != enabled else { return }
+        continuousTurnDetectionEnabled = enabled
+        sendSessionUpdate()
     }
 
     // MARK: - Function Calling

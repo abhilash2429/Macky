@@ -138,21 +138,9 @@ private struct BoringStyleMusicCard: View {
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(
-            ZStack {
-                Image(nsImage: music.albumArt)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 28)
-                    .opacity(music.isPlaying ? 0.24 : 0.08)
-                Color.white.opacity(0.055)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-        )
+        // Same flat surface as the Calendar/Reminders cards so the home page reads
+        // as one cohesive panel instead of a distinct, album-tinted left container.
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
         .onReceive(music.$elapsedTime) { elapsedTime in
             if !isDragging {
                 sliderValue = elapsedTime
@@ -637,7 +625,7 @@ private struct ConnectorGridCard: View {
 
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(connector.name)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     badge
