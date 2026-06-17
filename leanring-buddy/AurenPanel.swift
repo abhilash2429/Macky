@@ -90,10 +90,28 @@ struct AurenPanel: View {
 private struct AssistantActivityCard: View {
     @ObservedObject var companionManager: CompanionManager
 
+    /// Bundled logo for the connector whose MCP call is running, if any resolves.
+    private var connectorLogo: NSImage? {
+        guard let name = companionManager.activeConnectorToolCall?.logoAssetName else { return nil }
+        return NSImage(named: name)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            VoiceActivityView(companionManager: companionManager, realtimeClient: companionManager.realtimeClient)
-                .frame(width: 24, height: 18)
+            // While a registered connector's MCP call runs, its logo stands in for the
+            // waveform; otherwise the usual voice-activity waveform is shown.
+            if let connectorLogo {
+                Image(nsImage: connectorLogo)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .padding(3)
+                    .frame(width: 24, height: 18)
+                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.white))
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            } else {
+                VoiceActivityView(companionManager: companionManager, realtimeClient: companionManager.realtimeClient)
+                    .frame(width: 24, height: 18)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(companionManager.activeStatusText.isEmpty ? "Ready" : companionManager.activeStatusText)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))

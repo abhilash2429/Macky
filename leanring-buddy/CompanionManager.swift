@@ -62,6 +62,13 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var toolCallActive = false
     @Published private(set) var narrationText: String?
 
+    /// The connector whose Composio MCP tool call is currently executing, or nil when no
+    /// registered connector call is in flight. Set when an MCP call's name matches the
+    /// `ConnectorRegistry`, cleared when it completes/fails. Drives the temporary logo
+    /// swap in the notch chrome. Native tools and unregistered toolkits leave it nil.
+    /// One active call at a time (v1): a second concurrent MCP call simply overwrites it.
+    @Published private(set) var activeConnectorToolCall: ConnectorIdentity?
+
     /// True while continuous-listening mode is active: the mic stays open and the
     /// model auto-detects turns via server VAD, so push-to-talk is suspended and
     /// the notch never collapses to invisible idle. Toggled by the triple-Control
@@ -476,11 +483,18 @@ final class CompanionManager: ObservableObject {
         }
 
         realtimeClient.onMCPCallStarted = { [weak self] toolName in
-            self?.beginToolActivity(toolName: toolName)
+            guard let self else { return }
+            self.beginToolActivity(toolName: toolName)
+            // Swap the notch's branding logo to this connector for the call's duration.
+            // nil when the tool isn't a registered connector (or is the meta tool), which
+            // leaves the default logo in place.
+            self.activeConnectorToolCall = ConnectorRegistry.match(toolName: toolName)
         }
 
         realtimeClient.onMCPCallEnded = { [weak self] in
-            self?.endToolActivity()
+            guard let self else { return }
+            self.endToolActivity()
+            self.activeConnectorToolCall = nil
         }
 
         realtimeClient.onConnectionLinkAvailable = { [weak self] toolkit, url in
@@ -531,6 +545,9 @@ final class CompanionManager: ObservableObject {
         guard activeToolCount == 0 else { return }
         toolCallActive = false
         narrationText = nil
+        // Safety net: if a connector's MCP-ended event was missed, clearing here on the
+        // last tool's completion keeps the swapped logo from being stranded.
+        activeConnectorToolCall = nil
         if voiceState == .responding {
             operationState = .speaking
         } else if voiceState == .processing {
