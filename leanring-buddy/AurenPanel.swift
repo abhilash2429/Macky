@@ -47,9 +47,21 @@ struct AurenPanel: View {
                 }
 
                 HStack(alignment: .top, spacing: 14) {
-                    BoringStyleMusicCard(music: music)
-                        .frame(width: 330)
+                    // LEFT — music on top, recent activity (history) below it.
+                    VStack(alignment: .leading, spacing: 14) {
+                        BoringStyleMusicCard(music: music)
 
+                        if !companionManager.recentInteractions.isEmpty {
+                            PanelSection("Recent Activity") {
+                                ForEach(companionManager.recentInteractions.prefix(3)) { interaction in
+                                    ActivityRow(interaction: interaction)
+                                }
+                            }
+                        }
+                    }
+                    .frame(width: 330)
+
+                    // RIGHT — calendar and reminders.
                     VStack(alignment: .leading, spacing: 12) {
                         CalendarCard(sidebar: sidebar)
                         RemindersCard(sidebar: sidebar)
@@ -64,14 +76,6 @@ struct AurenPanel: View {
                                 onConnect: { companionManager.openPendingConnection(connection) },
                                 onDismiss: { companionManager.dismissPendingConnection(connection) }
                             )
-                        }
-                    }
-                }
-
-                if !companionManager.recentInteractions.isEmpty {
-                    PanelSection("Recent Activity") {
-                        ForEach(companionManager.recentInteractions) { interaction in
-                            ActivityRow(interaction: interaction)
                         }
                     }
                 }
@@ -262,23 +266,16 @@ private struct CalendarCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(selectedDate.formatted(.dateTime.month(.abbreviated)))
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                    Text(selectedDate.formatted(.dateTime.year()))
-                        .font(.system(size: 13))
-                        .foregroundStyle(.white.opacity(0.52))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-                .layoutPriority(1)
-                Spacer(minLength: 8)
-                MackyDateWheel(selectedDate: $selectedDate)
-            }
-            .foregroundStyle(.white)
+            // Month + year on one line above the day wheel so the narrow right
+            // column can't squeeze "Jun"/"2026" into a wrapped two-line stack.
+            Text("\(selectedDate.formatted(.dateTime.month(.abbreviated))) \(selectedDate.formatted(.dateTime.year()))")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            MackyDateWheel(selectedDate: $selectedDate)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             if sidebar.selectedEvents.isEmpty {
                 EmptyPanelLine(
@@ -441,7 +438,7 @@ private struct ConnectorsPanel: View {
             searchBar
 
             HStack(spacing: 10) {
-                Text("Anthropic & Partners")
+                Text("Connectors")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
@@ -461,6 +458,7 @@ private struct ConnectorsPanel: View {
                         ConnectorGridCard(
                             connector: connector,
                             pendingConnection: pendingConnection(for: connector),
+                            isConnected: companionManager.connectedToolkits.contains(connector.slug.lowercased()),
                             onConnect: { companionManager.requestConnectorConnection(slug: connector.slug) },
                             onOpenPending: { companionManager.openPendingConnection($0) }
                         )
@@ -471,6 +469,7 @@ private struct ConnectorsPanel: View {
         }
         .padding(.horizontal, 18)
         .padding(.top, 12)
+        .onAppear { companionManager.refreshConnectedToolkits() }
     }
 
     private var searchBar: some View {
@@ -627,6 +626,7 @@ private enum MackyConnectorCatalog {
 private struct ConnectorGridCard: View {
     let connector: MackyConnector
     let pendingConnection: PendingConnection?
+    let isConnected: Bool
     let onConnect: () -> Void
     let onOpenPending: (PendingConnection) -> Void
 
@@ -681,22 +681,32 @@ private struct ConnectorGridCard: View {
         }
     }
 
+    @ViewBuilder
     private var actionButton: some View {
-        Button {
-            if let pendingConnection {
-                onOpenPending(pendingConnection)
-            } else {
-                onConnect()
-            }
-        } label: {
-            Image(systemName: pendingConnection != nil ? "arrow.triangle.2.circlepath" : "plus")
-                .font(.system(size: 18, weight: .regular))
-                .foregroundStyle(pendingConnection != nil ? DS.Colors.accentText : .white.opacity(0.65))
+        if isConnected {
+            // Live, end-to-end connection: show a tick, no action needed.
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(DS.Colors.success)
                 .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
+                .help("\(connector.name) is connected")
+        } else {
+            Button {
+                if let pendingConnection {
+                    onOpenPending(pendingConnection)
+                } else {
+                    onConnect()
+                }
+            } label: {
+                Image(systemName: pendingConnection != nil ? "arrow.triangle.2.circlepath" : "plus")
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(pendingConnection != nil ? DS.Colors.accentText : .white.opacity(0.65))
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(pendingConnection != nil ? "Open authorization link" : "Connect \(connector.name)")
         }
-        .buttonStyle(.plain)
-        .help(pendingConnection != nil ? "Open authorization link" : "Connect \(connector.name)")
     }
 }
 
@@ -705,19 +715,47 @@ private struct ConnectorIcon: View {
     let size: CGFloat
     let iconSize: CGFloat
 
+    /// Bundled official brand logo for this toolkit, if one ships in the catalog.
+    private var logoImage: NSImage? {
+        NSImage(named: "ConnectorLogo-\(connector.slug)")
+    }
+
     var body: some View {
-        Image(systemName: connector.icon)
-            .font(.system(size: iconSize, weight: .semibold))
-            .foregroundStyle(connector.accent)
-            .frame(width: size, height: size)
-            .background(
-                RoundedRectangle(cornerRadius: min(14, size * 0.28), style: .continuous)
-                    .fill(connector.accent.opacity(0.14))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: min(14, size * 0.28), style: .continuous)
-                    .strokeBorder(connector.accent.opacity(0.22), lineWidth: 1)
-            )
+        let corner = min(14, size * 0.28)
+        Group {
+            if let logoImage {
+                // Official logo on a white tile so dark logos (Notion, GitHub) and
+                // multicolor logos alike stay crisp and legible on the dark panel.
+                Image(nsImage: logoImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .padding(size * 0.18)
+                    .frame(width: size, height: size)
+                    .background(
+                        RoundedRectangle(cornerRadius: corner, style: .continuous)
+                            .fill(Color.white)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: corner, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                    )
+            } else {
+                // Fallback: accent-tinted SF Symbol (e.g. a toolkit with no bundled logo).
+                Image(systemName: connector.icon)
+                    .font(.system(size: iconSize, weight: .semibold))
+                    .foregroundStyle(connector.accent)
+                    .frame(width: size, height: size)
+                    .background(
+                        RoundedRectangle(cornerRadius: corner, style: .continuous)
+                            .fill(connector.accent.opacity(0.14))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: corner, style: .continuous)
+                            .strokeBorder(connector.accent.opacity(0.22), lineWidth: 1)
+                    )
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     }
 }
 

@@ -22,8 +22,9 @@ import SwiftUI
 
 /// Fixed geometry constants, mirroring BoringNotch's `sizing/matters.swift`.
 enum NotchConstants {
-    /// The expanded panel's content size (matches BoringNotch's openNotchSize).
-    static let openNotchSize = CGSize(width: 680, height: 420)
+    /// The expanded panel's content size. Width is unchanged; the height is reduced
+    /// to ~67% of the original 420 so the panel is shorter without getting narrower.
+    static let openNotchSize = CGSize(width: 680, height: 280)
     /// Transparent breathing room around the panel so the drop shadow isn't clipped.
     static let shadowPadding: CGFloat = 20
     /// Total host-window size when open (content + shadow padding).
@@ -127,14 +128,15 @@ final class NotchUIModel: ObservableObject {
         (text as NSString).size(withAttributes: [.font: statusFont]).width
     }
 
-    /// The idle closed-bar geometry: the persistent Macky logo on the left flank
-    /// plus the centered cutout bridge (no status text, no waveform). Used when the
-    /// assistant is at rest so the logo is always visible in the notch.
+    /// The idle closed-bar geometry: just the centered cutout bridge (no logo, no
+    /// status text, no waveform). Used when the assistant is at rest so the notch
+    /// footprint is exactly the hardware cutout and clicks pass through everywhere
+    /// else.
     var idleBarMetrics: ActiveBarMetrics {
         let bridge = max(0, closedNotchSize.width)
         return ActiveBarMetrics(
-            totalWidth: NotchConstants.logoFlankWidth + bridge,
-            leftFlankWidth: NotchConstants.logoFlankWidth,
+            totalWidth: bridge,
+            leftFlankWidth: 0,
             textWidth: 0,
             bridgeWidth: bridge,
             rightFlankWidth: 0

@@ -69,6 +69,9 @@ final class CompanionManager: ObservableObject {
     @Published var pendingDroppedFiles: [URL] = []
     @Published private(set) var pendingAttachmentNames: [String] = []
     @Published private(set) var pendingConnections: [PendingConnection] = []
+    /// Lowercased toolkit slugs the user has a live (ACTIVE) connection to. Drives
+    /// the "connected" tick in the connectors grid. Refreshed from the worker.
+    @Published private(set) var connectedToolkits: Set<String> = []
 
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
@@ -79,6 +82,10 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasCalendarPermission = false
     @Published private(set) var hasRemindersPermission = false
     @Published private(set) var isRequestingScreenContent = false
+    /// Bumped right before each native (TCC) permission prompt is triggered. The
+    /// panel controller observes it and temporarily drops the notch window level so
+    /// the system permission dialog isn't hidden behind the panel.
+    @Published private(set) var systemPromptToken = 0
     @Published var hasCompletedPanelOnboarding: Bool = UserDefaults.standard.bool(forKey: CompanionManager.panelOnboardingDefaultsKey)
 
     let buddyDictationManager = BuddyDictationManager()
@@ -194,16 +201,76 @@ final class CompanionManager: ObservableObject {
         pendingConnections.removeAll { $0.id == connection.id }
     }
 
+    /// The Cloudflare Worker endpoint that returns a Composio connect link directly,
+    /// bypassing the realtime voice model so a connector tap doesn't trigger filler.
+    private static let composioConnectURL = URL(string: "https://realtime-proxy.speedmac.workers.dev/composio-connect")!
+    /// Worker endpoint listing the user's live (ACTIVE) connections.
+    private static let composioConnectionsURL = URL(string: "https://realtime-proxy.speedmac.workers.dev/composio-connections")!
+
+    /// Refreshes the set of live connections from the worker so the connectors grid
+    /// can show a "connected" tick. Also clears any stale pending link for a toolkit
+    /// that is now actually connected.
+    func refreshConnectedToolkits() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let (data, response) = try await URLSession.shared.data(from: Self.composioConnectionsURL)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                      let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let slugs = json["connected"] as? [String] else { return }
+                let connected = Set(slugs.map { $0.lowercased() })
+                self.connectedToolkits = connected
+                self.pendingConnections.removeAll { connected.contains($0.toolkit.lowercased()) }
+            } catch {
+                print("⚠️ Companion: refreshConnectedToolkits failed: \(error)")
+            }
+        }
+    }
+
     func requestConnectorConnection(slug: String) {
         let normalizedSlug = slug.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalizedSlug.isEmpty else { return }
-        voiceState = .processing
         operationState = .executing("connecting \(normalizedSlug)")
-        realtimeClient.sendUserContext(
-            texts: ["Connect my \(normalizedSlug) account with Composio. If authorization is needed, use COMPOSIO_MANAGE_CONNECTIONS and return the connect link."],
-            images: []
-        )
-        realtimeClient.requestResponse()
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let url = try await Self.fetchConnectLink(slug: normalizedSlug)
+                let connection = PendingConnection(toolkit: normalizedSlug, redirectURL: url)
+                self.pendingConnections.removeAll { $0.toolkit.caseInsensitiveCompare(normalizedSlug) == .orderedSame }
+                self.pendingConnections.append(connection)
+                self.openPendingConnection(connection)
+                if self.operationState == .executing("connecting \(normalizedSlug)") {
+                    self.operationState = .idle
+                }
+            } catch {
+                print("⚠️ Companion: connector connect failed for \(normalizedSlug): \(error)")
+                if self.operationState == .executing("connecting \(normalizedSlug)") {
+                    self.operationState = .idle
+                }
+            }
+        }
+    }
+
+    /// Calls the worker's `/composio-connect` endpoint and returns the redirect URL.
+    private static func fetchConnectLink(slug: String) async throws -> URL {
+        var request = URLRequest(url: composioConnectURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["toolkit": slug])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        guard
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let urlString = json["redirect_url"] as? String,
+            let url = URL(string: urlString)
+        else {
+            throw URLError(.cannotParseResponse)
+        }
+        return url
     }
 
     func submitPanelContext(texts: [String], images: [Data]) {
@@ -245,7 +312,14 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Signals the panel controller to drop the notch window level so the incoming
+    /// native permission dialog renders above the panel instead of behind it.
+    private func signalSystemPrompt() {
+        systemPromptToken &+= 1
+    }
+
     func requestMicrophonePermission() {
+        signalSystemPrompt()
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             hasMicrophonePermission = true
@@ -262,16 +336,19 @@ final class CompanionManager: ObservableObject {
     }
 
     func requestScreenRecordingPermission() {
+        signalSystemPrompt()
         _ = WindowPositionManager.requestScreenRecordingPermission()
         refreshAllPermissions()
     }
 
     func requestAccessibilityPermission() {
+        signalSystemPrompt()
         _ = WindowPositionManager.requestAccessibilityPermission()
         refreshAllPermissions()
     }
 
     func requestCalendarPermission() {
+        signalSystemPrompt()
         Task {
             let store = EKEventStore()
             _ = try? await store.requestFullAccessToEvents()
@@ -280,6 +357,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func requestRemindersPermission() {
+        signalSystemPrompt()
         Task {
             let store = EKEventStore()
             _ = try? await store.requestFullAccessToReminders()
@@ -289,6 +367,7 @@ final class CompanionManager: ObservableObject {
 
     func requestScreenContentPermission() {
         guard !isRequestingScreenContent else { return }
+        signalSystemPrompt()
         isRequestingScreenContent = true
         Task {
             do {
@@ -325,6 +404,11 @@ final class CompanionManager: ObservableObject {
 
         realtimeClient.onResponseCompleted = { [weak self] in
             guard let self else { return }
+            // Barge-in guard: pressing push-to-talk mid-response cancels the old
+            // response, whose late `response.done` arrives after we've already moved
+            // to `.listening` for the new turn. Ignore it so the notch stays live
+            // on "Listening" instead of flickering back to idle.
+            if self.voiceState == .listening { return }
             if self.toolCallActive {
                 self.operationState = .executing(self.narrationText)
                 return
@@ -433,6 +517,9 @@ final class CompanionManager: ObservableObject {
                 guard let self else { return }
                 self.refreshAllPermissions()
                 self.startPermissionPolling()
+                // The user may have just finished an OAuth flow in the browser;
+                // re-check live connections so the connector tick updates.
+                self.refreshConnectedToolkits()
             }
         }
     }

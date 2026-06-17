@@ -60,9 +60,17 @@ final class NotchPanelController {
     /// corner flare isn't clipped.
     static let closedBottomHeadroom: CGFloat = 8
 
+    /// The notch panel's normal level: above the menu bar so it overlays the
+    /// hardware cutout.
+    private static let pinnedLevel = NSWindow.Level(rawValue: Int(NSWindow.Level.mainMenu.rawValue) + 3)
+
     private let companionManager: CompanionManager
     private let notchModel: NotchUIModel
     private var cancellables = Set<AnyCancellable>()
+    /// Restores the pinned window level after a system permission dialog; cancelled
+    /// and rescheduled if another prompt fires while one is already pending.
+    private var levelRestoreTask: Task<Void, Never>?
+    private var didBecomeActiveObserver: NSObjectProtocol?
 
     private var panel: NotchHostPanel?
     /// The screen the frames are computed against (cached so the dynamic active
@@ -183,6 +191,56 @@ final class NotchPanelController {
             self?.applyClosedActivity()
         }
         .store(in: &cancellables)
+
+        // When a native permission dialog is about to appear, drop the panel below
+        // it so the dialog isn't hidden behind the notch. `dropDuplicates`/skipping
+        // the initial 0 avoids reacting to the published default value on launch.
+        companionManager.$systemPromptToken
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.lowerLevelForSystemPrompt()
+            }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - System permission dialog handling
+
+    /// Temporarily lowers the panel to normal window level so a system (TCC)
+    /// permission dialog renders above it, then restores the pinned level after the
+    /// dialog is dealt with (on app reactivation, or an 8s fallback).
+    private func lowerLevelForSystemPrompt() {
+        guard let panel else { return }
+        panel.level = .normal
+
+        // Restore when the user returns to the app after answering the dialog.
+        if didBecomeActiveObserver == nil {
+            didBecomeActiveObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.restorePinnedLevel() }
+            }
+        }
+
+        // Fallback in case the activation notification never arrives.
+        levelRestoreTask?.cancel()
+        levelRestoreTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            self?.restorePinnedLevel()
+        }
+    }
+
+    private func restorePinnedLevel() {
+        levelRestoreTask?.cancel()
+        levelRestoreTask = nil
+        if let observer = didBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(observer)
+            didBecomeActiveObserver = nil
+        }
+        panel?.level = Self.pinnedLevel
     }
 
     private func handleNotchState(_ state: NotchUIModel.NotchState) {

@@ -92,6 +92,12 @@ struct NotchContainerView: View {
         .onChange(of: companionManager.hasCompletedPanelOnboarding) { _, _ in
             ensureSetupPanelIsVisible()
         }
+        .onChange(of: companionManager.isAssistantActive) { _, active in
+            // When a turn finishes, resume the normal collapse timer (unless the
+            // user is still hovering). The active-state guards in close()/
+            // scheduleCollapse() keep the notch live until this fires.
+            if !active { scheduleCollapse() }
+        }
     }
 
     @ViewBuilder
@@ -102,6 +108,8 @@ struct NotchContainerView: View {
 
             if isOpen {
                 openContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(DS.Gradients.panelSubtle)
                     .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity))
                     .zIndex(1)
             }
@@ -162,6 +170,9 @@ struct NotchContainerView: View {
             open()
             return
         }
+        // Never collapse mid-turn: keep the live status bar (Listening → Thinking →
+        // Speaking) visible for the whole interaction instead of flickering closed.
+        guard !companionManager.isAssistantActive else { return }
         guard isOpen else { return }
         notch.close()
         panelPage = .home
@@ -185,6 +196,9 @@ struct NotchContainerView: View {
             guard !Task.isCancelled, !isHovering else { return }
             guard !isDropTargeted else { return }
             guard !setupRequiresPanel else { return }
+            // Stay open while the assistant is listening/thinking/speaking so the
+            // notch is live for the whole push-to-talk turn.
+            guard !companionManager.isAssistantActive else { return }
             // Keep the panel up while the user is in the middle of attaching files.
             if panelPage == .files && !fileDropURLs.isEmpty { return }
             close()
@@ -491,9 +505,7 @@ private struct MackyOnboardingWelcomeView: View {
             MackyOnboardingGlow()
 
             VStack(spacing: 12) {
-                Image(systemName: "capsule.portrait.fill")
-                    .font(.system(size: 58, weight: .semibold))
-                    .foregroundStyle(.white)
+                MackyLogoView(size: 64, color: .white)
                     .shadow(color: DS.Colors.accentText.opacity(0.42), radius: 24)
 
                 VStack(spacing: 3) {

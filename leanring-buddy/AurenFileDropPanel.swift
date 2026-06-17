@@ -33,6 +33,10 @@ struct AurenFileDropPanel: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 12)
+                .fill(DS.Gradients.panelSubtle)
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 12)
                 .fill(Color.white.opacity(isTargeted ? 0.08 : 0.04))
                 .animation(.smooth(duration: 0.15), value: isTargeted)
         )

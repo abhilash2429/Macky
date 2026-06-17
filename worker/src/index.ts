@@ -30,6 +30,14 @@ export default {
       return handleComposioConfig(env);
     }
 
+    if (url.pathname === "/composio-connect") {
+      return handleComposioConnect(request, url, env);
+    }
+
+    if (url.pathname === "/composio-connections") {
+      return handleComposioConnections(env);
+    }
+
     if (url.pathname === "/auth/magic-link" && request.method === "POST") {
       return handleMagicLink(request, env);
     }
@@ -104,6 +112,137 @@ async function handleComposioConfig(env: Env): Promise<Response> {
   } catch (err) {
     console.error("Composio config error", err);
     return new Response("Composio config error", { status: 500 });
+  }
+}
+
+/// Initiates a Composio connection for a toolkit and returns the OAuth redirect
+/// URL directly, so the app can open it without routing through the realtime voice
+/// model (which would narrate filler). Two steps, both Composio-managed:
+///   1. Look up an auth config for the toolkit slug.
+///   2. Create a hosted connection `link` for COMPOSIO_USER_ID → redirect URL.
+///
+/// Body/query: `toolkit` (slug, e.g. "spotify"). Returns `{ toolkit, redirect_url }`.
+async function handleComposioConnect(
+  request: Request,
+  url: URL,
+  env: Env
+): Promise<Response> {
+  try {
+    // Accept the toolkit slug from a POST JSON body or a ?toolkit= query param.
+    let toolkit = url.searchParams.get("toolkit") ?? "";
+    if (!toolkit && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as {
+        toolkit?: string;
+      };
+      toolkit = body.toolkit ?? "";
+    }
+    toolkit = toolkit.trim().toLowerCase();
+    if (!toolkit) {
+      return jsonResponse({ error: "missing toolkit" }, 400);
+    }
+
+    const headers = {
+      "x-api-key": env.COMPOSIO_API_KEY,
+      "Content-Type": "application/json",
+    };
+
+    // 1. Find an auth config for this toolkit (created in the Composio dashboard).
+    const authConfigResponse = await fetch(
+      `https://backend.composio.dev/api/v3/auth_configs?toolkit_slug=${encodeURIComponent(
+        toolkit
+      )}`,
+      { method: "GET", headers }
+    );
+    if (!authConfigResponse.ok) {
+      const body = await authConfigResponse.text().catch(() => "");
+      console.error("Composio auth_configs lookup failed", authConfigResponse.status, body);
+      return jsonResponse({ error: "auth config lookup failed" }, 502);
+    }
+    const authConfigData = (await authConfigResponse.json()) as {
+      items?: Array<{ id?: string }>;
+      data?: Array<{ id?: string }>;
+    };
+    const authConfigId =
+      authConfigData.items?.[0]?.id ?? authConfigData.data?.[0]?.id;
+    if (!authConfigId) {
+      console.error("No auth config for toolkit", toolkit, authConfigData);
+      return jsonResponse({ error: "no auth config for toolkit" }, 404);
+    }
+
+    // 2. Create a hosted connection link → OAuth redirect URL for the user.
+    const linkResponse = await fetch(
+      "https://backend.composio.dev/api/v3/connected_accounts/link",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          user_id: COMPOSIO_USER_ID,
+          auth_config_id: authConfigId,
+        }),
+      }
+    );
+    if (!linkResponse.ok) {
+      const body = await linkResponse.text().catch(() => "");
+      console.error("Composio connect link failed", linkResponse.status, body);
+      return jsonResponse({ error: "connect link failed" }, 502);
+    }
+    const linkData = (await linkResponse.json()) as Record<string, unknown>;
+    const redirectURL =
+      (linkData["redirect_url"] as string | undefined) ??
+      (linkData["redirectUrl"] as string | undefined) ??
+      (linkData["redirect_uri"] as string | undefined) ??
+      ((linkData["connectionData"] as Record<string, unknown> | undefined)?.[
+        "redirect_url"
+      ] as string | undefined);
+    if (!redirectURL) {
+      console.error("Composio link response missing redirect url", linkData);
+      return jsonResponse({ error: "missing redirect url" }, 502);
+    }
+
+    return jsonResponse({ toolkit, redirect_url: redirectURL });
+  } catch (err) {
+    console.error("Composio connect error", err);
+    return jsonResponse({ error: "composio connect error" }, 500);
+  }
+}
+
+/// Lists the toolkits the user currently has an ACTIVE connection to, so the app
+/// can show a "connected" (live) tick on those connectors instead of a connect
+/// prompt. Returns `{ connected: ["gmail", ...] }` (lowercased toolkit slugs).
+async function handleComposioConnections(env: Env): Promise<Response> {
+  try {
+    const response = await fetch(
+      `https://backend.composio.dev/api/v3/connected_accounts?user_ids=${encodeURIComponent(
+        COMPOSIO_USER_ID
+      )}&statuses=ACTIVE&limit=100`,
+      {
+        method: "GET",
+        headers: {
+          "x-api-key": env.COMPOSIO_API_KEY,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      console.error("Composio connected_accounts list failed", response.status, body);
+      return jsonResponse({ error: "connected accounts list failed" }, 502);
+    }
+    const data = (await response.json()) as {
+      items?: Array<{ status?: string; toolkit?: { slug?: string } }>;
+    };
+    const connected = Array.from(
+      new Set(
+        (data.items ?? [])
+          .filter((item) => (item.status ?? "").toUpperCase() === "ACTIVE")
+          .map((item) => item.toolkit?.slug?.toLowerCase())
+          .filter((slug): slug is string => !!slug)
+      )
+    );
+    return jsonResponse({ connected });
+  } catch (err) {
+    console.error("Composio connections error", err);
+    return jsonResponse({ error: "composio connections error" }, 500);
   }
 }
 

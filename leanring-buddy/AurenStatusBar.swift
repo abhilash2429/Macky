@@ -94,22 +94,18 @@ struct MackyNotchLogo: View {
     }
 }
 
-/// The closed-notch content while the assistant is idle: the persistent logo on
-/// the left, then the opaque black bridge covering the hardware cutout. Sized to
-/// `idleBarMetrics` so the bridge stays centered on the physical notch.
+/// The closed-notch content while the assistant is idle: just the opaque black
+/// bridge covering the hardware cutout (no logo). Sized to `idleBarMetrics` so the
+/// bridge stays centered on the physical notch and clicks pass through elsewhere.
 struct NotchIdleBar: View {
     @EnvironmentObject var notch: NotchUIModel
 
     var body: some View {
         let m = notch.idleBarMetrics
-        HStack(spacing: 0) {
-            MackyNotchLogo()
-                .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
-
-            Rectangle()
-                .fill(Color.black)
-                .frame(width: m.bridgeWidth)
-        }
-        .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
+        // Idle is just the opaque black bridge covering the hardware cutout — no
+        // logo, so the notch blends with the physical notch when at rest.
+        Rectangle()
+            .fill(Color.black)
+            .frame(width: m.bridgeWidth, height: notch.effectiveClosedNotchHeight)
     }
 }

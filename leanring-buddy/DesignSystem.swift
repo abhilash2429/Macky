@@ -251,6 +251,24 @@ enum DS {
         /// Dragged: strongest overlay (rarely used).
         static let dragged: Double = 0.16
     }
+
+    // MARK: - Gradients
+
+    enum Gradients {
+        /// A barely-there cool depth wash (blue → violet → clear) drawn over flat
+        /// black panel surfaces so they read with a hint of dimension instead of
+        /// dull black. Reuses the vocal-cord palette so it matches the notch theme.
+        /// Kept ≤0.10 opacity — a suggestion of color, not a tinted panel.
+        static let panelSubtle = LinearGradient(
+            colors: [
+                Colors.vocalCordBlue.opacity(0.10),
+                Colors.vocalCordViolet.opacity(0.06),
+                .clear
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
 }
 
 // MARK: - Button Styles
