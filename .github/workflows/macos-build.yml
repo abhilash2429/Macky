@@ -27,7 +27,7 @@ jobs:
             -resolvePackageDependencies \
             -project leanring-buddy.xcodeproj
 
-      - name: Build Speed app
+      - name: Build Macky app
         run: |
           xcodebuild \
             -project leanring-buddy.xcodeproj \
@@ -45,6 +45,6 @@ jobs:
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: Speed-Debug-app
-          path: DerivedData/Build/Products/Debug/Speed.app
+          name: Macky-Debug-app
+          path: DerivedData/Build/Products/Debug/Macky.app
           if-no-files-found: warn

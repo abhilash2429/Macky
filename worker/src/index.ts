@@ -39,7 +39,7 @@ export default {
     }
 
     // Clickable https link from the email; bounces the browser into the app via
-    // the Speed:// custom scheme. Custom-scheme links aren't clickable in Gmail,
+    // the Macky:// custom scheme. Custom-scheme links aren't clickable in Gmail,
     // so the email always points here instead.
     if (url.pathname === "/auth/open" && request.method === "GET") {
       return handleAuthOpen(url);
@@ -116,8 +116,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /// POST /auth/magic-link — stores a one-time token (token -> email) in KV with a
 /// 15-minute TTL and emails the user a clickable link that opens the app. The link
-/// points at the https `/auth/open` endpoint (custom Speed:// schemes aren't
-/// clickable in webmail) which redirects into `Speed://auth?token=…`.
+/// points at the https `/auth/open` endpoint (custom Macky:// schemes aren't
+/// clickable in webmail) which redirects into `Macky://auth?token=…`.
 async function handleMagicLink(
   request: Request,
   env: Env
@@ -163,9 +163,9 @@ async function sendMagicLinkEmail(
   link: string,
   env: Env
 ): Promise<void> {
-  const subject = "Your Speed sign-in link";
+  const subject = "Your Macky sign-in link";
   const text = [
-    "Sign in to Speed",
+    "Sign in to Macky",
     "",
     "Click the link below to finish signing in. It expires in 15 minutes and can be used once.",
     "",
@@ -181,11 +181,11 @@ async function sendMagicLinkEmail(
       <tr>
         <td align="center">
           <table role="presentation" width="420" cellpadding="0" cellspacing="0" style="background:#151517;border-radius:16px;padding:32px;">
-            <tr><td style="color:#ffffff;font-size:20px;font-weight:700;padding-bottom:8px;">Sign in to Speed</td></tr>
+            <tr><td style="color:#ffffff;font-size:20px;font-weight:700;padding-bottom:8px;">Sign in to Macky</td></tr>
             <tr><td style="color:#a1a1aa;font-size:14px;line-height:20px;padding-bottom:24px;">Click the button below to finish signing in. This link expires in 15 minutes and can only be used once.</td></tr>
             <tr>
               <td style="padding-bottom:24px;">
-                <a href="${link}" style="display:inline-block;background:#6d5efc;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 24px;border-radius:10px;">Sign in to Speed</a>
+                <a href="${link}" style="display:inline-block;background:#6d5efc;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 24px;border-radius:10px;">Sign in to Macky</a>
               </td>
             </tr>
             <tr><td style="color:#71717a;font-size:12px;line-height:18px;">If the button doesn't work, copy and paste this link:<br><a href="${link}" style="color:#8b7dff;word-break:break-all;">${link}</a></td></tr>
@@ -203,7 +203,7 @@ async function sendMagicLinkEmail(
 
   const from = env.MAGIC_LINK_FROM.includes("<")
     ? env.MAGIC_LINK_FROM
-    : `Speed <${env.MAGIC_LINK_FROM}>`;
+    : `Macky <${env.MAGIC_LINK_FROM}>`;
 
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -221,24 +221,24 @@ async function sendMagicLinkEmail(
 }
 
 /// GET /auth/open?token=… — minimal HTML bridge that hands the browser off to the
-/// app via the Speed:// scheme. Custom schemes can't be a plain 3xx redirect target
+/// app via the Macky:// scheme. Custom schemes can't be a plain 3xx redirect target
 /// in every browser, so we trigger it from the page and also offer a manual button.
 function handleAuthOpen(url: URL): Response {
   const token = url.searchParams.get("token") ?? "";
   // Only allow the UUID token shape through into the deep link to avoid reflecting
-  // arbitrary content into the Speed:// URL.
+  // arbitrary content into the Macky:// URL.
   const safeToken = /^[A-Za-z0-9-]+$/.test(token) ? token : "";
   if (!safeToken) {
     return new Response("Invalid or missing token", { status: 400 });
   }
 
-  const deepLink = `Speed://auth?token=${safeToken}`;
+  const deepLink = `Macky://auth?token=${safeToken}`;
   const html = `<!DOCTYPE html>
 <html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Opening Speed…</title>
+    <title>Opening Macky…</title>
     <meta http-equiv="refresh" content="0;url=${deepLink}">
     <style>
       body{margin:0;background:#0b0b0c;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;}
@@ -249,9 +249,9 @@ function handleAuthOpen(url: URL): Response {
   </head>
   <body>
     <div class="card">
-      <h2>Opening Speed…</h2>
+      <h2>Opening Macky…</h2>
       <p>If the app didn't open automatically, click below.</p>
-      <a class="btn" href="${deepLink}">Open Speed</a>
+      <a class="btn" href="${deepLink}">Open Macky</a>
     </div>
     <script>window.location.href = ${JSON.stringify(deepLink)};</script>
   </body>

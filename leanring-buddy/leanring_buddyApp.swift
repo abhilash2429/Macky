@@ -2,7 +2,7 @@
 //  leanring_buddyApp.swift
 //  leanring-buddy
 //
-//  Speed's app entry point. Launches the persistent realtime pipeline and hosts
+//  Macky's app entry point. Launches the persistent realtime pipeline and hosts
 //  the product UI exclusively in the notch panel.
 //
 
@@ -11,7 +11,7 @@ import SwiftUI
 
 @main
 struct leanring_buddyApp: App {
-    @NSApplicationDelegateAdaptor(SpeedAppDelegate.self) private var appDelegate
+    @NSApplicationDelegateAdaptor(MackyAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         Settings {
@@ -21,7 +21,7 @@ struct leanring_buddyApp: App {
 }
 
 @MainActor
-final class SpeedAppDelegate: NSObject, NSApplicationDelegate {
+final class MackyAppDelegate: NSObject, NSApplicationDelegate {
     private var companionManager: CompanionManager?
     private var notchPanelController: NotchPanelController?
 

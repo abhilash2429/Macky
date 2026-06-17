@@ -5,7 +5,7 @@
 //  Magic-link authentication. On launch the app checks `hasSession` (a Keychain
 //  lookup); if there's no session it shows AuthView. The user submits their email
 //  (requestMagicLink); the Worker emails them a clickable link that bounces through
-//  `/auth/open` into the `Speed://auth?token=…` deep link. Opening it routes back
+//  `/auth/open` into the `Macky://auth?token=…` deep link. Opening it routes back
 //  through `handleIncomingURL` → `verify`, which stores the session in the Keychain
 //  and flips `phase` to `.authenticated`.
 //
@@ -33,7 +33,7 @@ final class AuthManager: ObservableObject {
 
     /// Same host the realtime client uses (see RealtimeClient.workerRealtimeURL).
     private let workerBaseURL = "https://realtime-proxy.speedmac.workers.dev"
-    private static let keychainService = "speed.session"
+    private static let keychainService = "macky.session"
 
     private init() {
         phase = AuthManager.loadSession() != nil ? .authenticated : .idle
@@ -74,7 +74,7 @@ final class AuthManager: ObservableObject {
         phase = .idle
     }
 
-    // MARK: - Incoming URL (Speed://auth?token=…)
+    // MARK: - Incoming URL (Macky://auth?token=…)
 
     /// Entry point for the custom URL scheme. Extracts the token and verifies it.
     func handleIncomingURL(_ url: URL) {
@@ -83,7 +83,7 @@ final class AuthManager: ObservableObject {
         // would fail and flip an already-authenticated session into an error.
         guard phase != .verifying, phase != .authenticated else { return }
 
-        guard url.scheme?.lowercased() == "speed",
+        guard url.scheme?.lowercased() == "macky",
               url.host?.lowercased() == "auth",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let token = components.queryItems?.first(where: { $0.name == "token" })?.value,

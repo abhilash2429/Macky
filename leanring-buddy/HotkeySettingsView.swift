@@ -125,7 +125,7 @@ struct HotkeySettingsView: View {
         isRecording = true
 
         // Local monitor: fires while the panel is the key window. We watch only
-        // modifier transitions since Speed supports modifier-only shortcuts.
+        // modifier transitions since Macky supports modifier-only shortcuts.
         // Returning nil swallows the event so it doesn't reach the panel's own
         // controls while the user is recording.
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in

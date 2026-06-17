@@ -21,6 +21,10 @@ struct AurenStatusBar: View {
         // waveform right. The bar's total width == the window width == m.totalWidth.
         let m = notch.activeBarMetrics(for: companionManager.activeStatusText)
         HStack(spacing: 0) {
+            // FAR LEFT — the persistent animated Macky logo (brand identity).
+            MackyNotchLogo()
+                .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
+
             // LEFT — animated status text, capped to m.textWidth so long narration
             // like "looking at your screen" truncates with "…" instead of clipping.
             statusTextView
@@ -76,5 +80,36 @@ struct AurenStatusBar: View {
         }
         .animation(.smooth(duration: 0.22), value: text)
         .clipped()
+    }
+}
+
+/// The persistent animated Macky logo shown on the closed notch's left flank.
+/// Its padding makes it occupy exactly `NotchConstants.logoFlankWidth`, matching
+/// the geometry the host window is sized to.
+struct MackyNotchLogo: View {
+    var body: some View {
+        MackyAnimatedLogoView(size: NotchConstants.notchLogoWidth)
+            .padding(.leading, NotchConstants.logoLeadingPad)
+            .padding(.trailing, NotchConstants.logoTrailingGap)
+    }
+}
+
+/// The closed-notch content while the assistant is idle: the persistent logo on
+/// the left, then the opaque black bridge covering the hardware cutout. Sized to
+/// `idleBarMetrics` so the bridge stays centered on the physical notch.
+struct NotchIdleBar: View {
+    @EnvironmentObject var notch: NotchUIModel
+
+    var body: some View {
+        let m = notch.idleBarMetrics
+        HStack(spacing: 0) {
+            MackyNotchLogo()
+                .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
+
+            Rectangle()
+                .fill(Color.black)
+                .frame(width: m.bridgeWidth)
+        }
+        .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
     }
 }

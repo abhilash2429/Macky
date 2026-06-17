@@ -1,10 +1,10 @@
-# AGENTS.md — leanring-buddy (the Speed macOS app)
+# AGENTS.md — leanring-buddy (the Macky macOS app)
 
 README and operating manual for the active macOS app target. Root `AGENTS.md` still
 applies. A **User Instructions** section for humans is at the end.
 
 > The folder, scheme, and project are named `leanring-buddy` (with the typo) for legacy
-> reasons. This **is** the Speed app. Do not rename anything for branding.
+> reasons. This **is** the Macky app. Do not rename anything for branding.
 
 ---
 
@@ -20,7 +20,7 @@ to the notch.
 
 ## 2. Read First (for behavior / architecture work)
 
-1. `../SPEED.md` — product brief and intended behavior.
+1. `../MACKY.md` — product brief and intended behavior.
 2. `leanring_buddyApp.swift` — app entry point.
 3. `CompanionManager.swift` — central state coordinator.
 4. The specific file you plan to edit.
@@ -38,7 +38,7 @@ to the notch.
 ## 3. File Map
 
 ### App lifecycle & state
-- `leanring_buddyApp.swift` — sets accessory activation, registers the `Speed://auth` URL
+- `leanring_buddyApp.swift` — sets accessory activation, registers the `Macky://auth` URL
   handler, creates and starts `CompanionManager`, and creates `NotchPanelController`.
 - `CompanionManager.swift` — the central `@MainActor` state coordinator: permissions,
   shortcut state, voice state, operation state, pending attachments, pending connector
@@ -73,7 +73,7 @@ to the notch.
 - `AuthManager.swift` — magic-link auth against the Worker; stores the session in
   Keychain. The Worker base URL is **hardcoded** here as
   `https://realtime-proxy.speedmac.workers.dev` (`workerBaseURL`). Handles the incoming
-  `Speed://auth?token=…` deep link and exchanges the token via `/auth/verify`.
+  `Macky://auth?token=…` deep link and exchanges the token via `/auth/verify`.
 
 ### Local integrations (macOS-native, no cloud)
 - `CalendarIntegration.swift` — EventKit (calendar).
@@ -83,7 +83,7 @@ to the notch.
 - `CompanionScreenCaptureUtility.swift` — ScreenCaptureKit for on-demand screen context.
 
 ### Config & resources
-- `Info.plist` — bundle config, permission usage strings, the `Speed://` URL scheme.
+- `Info.plist` — bundle config, permission usage strings, the `Macky://` URL scheme.
 - `leanring-buddy.entitlements` — sandbox/capabilities, permissions, URL scheme.
 - `Assets.xcassets/` — app icon and colors.
 - `enter.mp3`, `eshop.mp3` — UI sound effects.
@@ -156,7 +156,7 @@ For a human running the app.
    push-to-talk tap), and Screen Recording (for screen context). Without Accessibility the
    hotkey will not fire; without Microphone there is no voice input.
 3. **Sign in** through the magic-link screen: enter your email, click the link that arrives
-   by email (it opens the app via the `Speed://auth` URL scheme), and the session is saved
+   by email (it opens the app via the `Macky://auth` URL scheme), and the session is saved
    to your Keychain.
 4. **Use it:** hold the push-to-talk shortcut (default modifier-only chord; configurable in
    the hotkey settings), speak, and release. Watch the notch for the listening waveform;

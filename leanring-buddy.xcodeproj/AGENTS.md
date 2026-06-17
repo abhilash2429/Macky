@@ -8,7 +8,7 @@ applies. A **User Instructions** section for humans is at the end.
 ## 1. Purpose
 
 This folder defines the app target, build settings, Swift Package products, resources,
-entitlements wiring, and source-file membership for the Speed macOS app. Everything that
+entitlements wiring, and source-file membership for the Macky macOS app. Everything that
 tells Xcode *how* to build `leanring-buddy/` lives here.
 
 ---
@@ -27,8 +27,8 @@ tells Xcode *how* to build `leanring-buddy/` lives here.
 
 ## 3. Current Project Facts
 
-- **Main app target:** `leanring-buddy` (builds a product named `Speed.app`).
-- **Bundle identifier:** `com.speedmac.Speed` (Speed branding).
+- **Main app target:** `leanring-buddy` (builds a product named `Macky.app`).
+- **Bundle identifier:** `com.speedmac.Macky` (Macky branding).
 - **Minimum macOS target:** 14.2.
 - **Swift version:** 5.0 in project settings.
 - **Swift Package pins:** Sparkle (auto-update), PostHog (analytics), PLCrashReporter

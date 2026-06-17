@@ -2,7 +2,7 @@
 //  NotchContainerView.swift
 //  leanring-buddy
 //
-//  SwiftUI root for Speed's single product surface: the closed notch/status bar
+//  SwiftUI root for Macky's single product surface: the closed notch/status bar
 //  and the expanded panel. Auth, onboarding, connectors, settings, files, and
 //  assistant activity all route through this view.
 //
@@ -118,14 +118,12 @@ struct NotchContainerView: View {
     @ViewBuilder
     private var headerOrStatus: some View {
         if isOpen {
-            SpeedPanelHeader(selectedPage: $panelPage, onClose: close)
+            MackyPanelHeader(selectedPage: $panelPage, onClose: close)
                 .frame(height: max(32, notch.effectiveClosedNotchHeight))
         } else if companionManager.isAssistantActive {
             AurenStatusBar(companionManager: companionManager)
         } else {
-            Rectangle()
-                .fill(.clear)
-                .frame(width: max(0, notch.closedNotchSize.width), height: notch.effectiveClosedNotchHeight)
+            NotchIdleBar()
         }
     }
 
@@ -135,7 +133,7 @@ struct NotchContainerView: View {
             AuthView(authManager: authManager)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if !companionManager.hasCompletedPanelOnboarding {
-            SpeedPanelOnboardingView(companionManager: companionManager)
+            MackyPanelOnboardingView(companionManager: companionManager)
         } else {
             switch panelPage {
             case .home:
@@ -258,13 +256,15 @@ struct NotchContainerView: View {
     }
 }
 
-private struct SpeedPanelHeader: View {
+private struct MackyPanelHeader: View {
     @Binding var selectedPage: NotchContainerView.PanelPage
     var onClose: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Text("Speed")
+            MackyLogoView(size: 18)
+
+            Text("Macky")
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white.opacity(0.9))
 
@@ -297,9 +297,9 @@ private struct HeaderIcon: View {
     }
 }
 
-private struct SpeedPanelOnboardingView: View {
+private struct MackyPanelOnboardingView: View {
     @ObservedObject var companionManager: CompanionManager
-    @State private var step: SpeedPanelOnboardingStep = .welcome
+    @State private var step: MackyPanelOnboardingStep = .welcome
 
     var body: some View {
         VStack(spacing: 0) {
@@ -310,22 +310,22 @@ private struct SpeedPanelOnboardingView: View {
             ZStack {
                 switch step {
                 case .welcome:
-                    SpeedOnboardingWelcomeView(onContinue: goNext)
+                    MackyOnboardingWelcomeView(onContinue: goNext)
                 case .microphone, .screenRecording, .screenContent, .accessibility, .calendar, .reminders:
-                    SpeedOnboardingPermissionView(
+                    MackyOnboardingPermissionView(
                         step: step,
                         isGranted: step.isGranted(companionManager),
                         onAllow: requestCurrentPermissionAndContinue,
                         onSkip: goNext
                     )
                 case .hotkey:
-                    SpeedOnboardingHotkeyView(
+                    MackyOnboardingHotkeyView(
                         companionManager: companionManager,
                         onContinue: goNext,
                         onSkip: goNext
                     )
                 case .finished:
-                    SpeedOnboardingFinishedView(
+                    MackyOnboardingFinishedView(
                         hasAllPermissions: companionManager.allPermissionsGranted,
                         onFinish: { companionManager.setPanelOnboardingComplete(true) }
                     )
@@ -340,7 +340,7 @@ private struct SpeedPanelOnboardingView: View {
 
     private var onboardingProgress: some View {
         HStack(spacing: 5) {
-            ForEach(0..<SpeedPanelOnboardingStep.allCases.count, id: \.self) { index in
+            ForEach(0..<MackyPanelOnboardingStep.allCases.count, id: \.self) { index in
                 Capsule()
                     .fill(index <= step.rawValue ? Color.white.opacity(0.82) : Color.white.opacity(0.14))
                     .frame(height: 3)
@@ -354,7 +354,7 @@ private struct SpeedPanelOnboardingView: View {
     }
 
     private func goNext() {
-        guard let nextStep = SpeedPanelOnboardingStep(rawValue: step.rawValue + 1) else {
+        guard let nextStep = MackyPanelOnboardingStep(rawValue: step.rawValue + 1) else {
             companionManager.setPanelOnboardingComplete(true)
             return
         }
@@ -365,7 +365,7 @@ private struct SpeedPanelOnboardingView: View {
     }
 }
 
-private enum SpeedPanelOnboardingStep: Int, CaseIterable {
+private enum MackyPanelOnboardingStep: Int, CaseIterable {
     case welcome
     case microphone
     case screenRecording
@@ -378,7 +378,7 @@ private enum SpeedPanelOnboardingStep: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .welcome: return "Speed"
+        case .welcome: return "Macky"
         case .microphone: return "Enable Microphone"
         case .screenRecording: return "Enable Screen Recording"
         case .screenContent: return "Enable Screen Context"
@@ -409,11 +409,11 @@ private enum SpeedPanelOnboardingStep: Int, CaseIterable {
         case .welcome:
             return "Voice, tools, approvals, connectors, and setup all happen from the notch panel."
         case .microphone:
-            return "Speed needs microphone access to hear push-to-talk requests."
+            return "Macky needs microphone access to hear push-to-talk requests."
         case .screenRecording:
-            return "Screen Recording lets Speed understand visible app context when you ask for help."
+            return "Screen Recording lets Macky understand visible app context when you ask for help."
         case .screenContent:
-            return "Screen context lets Speed attach the current page or selected content to a request."
+            return "Screen context lets Macky attach the current page or selected content to a request."
         case .accessibility:
             return "Accessibility lets the global hotkey and system-level actions work reliably."
         case .calendar:
@@ -421,9 +421,9 @@ private enum SpeedPanelOnboardingStep: Int, CaseIterable {
         case .reminders:
             return "Reminders access powers the in-panel reminder list and task updates."
         case .hotkey:
-            return "Choose the modifier combo that wakes Speed without opening another UI."
+            return "Choose the modifier combo that wakes Macky without opening another UI."
         case .finished:
-            return "Speed is ready to work from the notch."
+            return "Macky is ready to work from the notch."
         }
     }
 
@@ -434,11 +434,11 @@ private enum SpeedPanelOnboardingStep: Int, CaseIterable {
         case .microphone:
             return "Audio capture only starts when you use push-to-talk."
         case .screenRecording, .screenContent:
-            return "Screen context is sent only when Speed needs it for your request."
+            return "Screen context is sent only when Macky needs it for your request."
         case .accessibility:
             return "This is used for control and hotkey behavior, not background browsing."
         case .calendar:
-            return "Calendar data stays in the panel unless you ask Speed to use it."
+            return "Calendar data stays in the panel unless you ask Macky to use it."
         case .reminders:
             return "Reminder data is used for your visible reminder workflow."
         }
@@ -483,12 +483,12 @@ private enum SpeedPanelOnboardingStep: Int, CaseIterable {
     }
 }
 
-private struct SpeedOnboardingWelcomeView: View {
+private struct MackyOnboardingWelcomeView: View {
     let onContinue: () -> Void
 
     var body: some View {
         ZStack {
-            SpeedOnboardingGlow()
+            MackyOnboardingGlow()
 
             VStack(spacing: 12) {
                 Image(systemName: "capsule.portrait.fill")
@@ -497,7 +497,7 @@ private struct SpeedOnboardingWelcomeView: View {
                     .shadow(color: DS.Colors.accentText.opacity(0.42), radius: 24)
 
                 VStack(spacing: 3) {
-                    Text("Speed")
+                    Text("Macky")
                         .font(.system(size: 32, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white)
                     Text("Welcome")
@@ -521,8 +521,8 @@ private struct SpeedOnboardingWelcomeView: View {
     }
 }
 
-private struct SpeedOnboardingPermissionView: View {
-    let step: SpeedPanelOnboardingStep
+private struct MackyOnboardingPermissionView: View {
+    let step: MackyPanelOnboardingStep
     let isGranted: Bool
     let onAllow: () -> Void
     let onSkip: () -> Void
@@ -584,11 +584,11 @@ private struct SpeedOnboardingPermissionView: View {
         }
         .padding(.horizontal, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(SpeedOnboardingGlow().opacity(0.58))
+        .background(MackyOnboardingGlow().opacity(0.58))
     }
 }
 
-private struct SpeedOnboardingHotkeyView: View {
+private struct MackyOnboardingHotkeyView: View {
     @ObservedObject var companionManager: CompanionManager
     let onContinue: () -> Void
     let onSkip: () -> Void
@@ -638,11 +638,11 @@ private struct SpeedOnboardingHotkeyView: View {
         }
         .padding(.horizontal, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(SpeedOnboardingGlow().opacity(0.58))
+        .background(MackyOnboardingGlow().opacity(0.58))
     }
 }
 
-private struct SpeedOnboardingFinishedView: View {
+private struct MackyOnboardingFinishedView: View {
     let hasAllPermissions: Bool
     let onFinish: () -> Void
 
@@ -656,14 +656,14 @@ private struct SpeedOnboardingFinishedView: View {
                 .font(.system(size: 28, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
 
-            Text(hasAllPermissions ? "Speed is ready in the notch." : "You can finish now and grant remaining access later in panel settings.")
+            Text(hasAllPermissions ? "Macky is ready in the notch." : "You can finish now and grant remaining access later in panel settings.")
                 .font(.system(size: 13))
                 .foregroundStyle(.white.opacity(0.62))
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 430)
 
             Button(action: onFinish) {
-                Text("Start using Speed")
+                Text("Start using Macky")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.black)
                     .padding(.horizontal, 22)
@@ -675,11 +675,11 @@ private struct SpeedOnboardingFinishedView: View {
         }
         .padding(.horizontal, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(SpeedOnboardingGlow())
+        .background(MackyOnboardingGlow())
     }
 }
 
-private struct SpeedOnboardingGlow: View {
+private struct MackyOnboardingGlow: View {
     var body: some View {
         ZStack {
             Circle()

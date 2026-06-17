@@ -166,7 +166,7 @@ enum BuddyPushToTalkShortcut {
         wasShortcutPreviouslyPressed: Bool,
         hotkey: HotkeyConfiguration
     ) -> ShortcutTransition {
-        // Speed only supports modifier-only push-to-talk combos. The shortcut is
+        // Macky only supports modifier-only push-to-talk combos. The shortcut is
         // "pressed" while at least the configured modifiers are held, and matching
         // happens on flagsChanged transitions (keyCode is unused here). Holding
         // extra modifiers still counts as pressed, matching the prior behavior.

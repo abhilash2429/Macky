@@ -121,15 +121,22 @@ final class NotchPanelController {
     /// Computes the three centered, top-flush frames. AppKit coords: y=0 is the
     /// bottom of the screen, so the top edge is `screen.frame.maxY`.
     private func computeFrames(for screen: NSScreen) {
-        let closedSize = notchModel.closedNotchSize
-        let closedHeight = closedSize.height + Self.closedBottomHeadroom
+        let closedHeight = notchModel.closedNotchSize.height + Self.closedBottomHeadroom
         let top = screen.frame.maxY
 
         func centered(width: CGFloat, height: CGFloat) -> NSRect {
             NSRect(x: screen.frame.midX - width / 2, y: top - height, width: width, height: height)
         }
 
-        idleClosedFrame = centered(width: closedSize.width, height: closedHeight)
+        // Idle keeps the cutout bridge centered on the screen while the persistent
+        // logo flank extends asymmetrically to the left (same scheme as activeFrame).
+        let idle = notchModel.idleBarMetrics
+        idleClosedFrame = NSRect(
+            x: screen.frame.midX - idle.leftFlankWidth - idle.bridgeWidth / 2,
+            y: top - closedHeight,
+            width: idle.totalWidth,
+            height: closedHeight
+        )
         openFrame = centered(width: NotchConstants.windowSize.width, height: NotchConstants.windowSize.height)
     }
 

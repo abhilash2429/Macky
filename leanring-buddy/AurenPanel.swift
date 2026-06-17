@@ -2,8 +2,8 @@
 //  AurenPanel.swift
 //  leanring-buddy
 //
-//  Expanded notch panel content for Speed. The filename is kept for now per the
-//  project constraint, but all visible UI is Speed-branded and notch-first.
+//  Expanded notch panel content for Macky. The filename is kept for now per the
+//  project constraint, but all visible UI is Macky-branded and notch-first.
 //
 
 import AppKit
@@ -11,7 +11,7 @@ import Combine
 import EventKit
 import SwiftUI
 
-enum SpeedPanelPage {
+enum MackyPanelPage {
     case home
     case connectors
     case settings
@@ -19,9 +19,9 @@ enum SpeedPanelPage {
 
 struct AurenPanel: View {
     @ObservedObject var companionManager: CompanionManager
-    let page: SpeedPanelPage
+    let page: MackyPanelPage
     @StateObject private var sidebar = AurenSidebarData()
-    @StateObject private var music = SpeedMusicManager()
+    @StateObject private var music = MackyMusicManager()
 
     var body: some View {
         Group {
@@ -94,7 +94,7 @@ private struct AssistantActivityCard: View {
                 Text(companionManager.activeStatusText.isEmpty ? "Ready" : companionManager.activeStatusText)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
-                Text("Speed is working in the notch.")
+                Text("Macky is working in the notch.")
                     .font(.system(size: 11))
                     .foregroundStyle(.white.opacity(0.52))
             }
@@ -106,7 +106,7 @@ private struct AssistantActivityCard: View {
 }
 
 private struct BoringStyleMusicCard: View {
-    @ObservedObject var music: SpeedMusicManager
+    @ObservedObject var music: MackyMusicManager
     @State private var isDragging = false
     @State private var sliderValue: Double = 0
 
@@ -276,7 +276,7 @@ private struct CalendarCard: View {
                 }
                 .layoutPriority(1)
                 Spacer(minLength: 8)
-                SpeedDateWheel(selectedDate: $selectedDate)
+                MackyDateWheel(selectedDate: $selectedDate)
             }
             .foregroundStyle(.white)
 
@@ -313,7 +313,7 @@ private struct CalendarCard: View {
     }
 }
 
-private struct SpeedDateWheel: View {
+private struct MackyDateWheel: View {
     @Binding var selectedDate: Date
     @State private var scrollPosition: Int?
 
@@ -428,10 +428,10 @@ private struct ConnectorsPanel: View {
         GridItem(.flexible(), spacing: 16)
     ]
 
-    private var filteredConnectors: [SpeedConnector] {
+    private var filteredConnectors: [MackyConnector] {
         let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return SpeedConnectorCatalog.items }
-        return SpeedConnectorCatalog.items.filter {
+        guard !query.isEmpty else { return MackyConnectorCatalog.items }
+        return MackyConnectorCatalog.items.filter {
             $0.name.lowercased().contains(query) || $0.category.lowercased().contains(query)
         }
     }
@@ -489,7 +489,7 @@ private struct ConnectorsPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.09), lineWidth: 1))
     }
 
-    private func pendingConnection(for connector: SpeedConnector) -> PendingConnection? {
+    private func pendingConnection(for connector: MackyConnector) -> PendingConnection? {
         let connectorSlug = normalizedConnectorKey(connector.slug)
         let connectorName = normalizedConnectorKey(connector.name)
         return companionManager.pendingConnections.first {
@@ -530,7 +530,7 @@ private enum ConnectorBadge {
     case none
 }
 
-private struct SpeedConnector: Identifiable {
+private struct MackyConnector: Identifiable {
     let id: String
     let name: String
     let slug: String
@@ -542,9 +542,9 @@ private struct SpeedConnector: Identifiable {
     let examples: [String]
 }
 
-private enum SpeedConnectorCatalog {
-    static let items: [SpeedConnector] = [
-        SpeedConnector(
+private enum MackyConnectorCatalog {
+    static let items: [MackyConnector] = [
+        MackyConnector(
             id: "gmail",
             name: "Gmail",
             slug: "gmail",
@@ -555,7 +555,7 @@ private enum SpeedConnectorCatalog {
             badge: .popular(2),
             examples: ["Write a follow-up to John", "Find the latest client email", "Summarize unread mail"]
         ),
-        SpeedConnector(
+        MackyConnector(
             id: "slack",
             name: "Slack",
             slug: "slack",
@@ -566,7 +566,7 @@ private enum SpeedConnectorCatalog {
             badge: .popular(9),
             examples: ["Send the standup update", "Catch me up on design", "Post a reminder"]
         ),
-        SpeedConnector(
+        MackyConnector(
             id: "calendar",
             name: "Google Calendar",
             slug: "googlecalendar",
@@ -577,18 +577,18 @@ private enum SpeedConnectorCatalog {
             badge: .popular(3),
             examples: ["Schedule a call tomorrow", "Move my 3 PM meeting", "Find open time Friday"]
         ),
-        SpeedConnector(
+        MackyConnector(
             id: "notion",
             name: "Notion",
             slug: "notion",
             icon: "doc.text.fill",
             category: "Knowledge",
-            description: "Create pages, update notes, and pull workspace context into Speed.",
+            description: "Create pages, update notes, and pull workspace context into Macky.",
             accent: Color.white.opacity(0.92),
             badge: .popular(6),
             examples: ["Add this to product notes", "Find the launch checklist", "Create a meeting page"]
         ),
-        SpeedConnector(
+        MackyConnector(
             id: "github",
             name: "GitHub",
             slug: "github",
@@ -599,7 +599,7 @@ private enum SpeedConnectorCatalog {
             badge: .new,
             examples: ["Open a bug issue", "Summarize recent PRs", "Find failing checks"]
         ),
-        SpeedConnector(
+        MackyConnector(
             id: "linear",
             name: "Linear",
             slug: "linear",
@@ -610,7 +610,7 @@ private enum SpeedConnectorCatalog {
             badge: .new,
             examples: ["Create a task for this", "Move it to in progress", "List urgent bugs"]
         ),
-        SpeedConnector(
+        MackyConnector(
             id: "spotify",
             name: "Spotify",
             slug: "spotify",
@@ -625,7 +625,7 @@ private enum SpeedConnectorCatalog {
 }
 
 private struct ConnectorGridCard: View {
-    let connector: SpeedConnector
+    let connector: MackyConnector
     let pendingConnection: PendingConnection?
     let onConnect: () -> Void
     let onOpenPending: (PendingConnection) -> Void
@@ -701,7 +701,7 @@ private struct ConnectorGridCard: View {
 }
 
 private struct ConnectorIcon: View {
-    let connector: SpeedConnector
+    let connector: MackyConnector
     let size: CGFloat
     let iconSize: CGFloat
 
@@ -745,6 +745,10 @@ private struct SettingsPanel: View {
     var body: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
+                MackyLogoView(size: 46)
+                    .padding(.leading, 6)
+                    .padding(.bottom, 14)
+
                 ForEach(SettingsTab.allCases, id: \.self) { tab in
                     Button {
                         selectedTab = tab
@@ -816,7 +820,7 @@ private struct SettingsPanel: View {
             }
         case .shortcuts:
             VStack(alignment: .leading, spacing: 12) {
-                PanelTitle("Shortcuts", subtitle: "Push-to-talk listens globally while Speed is running.")
+                PanelTitle("Shortcuts", subtitle: "Push-to-talk listens globally while Macky is running.")
                 HotkeySettingsView(companionManager: companionManager)
                     .padding(12)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
@@ -827,15 +831,15 @@ private struct SettingsPanel: View {
                 Button("Reset onboarding") {
                     companionManager.setPanelOnboardingComplete(false)
                 }
-                .speedSettingsButton()
+                .mackySettingsButton()
 
                 Button("Sign out") {
                     authManager.clearSession()
                     companionManager.setPanelOnboardingComplete(false)
                 }
-                .speedSettingsButton()
+                .mackySettingsButton()
 
-                Button("Quit Speed") {
+                Button("Quit Macky") {
                     NSApp.terminate(nil)
                 }
                 .buttonStyle(.plain)
@@ -874,7 +878,7 @@ private struct SettingsInfoRow: View {
 }
 
 private extension View {
-    func speedSettingsButton() -> some View {
+    func mackySettingsButton() -> some View {
         self
             .buttonStyle(.plain)
             .font(.system(size: 12, weight: .semibold))
@@ -1027,7 +1031,7 @@ struct ActivityRow: View {
 }
 
 @MainActor
-final class SpeedMusicManager: ObservableObject {
+final class MackyMusicManager: ObservableObject {
     @Published var title = "Nothing playing"
     @Published var artist = "Spotify or Music"
     @Published var album = "Open a player to control it here"

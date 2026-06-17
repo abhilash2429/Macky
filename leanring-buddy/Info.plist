@@ -3,36 +3,36 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>Speed</string>
+	<string>Macky</string>
 	<key>CFBundleName</key>
-	<string>Speed</string>
+	<string>Macky</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>Speed Auth</string>
+			<string>Macky Auth</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>Speed</string>
-				<string>speed</string>
+				<string>Macky</string>
+				<string>macky</string>
 			</array>
 		</dict>
 	</array>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Speed needs Apple Events access to control apps when you ask it to.</string>
+	<string>Macky needs Apple Events access to control apps when you ask it to.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Speed needs Calendar access to read your schedule and create events when you ask.</string>
+	<string>Macky needs Calendar access to read your schedule and create events when you ask.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>Speed needs Calendar access to read your schedule and create events when you ask.</string>
+	<string>Macky needs Calendar access to read your schedule and create events when you ask.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Speed needs microphone access so you can talk to it.</string>
+	<string>Macky needs microphone access so you can talk to it.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Speed needs Reminders access to create and update reminders when you ask.</string>
+	<string>Macky needs Reminders access to create and update reminders when you ask.</string>
 	<key>NSRemindersUsageDescription</key>
-	<string>Speed needs Reminders access to create and update reminders when you ask.</string>
+	<string>Macky needs Reminders access to create and update reminders when you ask.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Speed needs screen recording access so it can see your screen only when you ask for visual help.</string>
+	<string>Macky needs screen recording access so it can see your screen only when you ask for visual help.</string>
 </dict>
 </plist>

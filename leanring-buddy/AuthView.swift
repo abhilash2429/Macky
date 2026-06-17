@@ -4,7 +4,7 @@
 //
 //  First-launch sign-in screen hosted inside the expanded notch panel. Collects
 //  the user's email, asks the Worker for a magic link, then waits for the
-//  `Speed://auth?token=…` link to be opened and verified.
+//  `Macky://auth?token=…` link to be opened and verified.
 //
 
 import SwiftUI
@@ -34,7 +34,7 @@ struct AuthView: View {
     private var emailInputState: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Welcome to Speed")
+                Text("Welcome to Macky")
                     .font(.system(size: 18, weight: .bold))
                     .foregroundColor(DS.Colors.textPrimary)
                 Text("Sign in with your email to get started.")

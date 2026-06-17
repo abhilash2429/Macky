@@ -786,13 +786,13 @@ final class RealtimeClient: ObservableObject {
     // MARK: - Session Configuration
 
     /// The session-level system prompt (Azure GPT-Realtime `instructions` field).
-    /// Defines Speed's voice-assistant behavior contract: acknowledge first, narrate
+    /// Defines Macky's voice-assistant behavior contract: acknowledge first, narrate
     /// every tool call in active-present voice (the notch enumeration UI is built from
     /// these phrases), never go silent mid-action, confirm on completion, stay brief,
     /// only look at the screen when asked about something visual, never speak raw
     /// internals, and reply in the user's language. Persists for the whole session.
-    private static let speedSystemPrompt = """
-        You are Speed, a fast, friendly voice assistant living in the user's Mac notch. \
+    private static let mackySystemPrompt = """
+        You are Macky, a fast, friendly voice assistant living in the user's Mac notch. \
         Everything you say is spoken aloud and heard, never read.
 
         Non-negotiable rules:
@@ -819,7 +819,7 @@ final class RealtimeClient: ObservableObject {
         """
 
     /// Sent immediately after `session.created` to configure the session with the
-    /// registered tools and the `speedSystemPrompt` system prompt.
+    /// registered tools and the `mackySystemPrompt` system prompt.
     private func sendSessionUpdate() {
         var tools: [[String: Any]] = registeredTools.values.map { tool in
             [
@@ -852,7 +852,7 @@ final class RealtimeClient: ObservableObject {
             "type": "session.update",
             "session": [
                 "type": "realtime",
-                "instructions": Self.speedSystemPrompt,
+                "instructions": Self.mackySystemPrompt,
                 "output_modalities": ["audio"],
                 "tools": tools,
                 "tool_choice": "auto",

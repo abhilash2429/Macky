@@ -2,7 +2,7 @@
 //  CompanionManager.swift
 //  leanring-buddy
 //
-//  Notch-first state manager for Speed. It owns the persistent realtime client,
+//  Notch-first state manager for Macky. It owns the persistent realtime client,
 //  push-to-talk capture, permission flags, panel onboarding state, and the small
 //  amount of history/context the notch panel renders.
 //
@@ -53,7 +53,7 @@ struct PendingConnection: Identifiable {
 
 @MainActor
 final class CompanionManager: ObservableObject {
-    private static let panelOnboardingDefaultsKey = "speedPanelOnboardingComplete"
+    private static let panelOnboardingDefaultsKey = "mackyPanelOnboardingComplete"
     private static let maxRecentInteractions = 5
     private static let maxHistoryEntries = 20
 

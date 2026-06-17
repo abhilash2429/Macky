@@ -1,4 +1,4 @@
-# AGENTS.md — Speed (repository root)
+# AGENTS.md — Macky (repository root)
 
 This is the README and operating manual for AI coding agents working anywhere in this
 repository. Read it first, then read the nearest nested `AGENTS.md` before modifying
@@ -6,16 +6,16 @@ files in a subfolder. A short **User Instructions** section for humans is at the
 
 ---
 
-## 1. What Speed Is
+## 1. What Macky Is
 
-Speed is a **macOS voice assistant that lives in the notch**. It is not a chatbot or a
+Macky is a **macOS voice assistant that lives in the notch**. It is not a chatbot or a
 copilot you open and type into. You press a push-to-talk shortcut, speak, and the app
 routes your audio through a realtime voice model, executes local or cloud tools, and
 talks back — usually in under half a second. Voice in, action out.
 
-The full product brief lives in [`SPEED.md`](SPEED.md). Read it before any change that
+The full product brief lives in [`MACKY.md`](MACKY.md). Read it before any change that
 touches product behavior, UI, the voice pipeline, integrations, or branding. When the
-current code and `SPEED.md` disagree, **pause and surface the conflict** before changing
+current code and `MACKY.md` disagree, **pause and surface the conflict** before changing
 behavior — do not silently pick one.
 
 Core ideas from the brief:
@@ -31,14 +31,14 @@ Core ideas from the brief:
 
 ### Heritage
 
-Speed is a heavily reworked fork of **Clicky** (an open-source MIT-licensed macOS
+Macky is a heavily reworked fork of **Clicky** (an open-source MIT-licensed macOS
 assistant). The macOS UI primitives are kept — the `NSPanel`, ScreenCaptureKit usage,
 the CGEvent push-to-talk tap, and the design system. The old API brain (AssemblyAI +
 Claude + ElevenLabs chain) was removed and replaced with a single realtime model plus an
 MCP-based integration layer.
 
 Do **not** assume old Clicky, Auren, makesomething, or Boring Notch behavior still
-applies unless current files prove it. Treat the product direction in `SPEED.md` and the
+applies unless current files prove it. Treat the product direction in `MACKY.md` and the
 current code as the source of truth.
 
 ---
@@ -47,7 +47,7 @@ current code as the source of truth.
 
 ```
   ┌─────────────────────────┐         WebSocket          ┌──────────────────────┐
-  │  Speed macOS app        │  ───────────────────────▶  │  Cloudflare Worker   │
+  │  Macky macOS app        │  ───────────────────────▶  │  Cloudflare Worker   │
   │  (leanring-buddy/)      │   /realtime (byte proxy)   │  (worker/)           │
   │                         │  ◀───────────────────────  │  "realtime-proxy"    │
   │  • Notch UI (NSPanel)   │                            │                      │
@@ -93,8 +93,8 @@ current code as the source of truth.
 | `leanring-buddy.xcodeproj/` | Xcode project config: targets, build settings, SPM products, signing. | `leanring-buddy.xcodeproj/AGENTS.md` |
 | `worker/` | Cloudflare Worker TypeScript proxy. Owns `/realtime`, `/composio-config`, and the magic-link auth routes. | `worker/AGENTS.md` |
 | `scripts/` | Release automation (`release.sh`) for the macOS app. Production deployment tooling. | `scripts/AGENTS.md` |
-| `.github/workflows/` | CI: `macos-build.yml` builds the app on `macos-15` and uploads `Speed.app` as an artifact. | — |
-| `SPEED.md` | Product and architecture brief. The source of truth for intended behavior. | — |
+| `.github/workflows/` | CI: `macos-build.yml` builds the app on `macos-15` and uploads `Macky.app` as an artifact. | — |
+| `MACKY.md` | Product and architecture brief. The source of truth for intended behavior. | — |
 
 > The folder, scheme, and project file are all named `leanring-buddy` (note the typo).
 > This is intentional legacy naming. **Do not rename it** unless explicitly asked.
@@ -133,7 +133,7 @@ current code as the source of truth.
   line length.
 - Comments should explain non-obvious timing, macOS API behavior, permission behavior, or
   protocol constraints — not restate obvious code.
-- If current code and `SPEED.md` disagree, pause and surface the conflict before changing
+- If current code and `MACKY.md` disagree, pause and surface the conflict before changing
   behavior.
 
 ---

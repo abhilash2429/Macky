@@ -1,6 +1,6 @@
-# Speed — a voice assistant that lives in your Mac's notch
+# Macky — a voice assistant that lives in your Mac's notch
 
-Speed is a macOS assistant you talk to. You hold a key, say what you want, and it does it —
+Macky is a macOS assistant you talk to. You hold a key, say what you want, and it does it —
 play a song, send a Slack message, check your calendar, add a reminder, open a website,
 read your unread email. No app to open, no typing, no clicking around. **Voice in, action
 out.**
@@ -55,13 +55,13 @@ them while it talks to you.
 ## 2. What you need before you start
 
 - **A Mac running macOS 14.2 or newer.** A Mac with a notch (MacBook Pro/Air, 2021 or
-  later) gives the best experience, but Speed also works on Macs without a notch — it shows
+  later) gives the best experience, but Macky also works on Macs without a notch — it shows
   a floating bar at the top of the screen instead.
 - **A microphone** (built-in is fine) and **speakers/headphones**.
 - **An email address** — you sign in with a one-time link sent to your email.
 - **Xcode** (free from the Mac App Store) — this is how you build and install the app from
   this source code. You need this only if you're building the app yourself; if someone gave
-  you a ready-made `Speed.app`, skip straight to [section 4](#4-first-launch--permissions).
+  you a ready-made `Macky.app`, skip straight to [section 4](#4-first-launch--permissions).
 
 You do **not** need to set up any servers, API keys, or accounts with Azure/OpenAI to use
 the app. The backend it talks to is already hosted. (Setting up your own backend is an
@@ -75,7 +75,7 @@ You have two paths. Most people will use Path A.
 
 ### Path A — You were given a ready-made app
 
-1. Drag **`Speed.app`** into your `Applications` folder.
+1. Drag **`Macky.app`** into your `Applications` folder.
 2. Double-click to open it. The first time, macOS may warn that it's from an unidentified
    developer or downloaded from the internet — right-click the app, choose **Open**, then
    confirm.
@@ -97,24 +97,24 @@ You have two paths. Most people will use Path A.
 5. **Build and run.** Press the ▶ button (or `Cmd + R`). Xcode compiles the app and
    launches it.
 
-When it launches, you won't see a normal window — Speed runs as a background app, and its
+When it launches, you won't see a normal window — Macky runs as a background app, and its
 UI appears at your notch. Continue to the next section.
 
 ---
 
 ## 4. First launch — permissions
 
-Speed needs three macOS permissions to work. macOS will ask for them, or you can grant them
+Macky needs three macOS permissions to work. macOS will ask for them, or you can grant them
 in **System Settings ▸ Privacy & Security**:
 
-| Permission | Why Speed needs it | If you skip it |
+| Permission | Why Macky needs it | If you skip it |
 |------------|--------------------|----------------|
 | **Microphone** | To hear what you say. | No voice input at all. |
 | **Accessibility** | To detect the global push-to-talk shortcut even when another app is focused. | The hold-to-talk key won't work. |
 | **Screen Recording** | So it can look at your screen when you ask about what's on it. | It just can't see your screen; voice still works. |
 
 **To grant Accessibility** (the one people most often miss): open **System Settings ▸
-Privacy & Security ▸ Accessibility**, find **Speed** (or `leanring-buddy`) in the list, and
+Privacy & Security ▸ Accessibility**, find **Macky** (or `leanring-buddy`) in the list, and
 turn the toggle **on**. You may need to quit and reopen the app afterward.
 
 > Tip: if the push-to-talk key isn't doing anything, Accessibility is almost always the
@@ -124,12 +124,12 @@ turn the toggle **on**. You may need to quit and reopen the app afterward.
 
 ## 5. Sign in
 
-1. Look at your notch — Speed shows a small sign-in panel.
+1. Look at your notch — Macky shows a small sign-in panel.
 2. Type your **email address** and click **Send magic link**.
-3. **Check your email.** You'll get a message titled *"Your Speed sign-in link"* with a
-   **Sign in to Speed** button. (Look in spam if you don't see it within a minute.)
+3. **Check your email.** You'll get a message titled *"Your Macky sign-in link"* with a
+   **Sign in to Macky** button. (Look in spam if you don't see it within a minute.)
 4. **Click the link.** It opens in your browser for a moment, then bounces back into the
-   Speed app and finishes signing you in automatically.
+   Macky app and finishes signing you in automatically.
 5. That's it — your session is saved securely in your Mac's Keychain, so you stay signed in.
 
 The link expires in 15 minutes and can only be used once. If it expires, just click
@@ -139,15 +139,15 @@ The link expires in 15 minutes and can only be used once. If it expires, just cl
 
 ## 6. Connect your apps (Slack, Gmail, Spotify, …)
 
-Speed reaches your apps in two ways, and both connect the first time you need them:
+Macky reaches your apps in two ways, and both connect the first time you need them:
 
 - **Apple apps (Calendar, Reminders, Mail, etc.)** use the normal macOS permission popups.
-  The first time you ask Speed to read your calendar or add a reminder, macOS asks you to
+  The first time you ask Macky to read your calendar or add a reminder, macOS asks you to
   allow it. Click **Allow**.
 - **Web apps (Slack, Gmail, Spotify, GitHub, Notion, Linear, and 250+ more)** connect
-  through a secure link. The first time you ask Speed to do something with, say, Slack, it
+  through a secure link. The first time you ask Macky to do something with, say, Slack, it
   gives you a **connect link**. Open it, sign in to that service once, and approve access.
-  After that, Speed remembers it — you never have to reconnect.
+  After that, Macky remembers it — you never have to reconnect.
 
 You don't need to set all of this up in advance. Connect each app the moment you first use
 it.
@@ -164,13 +164,13 @@ Gmail, Chrome/browser, and system controls** (volume, Do Not Disturb, lock scree
    down.
 2. **Speak** while holding. A dim waveform appears in the notch reacting to your voice.
 3. **Let go** when you're done talking.
-4. **Listen.** Speed starts answering almost immediately — often before you've fully
+4. **Listen.** Macky starts answering almost immediately — often before you've fully
    released the key. It talks back through your speakers, and runs any tools it needs in the
    background while it speaks.
 
 A few things worth knowing:
 
-- **Interrupt anytime.** If Speed is talking and you want to say something new, just hold
+- **Interrupt anytime.** If Macky is talking and you want to say something new, just hold
   the shortcut again — it stops and listens to you.
 - **Simple requests stay in the notch.** "Play a song" or "set a reminder" happen quietly
   with no panel — you just hear the confirmation.
@@ -198,9 +198,9 @@ of your screen.
 
 ## 9. Settings
 
-- **Change the push-to-talk shortcut:** open the Speed panel (hover the notch), go to the
+- **Change the push-to-talk shortcut:** open the Macky panel (hover the notch), go to the
   hotkey setting, and **hold a new modifier combo** (for example, Control + Option), then
-  release to save. Speed supports modifier-only shortcuts, so you don't need a letter key.
+  release to save. Macky supports modifier-only shortcuts, so you don't need a letter key.
 
 ---
 
@@ -208,7 +208,7 @@ of your screen.
 
 **The hold-to-talk key does nothing.**
 Grant **Accessibility** permission (System Settings ▸ Privacy & Security ▸ Accessibility,
-turn Speed on), then quit and reopen the app. This is the #1 cause.
+turn Macky on), then quit and reopen the app. This is the #1 cause.
 
 **It can't hear me.**
 Check **Microphone** permission, and make sure the right input device is selected in System
@@ -222,14 +222,14 @@ Check spam. The link is also valid for only 15 minutes — click **Resend** in t
 a fresh one. Make sure you typed your email correctly.
 
 **The sign-in link opened my browser but didn't return to the app.**
-Make sure Speed is installed and running, then click the **Open Speed** button on that
+Make sure Macky is installed and running, then click the **Open Macky** button on that
 browser page.
 
 **It says it can't connect / nothing responds.**
-Check your internet connection. Speed needs to be online to hear and answer you.
+Check your internet connection. Macky needs to be online to hear and answer you.
 
 **I don't see anything at my notch.**
-Speed runs in the background with no Dock icon. Make sure it's actually running (relaunch
+Macky runs in the background with no Dock icon. Make sure it's actually running (relaunch
 from Xcode or from your Applications folder), and look at the very top-center of your
 screen.
 
@@ -242,7 +242,7 @@ screen.
 - Screenshots are taken **only when you ask** something about your screen — never
   continuously, and there's no always-on recording.
 - Your sign-in session is stored in your Mac's **Keychain**.
-- Speed does not keep a persistent memory of your activity across sessions.
+- Macky does not keep a persistent memory of your activity across sessions.
 
 ---
 
@@ -291,7 +291,7 @@ and [`scripts/AGENTS.md`](scripts/AGENTS.md).
 | [`leanring-buddy.xcodeproj/`](leanring-buddy.xcodeproj/) | The Xcode project you open to build the app. |
 | [`worker/`](worker/) | The Cloudflare Worker backend (proxy + sign-in). |
 | [`scripts/`](scripts/) | Release automation (build, sign, notarize, publish). |
-| [`SPEED.md`](SPEED.md) | The product vision and design brief. |
+| [`MACKY.md`](MACKY.md) | The product vision and design brief. |
 
 Each folder also has an `AGENTS.md` with deeper technical context for contributors and AI
 coding agents. Start with the root [`AGENTS.md`](AGENTS.md).

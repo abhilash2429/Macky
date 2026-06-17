@@ -4,7 +4,7 @@
 //
 //  The four-bar voice waveform used in the closed notch. Instead of reading
 //  MicrophoneMonitor (which would spin up a SECOND AVAudioEngine and fight
-//  BuddyDictationManager for the mic), it reads Speed's existing levels —
+//  BuddyDictationManager for the mic), it reads Macky's existing levels —
 //  CompanionManager.currentAudioPowerLevel while listening and
 //  RealtimeClient.playbackAudioLevel while speaking.
 //
@@ -136,7 +136,7 @@ final class VoiceActivitySpectrum: NSView {
     deinit { stopTimer() }
 }
 
-// MARK: - SwiftUI Wrapper (rebound to Speed's state)
+// MARK: - SwiftUI Wrapper (rebound to Macky's state)
 
 struct VoiceActivityView: NSViewRepresentable {
     @ObservedObject var companionManager: CompanionManager

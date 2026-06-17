@@ -12,7 +12,7 @@ import Combine
 import CoreGraphics
 import Foundation
 
-/// The user-configurable push-to-talk hotkey. Speed only supports modifier-only
+/// The user-configurable push-to-talk hotkey. Macky only supports modifier-only
 /// combos (e.g. ctrl + option), so this stores just the device-independent
 /// modifier flags that must be held. Persisted in UserDefaults so the choice
 /// survives relaunches; defaults to ctrl + option when nothing is stored.

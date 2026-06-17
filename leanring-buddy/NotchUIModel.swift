@@ -2,8 +2,8 @@
 //  NotchUIModel.swift
 //  leanring-buddy
 //
-//  The Speed-native replacement for BoringNotch's BoringViewModel — but trimmed
-//  to only what Speed's notch views read. It owns two things:
+//  The Macky-native replacement for BoringNotch's BoringViewModel — but trimmed
+//  to only what Macky's notch views read. It owns two things:
 //
 //    1. The open/closed state (`notchState`) and the sizes the SwiftUI layout
 //       interpolates between (`closedNotchSize` / `notchSize`).
@@ -40,6 +40,17 @@ enum NotchConstants {
     static let nonNotchBarWidth: CGFloat = 220
 
     // MARK: - Active closed-bar layout
+
+    /// Rendered width of the animated Macky logo that lives on the closed notch's
+    /// left flank (height follows the 280:220 aspect ratio).
+    static let notchLogoWidth: CGFloat = 20
+    /// Leading inset before the logo so it clears the shape's rounded corner.
+    static let logoLeadingPad: CGFloat = 7
+    /// Gap between the logo and whatever follows it (status text or the cutout).
+    static let logoTrailingGap: CGFloat = 5
+    /// Total width the persistent logo flank occupies on the left of the closed
+    /// notch, present in both idle and active states.
+    static let logoFlankWidth: CGFloat = logoLeadingPad + notchLogoWidth + logoTrailingGap
 
     /// Leading inset for the status text so it clears the shape's rounded corner.
     static let statusLeadingPad: CGFloat = 8
@@ -116,17 +127,32 @@ final class NotchUIModel: ObservableObject {
         (text as NSString).size(withAttributes: [.font: statusFont]).width
     }
 
-    /// Computes the active closed-bar geometry for `text`. Left flank is sized to
-    /// the (capped) text, right flank to the waveform, the bridge to the full
-    /// cutout. Empty text → no flanks (the caller falls back to the idle frame).
+    /// The idle closed-bar geometry: the persistent Macky logo on the left flank
+    /// plus the centered cutout bridge (no status text, no waveform). Used when the
+    /// assistant is at rest so the logo is always visible in the notch.
+    var idleBarMetrics: ActiveBarMetrics {
+        let bridge = max(0, closedNotchSize.width)
+        return ActiveBarMetrics(
+            totalWidth: NotchConstants.logoFlankWidth + bridge,
+            leftFlankWidth: NotchConstants.logoFlankWidth,
+            textWidth: 0,
+            bridgeWidth: bridge,
+            rightFlankWidth: 0
+        )
+    }
+
+    /// Computes the active closed-bar geometry for `text`. The left flank always
+    /// carries the Macky logo, then the (capped) status text; the right flank holds
+    /// the waveform; the bridge spans the full cutout.
     func activeBarMetrics(for text: String) -> ActiveBarMetrics {
         let rightFlank = NotchConstants.waveformBoxSize + NotchConstants.waveformTrailingPad
         let bridge = max(0, closedNotchSize.width)
+        let logoFlank = NotchConstants.logoFlankWidth
 
         guard !text.isEmpty else {
             return ActiveBarMetrics(
-                totalWidth: bridge,
-                leftFlankWidth: 0,
+                totalWidth: logoFlank + bridge + rightFlank,
+                leftFlankWidth: logoFlank,
                 textWidth: 0,
                 bridgeWidth: bridge,
                 rightFlankWidth: rightFlank
@@ -137,7 +163,7 @@ final class NotchUIModel: ObservableObject {
         // sized to fit; the cap then truncates anything genuinely too long.
         let measured = ceil(Self.measureStatusWidth(text)) + 1
         let textW = min(measured, NotchConstants.maxStatusTextWidth)
-        let leftFlank = NotchConstants.statusLeadingPad + textW + NotchConstants.statusTrailingGap
+        let leftFlank = logoFlank + NotchConstants.statusLeadingPad + textW + NotchConstants.statusTrailingGap
         return ActiveBarMetrics(
             totalWidth: leftFlank + bridge + rightFlank,
             leftFlankWidth: leftFlank,

@@ -27,7 +27,7 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
 | `GET /composio-config` | Creates a Composio Tool Router session for the fixed `COMPOSIO_USER_ID` and returns `{ url, key }`, which the Swift client wires into the realtime `session.update` as an `mcp` tool entry. No `toolkits` allowlist is sent (full catalog via search); `manage_connections` is enabled with `enable_wait_for_connections: false` so a voice turn never blocks on OAuth. |
 | `POST /auth/magic-link` | Validates `{ email }`, stores a one-time token (`token → email`) in `AUTH_TOKENS` KV with a 15-minute TTL, and emails a clickable link via Resend. The link points at the https `/auth/open` endpoint (custom schemes aren't clickable in webmail). |
 | `POST /auth/verify` | Consumes a magic-link token (single-use; deleted on first success), best-effort provisions the Composio user for that email, and returns `{ sessionJWT, composioUserId }`. |
-| `GET /auth/open?token=…` | Minimal HTML bridge that bounces the browser into the app via `Speed://auth?token=…`. Validates the token shape (UUID-ish) before reflecting it into the deep link. |
+| `GET /auth/open?token=…` | Minimal HTML bridge that bounces the browser into the app via `Macky://auth?token=…`. Validates the token shape (UUID-ish) before reflecting it into the deep link. |
 
 ---
 
@@ -127,5 +127,5 @@ For a human running or deploying the Worker.
 
 ### Test the auth flow
 - `POST /auth/magic-link` with `{ "email": "you@example.com" }` sends the email (and logs
-  the link). Open the link → it redirects into `Speed://auth?token=…` → the app calls
+  the link). Open the link → it redirects into `Macky://auth?token=…` → the app calls
   `POST /auth/verify` to exchange the token for a session.
