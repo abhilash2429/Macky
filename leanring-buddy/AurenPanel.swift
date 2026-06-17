@@ -36,7 +36,6 @@ struct AurenPanel: View {
         }
         .task {
             await sidebar.refresh()
-            music.refresh()
         }
     }
 
@@ -155,6 +154,8 @@ private struct BoringStyleMusicCard: View {
                 sliderValue = elapsedTime
             }
         }
+        .onAppear { music.startPolling() }
+        .onDisappear { music.stopPolling() }
     }
 
     private var albumArt: some View {
@@ -265,11 +266,16 @@ private struct CalendarCard: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(selectedDate.formatted(.dateTime.month(.abbreviated)))
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                     Text(selectedDate.formatted(.dateTime.year()))
                         .font(.system(size: 13))
                         .foregroundStyle(.white.opacity(0.52))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
-                Spacer()
+                .layoutPriority(1)
+                Spacer(minLength: 8)
                 SpeedDateWheel(selectedDate: $selectedDate)
             }
             .foregroundStyle(.white)
@@ -415,50 +421,72 @@ private struct EmptyPanelLine: View {
 
 private struct ConnectorsPanel: View {
     @ObservedObject var companionManager: CompanionManager
-    @State private var selectedConnectorID = SpeedConnectorCatalog.items.first?.id ?? "gmail"
+    @State private var searchText = ""
 
-    private var selectedConnector: SpeedConnector {
-        SpeedConnectorCatalog.items.first { $0.id == selectedConnectorID } ?? SpeedConnectorCatalog.items[0]
+    private let columns = [
+        GridItem(.flexible(), spacing: 16),
+        GridItem(.flexible(), spacing: 16)
+    ]
+
+    private var filteredConnectors: [SpeedConnector] {
+        let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return SpeedConnectorCatalog.items }
+        return SpeedConnectorCatalog.items.filter {
+            $0.name.lowercased().contains(query) || $0.category.lowercased().contains(query)
+        }
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 10) {
-                PanelTitle("Connectors", subtitle: "Composio apps Speed can connect when a task needs them.")
+        VStack(alignment: .leading, spacing: 14) {
+            searchBar
 
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(SpeedConnectorCatalog.items) { connector in
-                            ConnectorPickerRow(
-                                connector: connector,
-                                isSelected: connector.id == selectedConnectorID,
-                                isPending: hasPendingConnection(for: connector)
-                            ) {
-                                withAnimation(.smooth(duration: 0.2)) {
-                                    selectedConnectorID = connector.id
-                                }
-                            }
-                        }
+            HStack(spacing: 10) {
+                Text("Anthropic & Partners")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(Color.black))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+
+                Spacer()
+
+                ConnectorFilterChip(title: "Filter by")
+                ConnectorFilterChip(title: "Sort by")
+            }
+
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(filteredConnectors) { connector in
+                        ConnectorGridCard(
+                            connector: connector,
+                            pendingConnection: pendingConnection(for: connector),
+                            onConnect: { companionManager.requestConnectorConnection(slug: connector.slug) },
+                            onOpenPending: { companionManager.openPendingConnection($0) }
+                        )
                     }
                 }
+                .padding(.bottom, 14)
             }
-            .frame(width: 265, alignment: .topLeading)
-
-            ConnectorDetailCard(
-                connector: selectedConnector,
-                pendingConnection: pendingConnection(for: selectedConnector),
-                onConnect: { requestConnector(selectedConnector.slug) },
-                onOpenPending: { connection in companionManager.openPendingConnection(connection) },
-                onDismissPending: { connection in companionManager.dismissPendingConnection(connection) }
-            )
         }
         .padding(.horizontal, 18)
-        .padding(.top, 10)
-        .padding(.bottom, 14)
+        .padding(.top, 12)
     }
 
-    private func hasPendingConnection(for connector: SpeedConnector) -> Bool {
-        pendingConnection(for: connector) != nil
+    private var searchBar: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.4))
+            TextField("Search connectors…", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14))
+                .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.09), lineWidth: 1))
     }
 
     private func pendingConnection(for connector: SpeedConnector) -> PendingConnection? {
@@ -470,15 +498,36 @@ private struct ConnectorsPanel: View {
         }
     }
 
-    private func requestConnector(_ slug: String) {
-        companionManager.requestConnectorConnection(slug: slug)
-    }
-
     private func normalizedConnectorKey(_ rawValue: String) -> String {
         rawValue
             .lowercased()
             .filter { $0.isLetter || $0.isNumber }
     }
+}
+
+private struct ConnectorFilterChip: View {
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.6))
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.4))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.white.opacity(0.1), lineWidth: 1))
+    }
+}
+
+private enum ConnectorBadge {
+    case new
+    case popular(Int)
+    case none
 }
 
 private struct SpeedConnector: Identifiable {
@@ -489,6 +538,7 @@ private struct SpeedConnector: Identifiable {
     let category: String
     let description: String
     let accent: Color
+    let badge: ConnectorBadge
     let examples: [String]
 }
 
@@ -502,6 +552,7 @@ private enum SpeedConnectorCatalog {
             category: "Communication",
             description: "Draft, send, search, and summarize email from voice requests.",
             accent: Color(hex: "#EA4335"),
+            badge: .popular(2),
             examples: ["Write a follow-up to John", "Find the latest client email", "Summarize unread mail"]
         ),
         SpeedConnector(
@@ -512,6 +563,7 @@ private enum SpeedConnectorCatalog {
             category: "Communication",
             description: "Send messages, look up channels, and turn threads into next actions.",
             accent: Color(hex: "#36C5F0"),
+            badge: .popular(9),
             examples: ["Send the standup update", "Catch me up on design", "Post a reminder"]
         ),
         SpeedConnector(
@@ -522,6 +574,7 @@ private enum SpeedConnectorCatalog {
             category: "Planning",
             description: "Create meetings and inspect availability through Composio.",
             accent: Color(hex: "#34A853"),
+            badge: .popular(3),
             examples: ["Schedule a call tomorrow", "Move my 3 PM meeting", "Find open time Friday"]
         ),
         SpeedConnector(
@@ -532,6 +585,7 @@ private enum SpeedConnectorCatalog {
             category: "Knowledge",
             description: "Create pages, update notes, and pull workspace context into Speed.",
             accent: Color.white.opacity(0.92),
+            badge: .popular(6),
             examples: ["Add this to product notes", "Find the launch checklist", "Create a meeting page"]
         ),
         SpeedConnector(
@@ -542,6 +596,7 @@ private enum SpeedConnectorCatalog {
             category: "Developer",
             description: "Read issues, create pull requests, and work with repositories.",
             accent: Color(hex: "#A78BFA"),
+            badge: .new,
             examples: ["Open a bug issue", "Summarize recent PRs", "Find failing checks"]
         ),
         SpeedConnector(
@@ -552,6 +607,7 @@ private enum SpeedConnectorCatalog {
             category: "Planning",
             description: "Create issues, inspect cycles, and keep project status moving.",
             accent: Color(hex: "#5E6AD2"),
+            badge: .new,
             examples: ["Create a task for this", "Move it to in progress", "List urgent bugs"]
         ),
         SpeedConnector(
@@ -562,147 +618,85 @@ private enum SpeedConnectorCatalog {
             category: "Media",
             description: "Control playback and use music context without leaving the notch.",
             accent: Color(hex: "#1DB954"),
+            badge: .popular(4),
             examples: ["Play focus music", "Pause Spotify", "Skip this track"]
         )
     ]
 }
 
-private struct ConnectorPickerRow: View {
-    let connector: SpeedConnector
-    let isSelected: Bool
-    let isPending: Bool
-    let onSelect: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 10) {
-                ConnectorIcon(connector: connector, size: 32, iconSize: 14)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(connector.name)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text(isPending ? "Connect link ready" : connector.category)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(isPending ? DS.Colors.accentText : .white.opacity(0.42))
-                        .lineLimit(1)
-                }
-
-                Spacer()
-
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(isSelected ? DS.Colors.accentText : .white.opacity(0.28))
-            }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(isSelected ? DS.Colors.accentSubtle : Color.white.opacity(0.045))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(isSelected ? DS.Colors.accentText.opacity(0.65) : Color.white.opacity(0.07), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct ConnectorDetailCard: View {
+private struct ConnectorGridCard: View {
     let connector: SpeedConnector
     let pendingConnection: PendingConnection?
     let onConnect: () -> Void
     let onOpenPending: (PendingConnection) -> Void
-    let onDismissPending: (PendingConnection) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 12) {
-                ConnectorIcon(connector: connector, size: 54, iconSize: 24)
+                ConnectorIcon(connector: connector, size: 44, iconSize: 20)
 
-                VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(connector.name)
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                    Text(connector.category)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(connector.accent)
-                        .textCase(.uppercase)
-                    Text(connector.description)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.58))
-                        .fixedSize(horizontal: false, vertical: true)
+                    badge
                 }
+                .padding(.top, 4)
+
                 Spacer(minLength: 0)
+
+                actionButton
             }
 
-            if let pendingConnection {
-                PendingConnectorBanner(
-                    connection: pendingConnection,
-                    onOpen: { onOpenPending(pendingConnection) },
-                    onDismiss: { onDismissPending(pendingConnection) }
-                )
-            } else {
-                Button(action: onConnect) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 12, weight: .bold))
-                        Text("Connect \(connector.name)")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-                }
-                .buttonStyle(.plain)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Try Asking")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.45))
-                    .textCase(.uppercase)
-
-                ForEach(connector.examples, id: \.self) { example in
-                    HStack(spacing: 8) {
-                        Image(systemName: "quote.opening")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(connector.accent.opacity(0.85))
-                            .frame(width: 14)
-                        Text(example)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.82))
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.045)))
-                }
-            }
-
-            Spacer(minLength: 0)
+            Text(connector.description)
+                .font(.system(size: 13))
+                .foregroundStyle(.white.opacity(0.5))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(14)
-        .background(
-            ZStack(alignment: .topTrailing) {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.white.opacity(0.055))
-                Circle()
-                    .fill(connector.accent.opacity(0.28))
-                    .frame(width: 150, height: 150)
-                    .blur(radius: 36)
-                    .offset(x: 58, y: -64)
-            }
-        )
+        .padding(18)
+        .frame(maxWidth: .infinity, minHeight: 152, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.04)))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    private var badge: some View {
+        switch connector.badge {
+        case .new:
+            Text("New")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(hex: "#E8845C"))
+        case .popular(let rank):
+            Text("#\(rank) popular")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.38))
+        case .none:
+            EmptyView()
+        }
+    }
+
+    private var actionButton: some View {
+        Button {
+            if let pendingConnection {
+                onOpenPending(pendingConnection)
+            } else {
+                onConnect()
+            }
+        } label: {
+            Image(systemName: pendingConnection != nil ? "arrow.triangle.2.circlepath" : "plus")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(pendingConnection != nil ? DS.Colors.accentText : .white.opacity(0.65))
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(pendingConnection != nil ? "Open authorization link" : "Connect \(connector.name)")
     }
 }
 
@@ -724,61 +718,6 @@ private struct ConnectorIcon: View {
                 RoundedRectangle(cornerRadius: min(14, size * 0.28), style: .continuous)
                     .strokeBorder(connector.accent.opacity(0.22), lineWidth: 1)
             )
-    }
-}
-
-private struct PendingConnectorBanner: View {
-    let connection: PendingConnection
-    let onOpen: () -> Void
-    let onDismiss: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(DS.Colors.accentText)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(DS.Colors.accentSubtle))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Authorization Ready")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text(connection.toolkit.capitalized)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.45))
-            }
-            Spacer()
-            Button("Open") {
-                onOpen()
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.black)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Capsule().fill(Color.white))
-
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.42))
-                    .frame(width: 22, height: 22)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(DS.Colors.accentSubtle)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(DS.Colors.accentText.opacity(0.32), lineWidth: 1)
-        )
-    }
-
-    private var icon: String {
-        "link.badge.plus"
     }
 }
 
@@ -1104,6 +1043,27 @@ final class SpeedMusicManager: ObservableObject {
     @Published var activeAppIcon: NSImage = NSWorkspace.shared.icon(forFile: "/System/Applications/Music.app")
     @Published var albumArt: NSImage = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Album Art")!
 
+    private let placeholderArt = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Album Art")!
+    private var lastArtworkURL: String?
+    private var pollTimer: Timer?
+
+    /// Keeps the panel in sync with whatever the player is doing. Polling is the
+    /// only way the panel reflects a track the user starts *after* opening it, and
+    /// it also lets the first Apple event reach Spotify/Music so macOS can show the
+    /// one-time Automation permission prompt.
+    func startPolling() {
+        refresh()
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+    }
+
+    func stopPolling() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
     var currentElapsedTime: Double {
         guard isPlaying else { return elapsedTime }
         return min(max(elapsedTime + Date().timeIntervalSince(timestampDate) * playbackRate, 0), duration)
@@ -1128,21 +1088,38 @@ final class SpeedMusicManager: ObservableObject {
         activeBundleIdentifier = "com.apple.Music"
         activeAppName = "Music"
         activeAppIcon = icon(forBundleIdentifier: activeBundleIdentifier)
+        lastArtworkURL = nil
+        albumArt = placeholderArt
     }
 
     func togglePlay() {
+        // Optimistic flip so the button reacts instantly; the player state query
+        // right after a playpause command often still reports the old value.
+        isPlaying.toggle()
+        playbackRate = isPlaying ? 1 : 0
+        timestampDate = Date()
         runScript(command: "playpause", in: activeAppName)
-        refresh()
+        refreshAfterCommand()
     }
 
     func next() {
         runScript(command: "next track", in: activeAppName)
-        refresh()
+        refreshAfterCommand()
     }
 
     func previous() {
         runScript(command: "previous track", in: activeAppName)
+        refreshAfterCommand()
+    }
+
+    /// Player state lags a beat after a transport command, so re-read once now and
+    /// again shortly after to settle on the real values.
+    private func refreshAfterCommand() {
         refresh()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            refresh()
+        }
     }
 
     func toggleShuffle() {
@@ -1194,41 +1171,86 @@ final class SpeedMusicManager: ObservableObject {
     private func updateFromSpotify() -> Bool {
         guard isRunning(bundleIdentifier: "com.spotify.client") else { return false }
 
+        // One Apple event instead of nine. `try` guards the cases where there is no
+        // current track (ad, podcast boundary) so a single missing field can't drop
+        // the whole read back to the "Spotify / Ready" placeholder state.
+        let script = """
+        tell application "Spotify"
+            set _state to player state as string
+            set _pos to player position as string
+            set _shuffle to shuffling as string
+            set _repeat to repeating as string
+            set _name to ""
+            set _artist to ""
+            set _album to ""
+            set _dur to "0"
+            set _art to ""
+            try
+                set _name to name of current track
+                set _artist to artist of current track
+                set _album to album of current track
+                set _dur to duration of current track as string
+                set _art to artwork url of current track
+            end try
+            return _state & "\t" & _name & "\t" & _artist & "\t" & _album & "\t" & _dur & "\t" & _pos & "\t" & _shuffle & "\t" & _repeat & "\t" & _art
+        end tell
+        """
+        guard let fields = scriptValues(script, expected: 9) else { return false }
+
         activeAppName = "Spotify"
         activeBundleIdentifier = "com.spotify.client"
         activeAppIcon = icon(forBundleIdentifier: activeBundleIdentifier)
-        title = scriptValue("tell application \"Spotify\" to name of current track") ?? "Spotify"
-        artist = scriptValue("tell application \"Spotify\" to artist of current track") ?? "Ready"
-        album = scriptValue("tell application \"Spotify\" to album of current track") ?? ""
-        isPlaying = scriptValue("tell application \"Spotify\" to player state as string") == "playing"
-        duration = (Double(scriptValue("tell application \"Spotify\" to duration of current track") ?? "") ?? 0) / 1000
-        elapsedTime = Double(scriptValue("tell application \"Spotify\" to player position") ?? "") ?? 0
+        isPlaying = fields[0] == "playing"
+        title = fields[1].isEmpty ? "Spotify" : fields[1]
+        artist = fields[2].isEmpty ? "Ready" : fields[2]
+        album = fields[3]
+        duration = (Double(fields[4]) ?? 0) / 1000
+        elapsedTime = Double(fields[5]) ?? 0
         timestampDate = Date()
         playbackRate = isPlaying ? 1 : 0
-        isShuffled = scriptValue("tell application \"Spotify\" to shuffling as string") == "true"
-        repeatMode = scriptValue("tell application \"Spotify\" to repeating as string") == "true" ? "all" : "off"
-        if let artworkURLString = scriptValue("tell application \"Spotify\" to artwork url of current track") {
-            updateArtwork(from: artworkURLString)
-        }
+        isShuffled = fields[6] == "true"
+        repeatMode = fields[7] == "true" ? "all" : "off"
+        updateArtwork(from: fields[8])
         return true
     }
 
     private func updateFromMusic() -> Bool {
         guard isRunning(bundleIdentifier: "com.apple.Music") else { return false }
 
+        let script = """
+        tell application "Music"
+            set _state to player state as string
+            set _pos to player position as string
+            set _repeat to song repeat as string
+            set _name to ""
+            set _artist to ""
+            set _album to ""
+            set _dur to "0"
+            try
+                set _name to name of current track
+                set _artist to artist of current track
+                set _album to album of current track
+                set _dur to duration of current track as string
+            end try
+            return _state & "\t" & _name & "\t" & _artist & "\t" & _album & "\t" & _dur & "\t" & _pos & "\t" & _repeat
+        end tell
+        """
+        guard let fields = scriptValues(script, expected: 7) else { return false }
+
         activeAppName = "Music"
         activeBundleIdentifier = "com.apple.Music"
         activeAppIcon = icon(forBundleIdentifier: activeBundleIdentifier)
-        title = scriptValue("tell application \"Music\" to name of current track") ?? "Music"
-        artist = scriptValue("tell application \"Music\" to artist of current track") ?? "Ready"
-        album = scriptValue("tell application \"Music\" to album of current track") ?? ""
-        isPlaying = scriptValue("tell application \"Music\" to player state as string") == "playing"
-        duration = Double(scriptValue("tell application \"Music\" to duration of current track") ?? "") ?? 0
-        elapsedTime = Double(scriptValue("tell application \"Music\" to player position") ?? "") ?? 0
+        isPlaying = fields[0] == "playing"
+        title = fields[1].isEmpty ? "Music" : fields[1]
+        artist = fields[2].isEmpty ? "Ready" : fields[2]
+        album = fields[3]
+        duration = Double(fields[4]) ?? 0
+        elapsedTime = Double(fields[5]) ?? 0
         timestampDate = Date()
         playbackRate = isPlaying ? 1 : 0
         isShuffled = false
-        repeatMode = (scriptValue("tell application \"Music\" to song repeat as string") ?? "off").lowercased()
+        repeatMode = fields[6].lowercased()
+        lastArtworkURL = nil
         albumArt = icon(forBundleIdentifier: activeBundleIdentifier)
         return true
     }
@@ -1245,10 +1267,14 @@ final class SpeedMusicManager: ObservableObject {
     }
 
     private func updateArtwork(from urlString: String) {
-        guard let url = URL(string: urlString) else { return }
+        guard !urlString.isEmpty, let url = URL(string: urlString) else { return }
+        // Avoid re-downloading the same artwork on every 1s poll.
+        guard urlString != lastArtworkURL else { return }
+        lastArtworkURL = urlString
         Task {
             guard let data = try? Data(contentsOf: url), let image = NSImage(data: data) else { return }
             await MainActor.run {
+                guard self.lastArtworkURL == urlString else { return }
                 self.albumArt = image
             }
         }
@@ -1258,10 +1284,23 @@ final class SpeedMusicManager: ObservableObject {
         _ = scriptValue("tell application \"\(appName)\" to \(command)")
     }
 
+    @discardableResult
     private func scriptValue(_ source: String) -> String? {
         var error: NSDictionary?
         let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
         return result?.stringValue
+    }
+
+    /// Runs a script that returns tab-delimited fields. Returns nil if the script
+    /// failed (e.g. Automation permission not granted) so the caller can fall back.
+    private func scriptValues(_ source: String, expected: Int) -> [String]? {
+        guard let raw = scriptValue(source) else { return nil }
+        var fields = raw.components(separatedBy: "\t")
+        guard fields.count >= expected else { return nil }
+        if fields.count > expected {
+            fields = Array(fields.prefix(expected))
+        }
+        return fields
     }
 }
 

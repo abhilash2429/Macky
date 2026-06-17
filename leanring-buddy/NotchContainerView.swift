@@ -26,6 +26,7 @@ struct NotchContainerView: View {
     @State private var panelPage: PanelPage = .home
     @State private var fileDropURLs: [URL] = []
     @State private var isHovering = false
+    @State private var isDropTargeted = false
     @State private var collapseTask: Task<Void, Never>?
 
     private let morphAnimation = Animation.timingCurve(
@@ -63,11 +64,23 @@ struct NotchContainerView: View {
                 .contentShape(Rectangle())
                 .onHover { handleHover($0) }
                 .onTapGesture { open() }
-                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                     panelPage = .files
                     open()
                     ingestDroppedProviders(providers)
                     return true
+                }
+                .onChange(of: isDropTargeted) { _, targeted in
+                    // As soon as a file drag hovers the notch, expand and jump to the
+                    // Files page so there's a real drop surface. onHover doesn't fire
+                    // reliably mid-drag, so this is what actually opens the panel.
+                    if targeted {
+                        collapseTask?.cancel()
+                        panelPage = .files
+                        open()
+                    } else {
+                        scheduleCollapse()
+                    }
                 }
         }
         .frame(maxWidth: NotchConstants.windowSize.width, maxHeight: NotchConstants.windowSize.height, alignment: .top)
@@ -172,7 +185,9 @@ struct NotchContainerView: View {
         collapseTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled, !isHovering else { return }
+            guard !isDropTargeted else { return }
             guard !setupRequiresPanel else { return }
+            // Keep the panel up while the user is in the middle of attaching files.
             if panelPage == .files && !fileDropURLs.isEmpty { return }
             close()
         }
