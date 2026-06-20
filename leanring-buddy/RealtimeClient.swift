@@ -98,6 +98,12 @@ final class RealtimeClient: ObservableObject {
     /// marked done. Used to keep the notch in an executing state during remote
     /// Composio work, not just after a completed output item arrives.
     private var activeMCPCallIDs = Set<String>()
+    /// The single authoritative count of in-flight tool calls — native and MCP
+    /// combined. `isToolActive` is derived from this (via `adjustInFlight`), so a
+    /// native call starting inside an MCP call's cosmetic-fade window (or vice
+    /// versa) can never have the spinner cleared out from under it: the flag only
+    /// drops to false when *every* in-flight call, of either kind, has finished.
+    private var inFlightCallCount = 0
 
     /// True between the first audio delta and the matching done event, so we
     /// only fire `onResponseAudioStarted` once per response.
@@ -591,6 +597,16 @@ final class RealtimeClient: ObservableObject {
         heartbeatTask = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
+
+        // Reset tool-activity state: a disconnect mid-call means the MCP completion
+        // event will never arrive, so without this the in-flight count (and the
+        // spinner derived from it) would stay stuck across the reconnect. Native
+        // calls in flight resolve their own count via their continuation; clearing
+        // the MCP set here keeps `inFlightCallCount` and `activeMCPCallIDs` consistent.
+        if !activeMCPCallIDs.isEmpty {
+            adjustInFlight(-activeMCPCallIDs.count)
+            activeMCPCallIDs.removeAll()
+        }
     }
 
     /// Tears down the current connection and reconnects after a short backoff.
@@ -746,14 +762,17 @@ final class RealtimeClient: ObservableObject {
             ?? toolName
 
         if completed {
+            // The remote action has finished. Drop this MCP call's in-flight count
+            // immediately so the notch can settle the moment the turn ends — the "✓"
+            // confirmation below is cosmetic and must not gate that. The shared count
+            // keeps the spinner up if any other call (MCP or native) is still in
+            // flight, closing the race where this cleanup used to flip the flag off
+            // while a native call it knew nothing about was still running. Only
+            // decrement when this call was actually tracked, to keep the count balanced.
             if activeMCPCallIDs.remove(callID) != nil {
+                adjustInFlight(-1)
                 onMCPCallEnded?()
             }
-            // The remote action has finished. Drop the "active" signal immediately
-            // (once no other MCP call is in flight) so the notch can settle the
-            // moment the turn ends — the "✓" confirmation below is cosmetic and must
-            // not gate that. Holding it kept the notch stuck on "Thinking".
-            if activeMCPCallIDs.isEmpty { isToolActive = false }
             activityGeneration += 1
             let generation = activityGeneration
             currentActivity = Self.successPhrase(for: item["output"] as? String ?? "{\"status\":\"done\"}")
@@ -768,7 +787,7 @@ final class RealtimeClient: ObservableObject {
             activityGeneration += 1
             currentActivity = pendingNarration ?? Self.connectorActivityPhrase(for: toolName)
             pendingNarration = nil
-            isToolActive = true
+            adjustInFlight(+1)
             onMCPCallStarted?(toolName)
         }
 
@@ -958,6 +977,20 @@ final class RealtimeClient: ObservableObject {
         sendSessionUpdate()
     }
 
+    // MARK: - Tool-activity state
+
+    /// The single writer of `isToolActive`. Both the native-tool path
+    /// (`dispatchFunctionCall`) and the MCP path (`handleMCPOutputItem`) route
+    /// their start/finish through here so the spinner is governed by one shared
+    /// in-flight count rather than two independent rules. `isToolActive` is true
+    /// iff at least one call (native or MCP) is in flight, which closes the race
+    /// where a stale MCP cleanup flipped the flag off while a native call it knew
+    /// nothing about was still running (and the symmetric case).
+    private func adjustInFlight(_ delta: Int) {
+        inFlightCallCount = max(0, inFlightCallCount + delta)
+        isToolActive = inFlightCallCount > 0
+    }
+
     // MARK: - Function Calling
 
     /// Runs the handler for a completed function call, then sends the result
@@ -983,7 +1016,7 @@ final class RealtimeClient: ObservableObject {
         let generation = activityGeneration
         currentActivity = pendingNarration
         pendingNarration = nil
-        isToolActive = true
+        adjustInFlight(+1)
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1008,13 +1041,15 @@ final class RealtimeClient: ObservableObject {
             self.isResponseCancelled = false
             self.sendJSON(["type": "response.create"])
 
-            // The handler is done and the follow-up response is requested. Drop the
-            // "active" signal now (the model's spoken reply, if any, drives the notch
-            // from here) so a short turn can't end while we're still flagged busy and
-            // leave the notch stuck. Briefly show a "✓ …" confirmation — cosmetic,
-            // it does not gate settling — unless a newer tool call has taken over.
+            // The handler is done and the follow-up response is requested. Drop this
+            // call's in-flight count now (the model's spoken reply, if any, drives the
+            // notch from here) so a short turn can't end while we're still flagged busy
+            // and leave the notch stuck. The shared count keeps the spinner up if any
+            // other call (native or MCP) is still running. Briefly show a "✓ …"
+            // confirmation — cosmetic, it does not gate settling — unless a newer tool
+            // call has taken over (guarded by the generation).
+            self.adjustInFlight(-1)
             guard self.activityGeneration == generation else { return }
-            self.isToolActive = false
             self.currentActivity = Self.successPhrase(for: output)
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             guard self.activityGeneration == generation else { return }
