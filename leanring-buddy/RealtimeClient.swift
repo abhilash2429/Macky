@@ -149,13 +149,14 @@ final class RealtimeClient: ObservableObject {
         isReceivingResponseAudio || scheduledPlaybackBufferCount > 0
     }
 
-    /// Deployed Cloudflare Worker /realtime endpoint (Milestone 1 proxy → Azure
-    /// GPT-Realtime-2). All traffic routes through here so no key ships in the binary.
-    private let workerRealtimeURL = URL(string: "wss://realtime-proxy.speedmac.workers.dev/realtime")!
+    /// Deployed Cloudflare Worker /realtime endpoint (proxy → Azure GPT-Realtime-2).
+    /// All traffic routes through here so no key ships in the binary. Host derives from
+    /// the shared `WorkerEndpoints`.
+    private let workerRealtimeURL = WorkerEndpoints.realtimeURL
 
     /// Deployed Worker route that mints a Composio Tool Router session and returns
     /// `{ url, key }` for the MCP tool entry. Fetched once per session on connect.
-    private let composioConfigURL = URL(string: "https://realtime-proxy.speedmac.workers.dev/composio-config")!
+    private let composioConfigURL = WorkerEndpoints.composioConfigURL
     /// Cached Composio MCP session URL + project API key for this session, populated
     /// by the one-time `/composio-config` fetch. Nil if the fetch failed/timed out —
     /// in which case the mcp tool entry is simply omitted and local tools still work.

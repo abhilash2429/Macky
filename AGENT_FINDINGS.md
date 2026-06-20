@@ -230,3 +230,31 @@ Four-part claim. Items 1–3 are prompt-engineering; item 4 is a product-risk de
   Listed for Ab in the Phase 12 deferred-items roundup.
 - **Done-when:** `rg "MCP-CAPTURE"` → zero hits in the shipped path. Confirmed.
 - **No Xcode build run** — static verification.
+
+## Phase 6 — Centralize the Worker base URL
+
+- **Claim:** the Worker host is hardcoded independently in 5 places across 3 files, and the
+  self-hosting docs only mention updating 2 of them (`AuthManager.workerBaseURL` +
+  `RealtimeClient`'s two URLs), never `CompanionManager`'s two — so a self-hoster following
+  the docs ends up with connector calls still hitting the original production Worker.
+- **Verification:** `rg realtime-proxy.speedmac.workers.dev` over Swift confirmed exactly 5
+  independent literals, no shared constant:
+  - AuthManager.swift:35 (`workerBaseURL`, base for auth routes, concatenated with a path)
+  - RealtimeClient.swift:154 (`workerRealtimeURL`), :158 (`composioConfigURL`)
+  - CompanionManager.swift:247 (`composioConnectURL`), :249 (`composioConnectionsURL`)
+  - README §12 / root AGENTS.md / leanring-buddy/AGENTS.md name only AuthManager +
+    RealtimeClient; none mention CompanionManager's two URLs. Gap confirmed.
+  - The two CompanionManager URLs are plain Worker routes (`/composio-connect`,
+    `/composio-connections`), not a separate concern — they must point at the same host.
+- **Verdict:** **confirmed.**
+- **Action:**
+  - Added `leanring-buddy/WorkerEndpoints.swift` — one `enum WorkerEndpoints` with
+    `baseHost` (the single value to change when self-hosting) and derived `httpsBase`,
+    `realtimeURL`, `composioConfigURL`, `composioConnectURL`, `composioConnectionsURL`.
+  - Rewired all 5 call sites to derive from it.
+  - The Xcode project uses `PBXFileSystemSynchronizedRootGroup` (no per-file pbxproj
+    entries; confirmed `ConnectorRegistry.swift` has no explicit entry either), so the new
+    file is picked up automatically by its presence in `leanring-buddy/`.
+- **Done-when:** `rg realtime-proxy.speedmac.workers.dev --type swift` → exactly **one** hit
+  (`WorkerEndpoints.swift:15`). Confirmed. Docs corrected in Phase 11.
+- **No Xcode build run** — static verification.

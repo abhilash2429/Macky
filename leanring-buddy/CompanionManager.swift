@@ -244,9 +244,10 @@ final class CompanionManager: ObservableObject {
 
     /// The Cloudflare Worker endpoint that returns a Composio connect link directly,
     /// bypassing the realtime voice model so a connector tap doesn't trigger filler.
-    private static let composioConnectURL = URL(string: "https://realtime-proxy.speedmac.workers.dev/composio-connect")!
+    /// Host derives from the shared `WorkerEndpoints`.
+    private static let composioConnectURL = WorkerEndpoints.composioConnectURL
     /// Worker endpoint listing the user's live (ACTIVE) connections.
-    private static let composioConnectionsURL = URL(string: "https://realtime-proxy.speedmac.workers.dev/composio-connections")!
+    private static let composioConnectionsURL = WorkerEndpoints.composioConnectionsURL
 
     /// Refreshes the set of live connections from the worker so the connectors grid
     /// can show a "connected" tick. Also clears any stale pending link for a toolkit

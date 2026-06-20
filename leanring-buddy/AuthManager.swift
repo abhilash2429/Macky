@@ -31,8 +31,9 @@ final class AuthManager: ObservableObject {
     /// The email the magic link was sent to — shown in the "check your email" state.
     @Published private(set) var pendingEmail: String?
 
-    /// Same host the realtime client uses (see RealtimeClient.workerRealtimeURL).
-    private let workerBaseURL = "https://realtime-proxy.speedmac.workers.dev"
+    /// Base for the Worker's auth routes. Derived from the single shared host in
+    /// `WorkerEndpoints` so self-hosting only requires changing it in one place.
+    private let workerBaseURL = WorkerEndpoints.httpsBase
     private static let keychainService = "macky.session"
 
     private init() {
