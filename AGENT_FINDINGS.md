@@ -442,3 +442,51 @@ Four-part claim. Items 1–3 are prompt-engineering; item 4 is a product-risk de
   read from it. Confirmed.
 - **No Xcode build run** — static verification (slug-set diff, asset existence check, consumer
   trace).
+
+## Phase 11 — Documentation reconciliation sweep
+
+- **Claim:** the external `context` file says "Milestone 1 in progress, 2–17 not started,"
+  wildly stale vs the actual code; in-repo docs are closer but may have drifted from phases
+  1–10.
+- **Verification + actions:**
+  - **README §12 (self-hosting):** confirmed it named only `AuthManager` + `RealtimeClient`
+    (the Phase 6 gap). Rewrote it to point at the single `WorkerEndpoints.baseHost` and to say
+    every Worker URL (incl. the previously-omitted CompanionManager connect/connections calls)
+    derives from it. **Fixed.**
+  - **Root `AGENTS.md`:** updated the Worker-URL bullet from "hardcoded in `AuthManager`/
+    `RealtimeClient`" to "defined once in `WorkerEndpoints.baseHost`, derived by AuthManager/
+    RealtimeClient/CompanionManager." **Fixed.**
+  - **`leanring-buddy/AGENTS.md`:** updated the `RealtimeClient.swift` and `AuthManager.swift`
+    file-map entries (no longer "hardcoded here"), added a `WorkerEndpoints.swift` entry, and
+    (in Phase 7/8) added the reconnect/concurrent-fetch architecture notes and an Observability
+    section. **Fixed.**
+  - **Milestone status:** `rg` for "Milestone 1 in progress" / "Milestones 2" / "not started"
+    across every in-repo doc returned **nothing** — confirming the stale status lives only in
+    the **external `context` file**, not the repo. No in-repo edit needed for it.
+  - **Worker host in docs:** `worker/AGENTS.md:62` references the host as `PUBLIC_BASE_URL`
+    (the Worker's own deployed origin) — correct context, not the client-side hardcoding Phase
+    6 changed. Left as-is.
+- **Found during verification (product-behavior conflict — surfaced, not silently resolved):**
+  `MACKY.md` has two narration statements that disagree with the *current* system prompt:
+  - Line 42: "while tools are running it talks… says 'on it' or 'let me check that' or 'give
+    me a sec'." The current `mackySystemPrompt` (RealtimeClient.swift) explicitly **forbids**
+    this: "Never narrate your process… 'let me find that'… are forbidden. Run every tool
+    silently and speak only once you have the result." This is a real doc-vs-code conflict
+    about whether Macky speaks filler while tools run.
+  - Line 61: "narrate each tool call as a short active-present phrase **before** executing it"
+    — the prompt instead confirms **after**. The *visual* notch enumeration (the "⠸ sending
+    message" lines) being model-sourced IS consistent with the code (`currentActivity`), but
+    the "before / talks while running" framing is not.
+  - **Per root AGENTS.md ("when code and MACKY.md disagree, pause and surface the conflict
+    before changing behavior"), I did NOT rewrite MACKY.md's product framing.** This is a
+    product decision for Ab: either (a) MACKY.md is the intended behavior and the prompt should
+    be loosened to allow spoken progress, or (b) the silent-execution prompt is intended and
+    MACKY.md lines 42/61 should be updated to describe silent execution + after-the-fact
+    confirmation. Listed in the Phase 12 roundup.
+- **External `context` file:** **flag for Ab** — the Claude Project's `context` file (outside
+  this git repo) is stale (says "Milestone 1 in progress"). Recommend updating it directly or
+  retiring it in favor of the root `AGENTS.md`, which is now the more accurate source. Per the
+  phase instruction, did **not** attempt to edit it through any mechanism.
+- **No Xcode build run** — docs-only phase; verified links/paths resolve and no in-repo doc
+  still contradicts the post-Phase-10 code (except the MACKY.md product-intent conflict above,
+  deliberately left for Ab).

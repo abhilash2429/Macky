@@ -60,10 +60,11 @@ to the notch.
 ### Voice pipeline
 - `RealtimeClient.swift` — persistent WebSocket, `session.update` payload, realtime event
   parsing, local function-tool dispatch, Composio MCP registration, audio send/receive,
-  heartbeat, and reconnect. The Worker endpoints are **hardcoded** here:
-  `wss://realtime-proxy.speedmac.workers.dev/realtime` (`workerRealtimeURL`) and
-  `…/composio-config` (`composioConfigURL`). Self-hosting the backend means changing these
-  plus `AuthManager.workerBaseURL`.
+  heartbeat, and reconnect. Its Worker URLs (`workerRealtimeURL`, `composioConfigURL`)
+  derive from the shared `WorkerEndpoints` — they are no longer hardcoded here.
+- `WorkerEndpoints.swift` — the single source of truth for the hosted Worker's host
+  (`baseHost`) and every derived URL (realtime socket, Composio config/connect/connections,
+  auth base). Change `baseHost` here (only) to self-host the backend.
 - `BuddyDictationManager.swift` — captures the mic and streams PCM16 24 kHz mono chunks.
 - `AudioConversionSupport.swift` — audio format conversion helpers.
 - `GlobalPushToTalkShortcutMonitor.swift` — listen-only global CGEvent tap for
@@ -71,9 +72,9 @@ to the notch.
 
 ### Auth
 - `AuthManager.swift` — magic-link auth against the Worker; stores the session in
-  Keychain. The Worker base URL is **hardcoded** here as
-  `https://realtime-proxy.speedmac.workers.dev` (`workerBaseURL`). Handles the incoming
-  `Macky://auth?token=…` deep link and exchanges the token via `/auth/verify`.
+  Keychain. Its `workerBaseURL` derives from `WorkerEndpoints.httpsBase` (not hardcoded
+  here). Handles the incoming `Macky://auth?token=…` deep link and exchanges the token via
+  `/auth/verify`.
 
 ### Local integrations (macOS-native, no cloud)
 - `CalendarIntegration.swift` — EventKit (calendar).

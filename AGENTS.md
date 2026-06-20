@@ -77,9 +77,11 @@ current code as the source of truth.
 - `GlobalPushToTalkShortcutMonitor` owns the global CGEvent tap and hotkey matching.
 - The Worker (`worker/src/index.ts`) keeps every secret off the client. The app talks to
   the Worker; the Worker talks to Azure realtime and Composio. The app targets a
-  **hosted** Worker by default — its URL is hardcoded in the Swift client
-  (`AuthManager.workerBaseURL`, `RealtimeClient.workerRealtimeURL`), so normal app users
-  do not deploy a backend. Self-hosting means deploying `worker/` and changing those URLs.
+  **hosted** Worker by default — its host is defined in **one** place,
+  `WorkerEndpoints.baseHost` (`leanring-buddy/WorkerEndpoints.swift`), which every Worker
+  URL in the app (`AuthManager`, `RealtimeClient`, `CompanionManager`) derives from. Normal
+  app users do not deploy a backend; self-hosting means deploying `worker/` and changing
+  that single `baseHost`.
 - **Two integration buckets:** macOS-native actions are implemented locally in Swift; web
   services go through the Composio MCP gateway wired into the realtime session config.
 

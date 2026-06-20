@@ -253,7 +253,9 @@ hosted backend.
 
 The app never talks to AI providers directly. A small **Cloudflare Worker** (in `worker/`)
 sits in between, holds the secrets, and proxies the realtime voice connection. The app
-points at a hosted Worker whose URL is hardcoded in the Swift code. To run your own:
+points at a hosted Worker whose host is defined in **one** place in the Swift code
+([`leanring-buddy/WorkerEndpoints.swift`](leanring-buddy/WorkerEndpoints.swift)). To run
+your own:
 
 1. Read [`worker/AGENTS.md`](worker/AGENTS.md) for the full route and secret list.
 2. From `worker/`, authenticate and create the token store:
@@ -273,10 +275,11 @@ points at a hosted Worker whose URL is hardcoded in the Swift code. To run your 
    ```bash
    npx wrangler deploy
    ```
-5. Point the app at your Worker by updating the hardcoded URLs in
-   [`leanring-buddy/AuthManager.swift`](leanring-buddy/AuthManager.swift) (`workerBaseURL`)
-   and [`leanring-buddy/RealtimeClient.swift`](leanring-buddy/RealtimeClient.swift)
-   (`workerRealtimeURL`, `composioConfigURL`), then rebuild.
+5. Point the app at your Worker by changing the single `baseHost` constant in
+   [`leanring-buddy/WorkerEndpoints.swift`](leanring-buddy/WorkerEndpoints.swift), then
+   rebuild. Every Worker URL the app uses — the realtime socket, the Composio config
+   fetch, the connector connect/connections calls, and the magic-link auth routes — derives
+   from that one host, so there is nothing else to update.
 
 To package and ship a signed, notarized release, see [`scripts/README.md`](scripts/README.md)
 and [`scripts/AGENTS.md`](scripts/AGENTS.md).
