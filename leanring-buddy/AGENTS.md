@@ -93,11 +93,17 @@ to the notch.
 ## 4. Active Architecture Notes
 
 - The realtime socket is **persistent**. The app connects once and stays connected; it
-  does not connect/disconnect per utterance.
+  does not connect/disconnect per utterance. On connect, the socket opens immediately and
+  the one-time Composio MCP config is fetched **concurrently** (not before the socket) — if
+  it resolves after the first `session.update`, the MCP tool is wired in with a follow-up
+  update. A reconnect mid-utterance does **not** replay dropped mic audio (the server-side
+  input buffer is cleared on reconnect, so replaying a fragment would mis-transcribe);
+  instead the dropped utterance is surfaced via `lastError` rather than silently committed.
 - macOS-native actions stay local in Swift; web services go through the **Composio MCP
   gateway** wired into the realtime session config — not through one-off OAuth clients.
 - Screen context is **on demand** — the app does not capture or send screenshots on every
-  key press.
+  key press, and by default captures only the cursor's display (the `get_screen_context`
+  tool's `all_screens` flag opts into every monitor).
 
 ---
 

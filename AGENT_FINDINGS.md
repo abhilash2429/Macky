@@ -258,3 +258,74 @@ Four-part claim. Items 1–3 are prompt-engineering; item 4 is a product-risk de
 - **Done-when:** `rg realtime-proxy.speedmac.workers.dev --type swift` → exactly **one** hit
   (`WorkerEndpoints.swift:15`). Confirmed. Docs corrected in Phase 11.
 - **No Xcode build run** — static verification.
+
+## Phase 7 — Latency fixes (five independent sub-claims)
+
+### 7a — Composio config fetch blocks socket open
+- *Claim:* `connect()` awaits `fetchComposioConfig()` (up to 5s) before `openSocket()`,
+  serializing two independent ops and adding up to 5s to launch.
+- *Verified:* confirmed — pre-edit `connect()` (RealtimeClient.swift ~539–547) awaited the
+  fetch inside a Task, then opened the socket. `sendSessionUpdate` (which consumes
+  `composioMCPURL`/`composioKey`) only runs on `session.created`, so there is no correctness
+  reason for the serialization — the fetch can overlap the handshake.
+- *Verdict:* **confirmed.** *Action:* `connect()` now calls `openSocket()` immediately and
+  fetches config concurrently. Added `sessionUpdateSent`; if the config resolves after the
+  first `session.update`, `fetchComposioConfig` sends a follow-up update (same mechanism
+  `setContinuousTurnDetection` uses) so connectors still work that session.
+
+### 7b — No audio buffering across reconnect
+- *Claim:* `sendJSON` no-ops when `webSocketTask == nil`; a mid-utterance reconnect drops
+  in-flight audio with no replay.
+- *Verified:* confirmed — `sendJSON` returns early on nil task (RealtimeClient.swift:1179);
+  `sendAudio` routed straight through it with no queuing; 1s reconnect backoff. A drop during
+  an active push-to-talk press is plausible (not purely theoretical) on a flaky network.
+- *Verdict:* **confirmed.** *Action:* chose **surface-the-drop over blind replay** (the task's
+  fallback option) because a reconnect clears the *server-side* input buffer — replaying only
+  part of an utterance would commit a fragment that transcribes wrong. Added
+  `audioDroppedDuringUtterance`: set when `sendAudio`/`commitAudio` hit a nil socket; on
+  commit, surface via `lastError` ("Lost connection while you were talking — try again.") and
+  skip committing the partial utterance. Reset at capture start (`clearAudioBuffer`).
+
+### 7c — Full session.update resend on a UI toggle
+- *Claim:* `setContinuousTurnDetection` resends the whole tool list + prompt + MCP entry just
+  to flip `turn_detection`.
+- *Verified:* confirmed it calls `sendSessionUpdate()` (full resend). BUT: a partial update
+  would need verified Azure GA merge semantics for *omitting* `tools`/`instructions` and for
+  *clearing* `turn_detection` (push-to-talk needs it set to null, not merely omitted) — not
+  determinable statically without a live session. And this runs only on a manual
+  continuous-listening toggle, **never per utterance**, so it is off the latency-critical path.
+- *Verdict:* **partially confirmed — not fixed.** The full resend is correct, just not minimal,
+  and narrowing it risks silently breaking VAD toggling for no user-perceptible gain. Left the
+  code; added a doc comment explaining why the full resend is deliberate. (No guess per rules.)
+
+### 7d — open_app rescans the filesystem every call
+- *Claim:* `installedApps()` walks four dirs via `contentsOfDirectory` on every invocation,
+  no caching.
+- *Verified:* confirmed (AppLauncherIntegration.swift ~94–114, no cache).
+- *Verdict:* **confirmed.** *Action:* added a static 60s TTL cache (`cachedApps` +
+  `cacheTimestamp`) so the common case (resolving an already-installed app) skips the rescan;
+  a freshly-installed app is still resolvable within 60s.
+
+### 7e — Multi-monitor capture always captures every display
+- *Claim:* `captureAllScreensAsJPEG` unconditionally captures every display even though
+  screen-context is almost always about one visible thing.
+- *Verified:* **partially refuted** as stated — the function *already* sorts the cursor screen
+  first and labels it, but it does capture+encode every display and had no single-display fast
+  path and no way for the model to request a specific display.
+- *Verdict:* **confirmed (the wasteful capture), partially refuted (cursor handling already
+  existed).** *Action:* `captureAllScreensAsJPEG(cursorScreenOnly:)` now defaults to capturing
+  only the cursor display (`prefix(1)` of the cursor-first sort); `get_screen_context` gained an
+  `all_screens` boolean (default false) whose description tells the model to set it only when
+  the user clearly means multiple screens. All-display capability retained as the opt-in path.
+
+### Volume-by-percent latency (documented, not auto-fixed)
+- *Verified:* confirmed — `setVolume(toPercent:)` issues up to 16 `tapVolumeKey` taps spaced
+  25ms (`Task.sleep(25_000_000)`) so the native bezel animates each step
+  (SystemControlsIntegration.swift). Deliberate native-feedback-vs-latency tradeoff.
+- *Verdict:* **confirmed-but-not-fixed** per the phase. No code change (needs Ab to revisit the
+  tradeoff if desired).
+
+- **Docs synced:** `leanring-buddy/AGENTS.md` "Active Architecture Notes" updated for the
+  concurrent config fetch, the no-replay/surface-the-drop reconnect behavior, and the
+  cursor-display default for screen context.
+- **No Xcode build run** — static verification (read + `rg` of all touched call sites).

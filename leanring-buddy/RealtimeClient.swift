@@ -131,6 +131,11 @@ final class RealtimeClient: ObservableObject {
     private var isResponseCancelled = false
     /// Count of audio chunks appended since the last commit (diagnostics).
     private var appendedAudioChunkCount = 0
+    /// Set when a mic chunk (or the commit) can't be sent because the socket is down
+    /// mid-utterance. Surfaced via `lastError` on commit so a reconnect during a
+    /// push-to-talk press doesn't silently answer a truncated utterance. Reset at the
+    /// start of each capture (`clearAudioBuffer`) and after surfacing.
+    private var audioDroppedDuringUtterance = false
 
     /// When true, the session enables server-side VAD (`turn_detection`) so the
     /// model auto-detects turn boundaries and responds without a manual commit —
@@ -165,6 +170,11 @@ final class RealtimeClient: ObservableObject {
     /// True once the per-session `/composio-config` fetch has been attempted, so
     /// heartbeat-driven reconnects don't re-fetch (cache or its absence persists).
     private var composioConfigAttempted = false
+    /// True once `sendSessionUpdate` has run for the current connection. Lets a
+    /// `/composio-config` fetch that resolves *after* the first session.update wire the
+    /// MCP tool in with a follow-up update, instead of the config fetch having to block
+    /// the socket open. Reset on each (re)connect.
+    private var sessionUpdateSent = false
 
     private let urlSession: URLSession
     private var webSocketTask: URLSessionWebSocketTask?
@@ -228,11 +238,20 @@ final class RealtimeClient: ObservableObject {
     private func registerBuiltInTools() {
         registerTool(
             name: "get_screen_context",
-            description: "Capture and look at the user's screen(s). Call this only when the user refers to something on their screen, asks what they're looking at, or you need to see the screen to help.",
-            schema: ["type": "object", "properties": [String: Any]()]
-        ) { [weak self] _ in
+            description: "Capture and look at the user's screen. Call this only when the user refers to something on their screen, asks what they're looking at, or you need to see the screen to help. By default this captures only the screen the cursor is on, which is what the user almost always means. Set all_screens to true ONLY when the user clearly asks about more than one display (e.g. \"look across all my screens\", \"what's on my other monitor\").",
+            schema: [
+                "type": "object",
+                "properties": [
+                    "all_screens": [
+                        "type": "boolean",
+                        "description": "Capture every connected display instead of just the cursor's screen. Default false. Only set true when the user explicitly refers to multiple screens."
+                    ]
+                ]
+            ]
+        ) { [weak self] arguments in
             guard let self else { return "{\"error\": \"client unavailable\"}" }
-            let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+            let allScreens = arguments["all_screens"] as? Bool ?? false
+            let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(cursorScreenOnly: !allScreens)
             // Images can't live in a function_call_output, so attach them as a
             // separate user message before the function result is sent.
             self.sendScreenContext(captures)
@@ -532,18 +551,25 @@ final class RealtimeClient: ObservableObject {
         teardown()
         isStopped = false
         isReconnecting = false
+        sessionUpdateSent = false
 
-        // Fetch the Composio MCP config exactly once per session, before opening
-        // the socket. Reconnects (via scheduleReconnect → connect) skip the fetch,
+        // Open the socket immediately and fetch the Composio MCP config *concurrently*
+        // rather than awaiting it first — the fetch (up to a 5s timeout) used to add its
+        // full latency to every launch before the socket even opened. The socket
+        // handshake and the config fetch are independent: `sendSessionUpdate` doesn't run
+        // until `session.created` arrives, so the fetch has the whole handshake to
+        // finish in parallel. If it resolves first, the MCP entry is in the first
+        // session.update; if it resolves later, `fetchComposioConfig` sends a follow-up
+        // update (same live mid-session mechanism `setContinuousTurnDetection` uses).
+        openSocket()
+
+        // The config fetch runs once per session; heartbeat-driven reconnects skip it,
         // so the cache (or its absence) persists for the session's lifetime.
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            if !self.composioConfigAttempted {
-                self.composioConfigAttempted = true
-                await self.fetchComposioConfig()
+        if !composioConfigAttempted {
+            composioConfigAttempted = true
+            Task { @MainActor [weak self] in
+                await self?.fetchComposioConfig()
             }
-            guard !self.isStopped else { return }
-            self.openSocket()
         }
     }
 
@@ -577,6 +603,13 @@ final class RealtimeClient: ObservableObject {
             composioMCPURL = url
             composioKey = key
             print("🧩 RealtimeClient: Composio MCP config loaded")
+            // If the session was already configured (the socket opened and
+            // session.created arrived before this fetch finished), the first
+            // session.update went out without the MCP entry — wire it in now with a
+            // live follow-up update so connectors still work this session.
+            if sessionUpdateSent {
+                sendSessionUpdate()
+            }
         } catch {
             print("⚠️ RealtimeClient: composio-config fetch failed: \(error); proceeding without MCP")
         }
@@ -986,11 +1019,21 @@ final class RealtimeClient: ObservableObject {
                 ]
             ]
         ])
+        sessionUpdateSent = true
     }
 
     /// Enables or disables server-side VAD (`turn_detection`) for the live session
     /// and re-sends the full `session.update` so the change takes effect mid-session.
     /// Continuous-listening mode turns this on; push-to-talk turns it off.
+    ///
+    /// The full resend (tools + instructions + MCP entry) is deliberate here, not a
+    /// missed optimization: a partial `session.update` carrying only `turn_detection`
+    /// would be smaller, but Azure's GA realtime merge semantics for omitting `tools`/
+    /// `instructions` and for clearing `turn_detection` (push-to-talk needs it set to
+    /// null, not merely omitted) aren't verifiable without a live session — and this
+    /// runs only on a manual continuous-listening toggle, never per utterance, so the
+    /// extra payload is off the latency-critical path. Kept full to avoid silently
+    /// breaking VAD toggling for no user-perceptible gain.
     func setContinuousTurnDetection(_ enabled: Bool) {
         guard continuousTurnDetectionEnabled != enabled else { return }
         continuousTurnDetectionEnabled = enabled
@@ -1300,6 +1343,16 @@ final class RealtimeClient: ObservableObject {
     /// the Realtime API expects it base64-encoded.
     func sendAudio(_ pcm16Data: Data) {
         guard !pcm16Data.isEmpty else { return }
+        // If the socket is down mid-utterance (a reconnect is in flight), this chunk
+        // can't reach the server. We deliberately do NOT buffer-and-replay: the
+        // reconnect clears the server-side input buffer, so replaying only part of an
+        // utterance would commit a fragment that transcribes wrong. Instead, flag that
+        // the utterance lost audio so `commitAudio` can surface it rather than silently
+        // committing a partial turn.
+        if webSocketTask == nil {
+            audioDroppedDuringUtterance = true
+            return
+        }
         if appendedAudioChunkCount == 0 {
             print("📤 RealtimeClient: sending first audio chunk (\(pcm16Data.count) bytes)")
         }
@@ -1315,11 +1368,22 @@ final class RealtimeClient: ObservableObject {
     /// can't be committed with the new utterance.
     func clearAudioBuffer() {
         appendedAudioChunkCount = 0
+        audioDroppedDuringUtterance = false
         sendJSON(["type": "input_audio_buffer.clear"])
     }
 
     /// Marks the end of the user's utterance (push-to-talk key release).
     func commitAudio() {
+        // A reconnect mid-utterance dropped chunks (and cleared the server buffer), so
+        // the committed audio would be incomplete. Surface it instead of committing a
+        // partial turn the user would hear get answered wrong, and skip the commit.
+        if audioDroppedDuringUtterance || webSocketTask == nil {
+            print("⚠️ RealtimeClient: audio dropped during reconnect — not committing partial utterance")
+            lastError = "Lost connection while you were talking — try again."
+            audioDroppedDuringUtterance = false
+            appendedAudioChunkCount = 0
+            return
+        }
         print("📤 RealtimeClient: commit audio (\(appendedAudioChunkCount) chunks)")
         appendedAudioChunkCount = 0
         sendJSON(["type": "input_audio_buffer.commit"])

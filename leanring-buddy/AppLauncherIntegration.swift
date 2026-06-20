@@ -89,9 +89,24 @@ enum AppLauncherIntegration {
         }
     }
 
+    /// Cached app list + the time it was built. Without this, every `open_app` voice
+    /// command re-walked four directories with `FileManager.contentsOfDirectory`,
+    /// adding filesystem latency to a hot voice path. The set of installed apps
+    /// changes rarely, so a short TTL is plenty: a freshly-installed app is resolvable
+    /// within `cacheTTL` seconds, and the common case (resolving an already-installed
+    /// app) skips the scan entirely.
+    private static var cachedApps: [ResolvedApp]?
+    private static var cacheTimestamp: Date = .distantPast
+    private static let cacheTTL: TimeInterval = 60
+
     /// Lists every .app bundle across the search directories, preserving the
-    /// directory order so earlier locations win when names collide.
+    /// directory order so earlier locations win when names collide. Cached for
+    /// `cacheTTL` seconds to avoid a full filesystem rescan on every voice command.
     private static func installedApps() -> [ResolvedApp] {
+        if let cachedApps, Date().timeIntervalSince(cacheTimestamp) < cacheTTL {
+            return cachedApps
+        }
+
         let fileManager = FileManager.default
         var apps: [ResolvedApp] = []
 
@@ -110,6 +125,8 @@ enum AppLauncherIntegration {
             }
         }
 
+        cachedApps = apps
+        cacheTimestamp = Date()
         return apps
     }
 

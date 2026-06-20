@@ -24,10 +24,16 @@ struct CompanionScreenCapture {
 @MainActor
 enum CompanionScreenCaptureUtility {
 
-    /// Captures all connected displays as JPEG data, labeling each with
-    /// whether the user's cursor is on that screen. This gives the AI
-    /// full context across multiple monitors.
-    static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+    /// Captures connected displays as JPEG data, labeling each with whether the user's
+    /// cursor is on that screen.
+    ///
+    /// `cursorScreenOnly` (the default) captures **only the display the cursor is on** —
+    /// almost every "what's on my screen" question is about the one screen the user is
+    /// looking at, and capturing+encoding every monitor is wasted latency and tokens.
+    /// Pass `false` only when the request is genuinely about more than one screen (the
+    /// `get_screen_context` tool lets the model ask for that explicitly). On a
+    /// single-display Mac the two paths are identical.
+    static func captureAllScreensAsJPEG(cursorScreenOnly: Bool = true) async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -58,7 +64,7 @@ enum CompanionScreenCaptureUtility {
         }
 
         // Sort displays so the cursor screen is always first
-        let sortedDisplays = content.displays.sorted { displayA, displayB in
+        let allSortedDisplays = content.displays.sorted { displayA, displayB in
             let frameA = nsScreenByDisplayID[displayA.displayID]?.frame ?? displayA.frame
             let frameB = nsScreenByDisplayID[displayB.displayID]?.frame ?? displayB.frame
             let aContainsCursor = frameA.contains(mouseLocation)
@@ -66,6 +72,11 @@ enum CompanionScreenCaptureUtility {
             if aContainsCursor != bContainsCursor { return aContainsCursor }
             return false
         }
+
+        // Fast path: capture only the cursor display (the first after sorting) unless
+        // all screens were explicitly requested. Skips the capture + JPEG encode of
+        // every other monitor, which is the common single-screen-question case.
+        let sortedDisplays = cursorScreenOnly ? Array(allSortedDisplays.prefix(1)) : allSortedDisplays
 
         var capturedScreens: [CompanionScreenCapture] = []
 
