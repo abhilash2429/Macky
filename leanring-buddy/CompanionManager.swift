@@ -29,7 +29,6 @@ enum AssistantOperationState: Equatable {
     case thinking
     case speaking
     case executing(String?)
-    case awaitingApproval(String?)
     case error(String)
 }
 
@@ -167,8 +166,6 @@ final class CompanionManager: ObservableObject {
             return "Speaking"
         case .executing(let label):
             return label ?? narrationText ?? "Executing"
-        case .awaitingApproval(let label):
-            return label ?? "Awaiting approval"
         case .error:
             return "Needs attention"
         }
@@ -508,8 +505,6 @@ final class CompanionManager: ObservableObject {
             }
         }
     }
-
-    func clearDetectedElementLocation() {}
 
     /// Timestamp of the most recent push-to-talk release, used to measure turn latency
     /// (release → first response-audio byte). Nil once measured for the current turn.

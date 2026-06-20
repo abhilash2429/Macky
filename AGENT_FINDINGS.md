@@ -378,3 +378,29 @@ Four-part claim. Items 1–3 are prompt-engineering; item 4 is a product-risk de
 - **No Xcode build run** — static verification (PostHog 3.x API surface
   `PostHogConfig(apiKey:host:)` / `PostHogSDK.shared.setup` / `.capture(_:properties:)`
   confirmed against the resolved 3.47.0; new files auto-included via synchronized folder group).
+
+## Phase 9 — Dead code and entitlement cleanup
+
+- **Claims:** `awaitingApproval` is defined with UI text support but never set;
+  `clearDetectedElementLocation()` is an empty no-op with no callers; the entitlements file
+  declares camera access with no camera-using code.
+- **Verification (whole repo):**
+  - `rg clearDetectedElementLocation` → only its own definition
+    (`CompanionManager.swift:512`, empty body), **zero callers**. Confirmed.
+  - `rg awaitingApproval` → only the enum `case awaitingApproval(String?)` and its
+    `activeStatusText` switch arm; **zero assignment/set sites**. Confirmed dead.
+  - `rg` for camera APIs (`AVCaptureSession`, `AVCaptureDevice … video`, `.video`,
+    `captureType`) → **zero** hits. `AVCaptureDevice` is used only for `.audio` (mic
+    permission) elsewhere. The `com.apple.security.device.camera` entitlement is genuinely
+    unused.
+  - Cross-check with Phase 4: the approval decision is **keep `require_approval:"never"`**, so
+    `awaitingApproval` is now confirmed dead (no future use pending) and removable.
+- **Verdict:** all three **confirmed**.
+- **Action:**
+  - Removed `clearDetectedElementLocation()` (empty, uncalled).
+  - Removed `AssistantOperationState.awaitingApproval` and its `activeStatusText` arm
+    (confirmed dead per the Phase 4 decision). Verified no other switch over `operationState`
+    became non-exhaustive (only one such switch exists, now updated) and no external reference.
+  - **Camera entitlement: kept** per Ab's decision (likely a planned feature). No change to
+    `leanring-buddy.entitlements`. This was a stop-and-ask item; Ab chose keep.
+- **No Xcode build run** — static verification (`rg` of callers + exhaustive-switch check).
