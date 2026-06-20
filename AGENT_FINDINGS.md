@@ -84,3 +84,42 @@ sufficient).
   `isToolActive` stays true for the entire duration of B. Symmetric for native-A→MCP-B.
 - **No Xcode build run** — static verification (read + `rg` of every `adjustInFlight` /
   `isToolActive` site confirming balanced +1/-1 and a single writer).
+
+## Phase 2 — Narration source of truth
+
+- **Claim:** `CompanionManager.beginToolActivity` (wired to `onToolCallStarted`) computes
+  its own narration via the hardcoded `narrationPhrase(for:)` substring table and writes
+  it to `narrationText` — the same UI text that `RealtimeClient`'s real model-sourced
+  narration (`currentActivity`) also writes via a separate Combine sink — making it a race
+  between two sources, with the hardcoded one also producing wrong/generic labels
+  (`create_calendar_event` and `get_calendar_events` both → "checking your calendar";
+  `lock_screen`/etc. → generic "working"). Contradicts MACKY.md ("words come from the model").
+- **Verification:**
+  - Two writers of `narrationText`/`operationState` confirmed: `handleActivityChange`
+    (CompanionManager.swift:870, fed by `realtimeClient.$currentActivity`) sets
+    `narrationText = activity`; `beginToolActivity` (:605, fed by `onToolCallStarted`) set
+    `narrationText = Self.narrationPhrase(for:)`.
+  - **Event ordering (determines who actually wins):** in `RealtimeClient.dispatchFunctionCall`,
+    `currentActivity = pendingNarration` is set *synchronously* (RealtimeClient.swift:984)
+    **before** the `Task` that fires `onToolCallStarted` is even created (:990). Combine
+    delivers `$currentActivity` on the main queue first, so `handleActivityChange` populates
+    `narrationText` with the model phrase before `beginToolActivity` runs. So the model value
+    is reliably present for narrated calls — the hardcoded write was overwriting it.
+  - **Verify step 2 (would full removal blank fast tools?):** yes — the system prompt tells
+    the model to run instant tools silently ("Run every tool silently"), so for those calls
+    `pendingNarration`/`currentActivity` is nil and the hardcoded table is the only label.
+    Full deletion would leave those calls with no executing label. → demote to fallback, per
+    the phase's own decision rule, not delete.
+- **Verdict:** **confirmed.**
+- **Action (CompanionManager.swift only):**
+  - `beginToolActivity` now does `let label = narrationText ?? Self.narrationPhrase(for:)`,
+    so the model-sourced `narrationText` (already published) wins and the hardcoded table is
+    consulted only when the model didn't narrate the call.
+  - Rewrote `narrationPhrase(for:)`'s doc comment to mark it explicitly FALLBACK ONLY so a
+    future reader doesn't re-promote it to the primary mechanism.
+- **Done-when trace:** for a narrated call, `narrationText` holds the model transcript phrase
+  (set by `handleActivityChange` from `$currentActivity`) before `beginToolActivity` runs, so
+  the `??` keeps the model phrase and the displayed executing label matches the model — not
+  the hardcoded table. MACKY.md narration contract upheld; no doc rewrite needed (Phase 11
+  will add a one-line fallback caveat if warranted).
+- **No Xcode build run** — static verification (read + traced Combine delivery order).

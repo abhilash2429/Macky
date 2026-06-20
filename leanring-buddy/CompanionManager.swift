@@ -605,7 +605,14 @@ final class CompanionManager: ObservableObject {
     private func beginToolActivity(toolName: String) {
         activeToolCount += 1
         turnUsedTool = true
-        let label = Self.narrationPhrase(for: toolName)
+        // Model-sourced narration wins. By the time onToolCallStarted fires,
+        // RealtimeClient has already published `currentActivity` (the model's spoken
+        // narration for this call), which `handleActivityChange` copied into
+        // `narrationText`. Only fall back to the hardcoded `narrationPhrase` table when
+        // the model didn't narrate this call (e.g. a fast/instant tool the prompt tells
+        // it to run silently), so the executing state still shows *something* rather
+        // than overwriting a real model phrase with a generic guess.
+        let label = narrationText ?? Self.narrationPhrase(for: toolName)
         narrationText = label
         toolCallActive = true
         operationState = .executing(label)
@@ -887,10 +894,15 @@ final class CompanionManager: ObservableObject {
         return String(text[...end])
     }
 
-    /// In-progress phrase for the notch while a *local* (native Swift) tool runs.
-    /// Connector (MCP) calls don't rely on this — their phrase comes from
-    /// `RealtimeClient.connectorActivityPhrase`, which overrides this — so this only
-    /// needs to cover the locally registered tools.
+    /// FALLBACK ONLY — not the primary narration source. The product contract
+    /// (MACKY.md) is that the *words come from the model*: RealtimeClient publishes the
+    /// model's spoken narration as `currentActivity`, which is what normally fills the
+    /// notch's executing label. This hardcoded table is consulted only by
+    /// `beginToolActivity` when the model did not narrate a given call (a fast/instant
+    /// tool it was told to run silently), so the executing state isn't left blank. It is
+    /// deliberately approximate — do not treat it as authoritative or re-promote it to
+    /// the primary mechanism. Connector (MCP) calls never reach it; their phrase comes
+    /// from `RealtimeClient.connectorActivityPhrase`.
     private static func narrationPhrase(for toolName: String) -> String? {
         let normalized = toolName.lowercased()
         if normalized.contains("screen") { return "looking at your screen" }
