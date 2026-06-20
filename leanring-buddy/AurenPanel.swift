@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import Carbon
 import Combine
 import EventKit
 import SwiftUI
@@ -861,6 +862,9 @@ private struct SettingsPanel: View {
                 SettingsPermissionRow(title: "Reminders", granted: companionManager.hasRemindersPermission) {
                     companionManager.requestRemindersPermission()
                 }
+                SettingsPermissionRow(title: "Automation", granted: companionManager.hasAutomationPermission) {
+                    companionManager.requestAutomationPermission()
+                }
             }
         case .shortcuts:
             VStack(alignment: .leading, spacing: 12) {
@@ -1243,7 +1247,13 @@ final class MackyMusicManager: ObservableObject {
             return _state & "\t" & _name & "\t" & _artist & "\t" & _album & "\t" & _dur & "\t" & _pos & "\t" & _shuffle & "\t" & _repeat & "\t" & _art
         end tell
         """
-        guard let fields = scriptValues(script, expected: 9) else { return false }
+        guard let fields = scriptValues(script, expected: 9) else {
+            // The script failed even though Spotify is running — almost always the
+            // Automation permission. Explicitly ask macOS for it so the system prompt
+            // appears (a bare NSAppleScript call can fail silently without prompting).
+            requestAutomationPermission(forBundleIdentifier: "com.spotify.client")
+            return false
+        }
 
         activeAppName = "Spotify"
         activeBundleIdentifier = "com.spotify.client"
@@ -1283,7 +1293,10 @@ final class MackyMusicManager: ObservableObject {
             return _state & "\t" & _name & "\t" & _artist & "\t" & _album & "\t" & _dur & "\t" & _pos & "\t" & _repeat
         end tell
         """
-        guard let fields = scriptValues(script, expected: 7) else { return false }
+        guard let fields = scriptValues(script, expected: 7) else {
+            requestAutomationPermission(forBundleIdentifier: "com.apple.Music")
+            return false
+        }
 
         activeAppName = "Music"
         activeBundleIdentifier = "com.apple.Music"
@@ -1305,6 +1318,34 @@ final class MackyMusicManager: ObservableObject {
 
     private func isRunning(bundleIdentifier: String) -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleIdentifier }
+    }
+
+    /// Bundle IDs we've already asked macOS to authorize this session, so the 1s poll
+    /// doesn't re-issue the request on every tick.
+    private var automationRequested: Set<String> = []
+
+    /// Explicitly requests Automation (Apple Events) permission to control `bundleID`.
+    /// A bare `NSAppleScript` call can fail silently without ever surfacing the TCC
+    /// prompt — especially on dev builds whose code signature changes each run — which
+    /// is why the app may never appear under System Settings ▸ Privacy & Security ▸
+    /// Automation. `AEDeterminePermissionToAutomateTarget` with askUserIfNeeded=true
+    /// reliably triggers the system prompt the first time and registers the app there.
+    /// Runs off the main thread because the call blocks while the dialog is up.
+    private func requestAutomationPermission(forBundleIdentifier bundleID: String) {
+        guard automationRequested.insert(bundleID).inserted else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let data = bundleID.data(using: .utf8) else { return }
+            var target = AEAddressDesc()
+            let createStatus = data.withUnsafeBytes { raw in
+                AECreateDesc(typeApplicationBundleID, raw.baseAddress, data.count, &target)
+            }
+            guard createStatus == noErr else { return }
+            defer { AEDisposeDesc(&target) }
+            let status = AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, true)
+            if status != noErr {
+                print("⚠️ MackyMusicManager: Automation permission for \(bundleID) not granted (status \(status))")
+            }
+        }
     }
 
     private func icon(forBundleIdentifier bundleIdentifier: String) -> NSImage {
@@ -1336,6 +1377,16 @@ final class MackyMusicManager: ObservableObject {
     private func scriptValue(_ source: String) -> String? {
         var error: NSDictionary?
         let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
+        if let error {
+            // Don't swallow the failure: when this returns nil the panel falls back to
+            // "Nothing playing" even while Spotify/Music is clearly playing. The usual
+            // cause is the macOS Automation permission to control the player being
+            // denied or never granted (error -1743 errAEEventNotPermitted), fixable in
+            // System Settings ▸ Privacy & Security ▸ Automation ▸ Macky.
+            let code = error[NSAppleScript.errorNumber] ?? "?"
+            let message = error[NSAppleScript.errorMessage] ?? "unknown"
+            print("⚠️ MackyMusicManager: AppleScript failed (\(code)): \(message)")
+        }
         return result?.stringValue
     }
 

@@ -188,6 +188,96 @@ enum SystemControlsIntegration {
         return "{\"status\": \"opened new Chrome tab\"}"
     }
 
+    // MARK: - Media playback (Spotify / Apple Music)
+    //
+    // Transport controls for the already-open desktop player, driven locally over
+    // Apple events instead of a Composio connector round-trip — so pause / resume /
+    // skip are near-instant instead of a multi-second cloud hop. Starting a *specific*
+    // track by name still needs the Spotify connector (it has to search first); this
+    // only drives whatever is already loaded in the player. Requires the one-time
+    // Automation consent (the same grant the now-playing card uses).
+
+    /// Players we control, Spotify first (the common case), then Apple Music.
+    private static let mediaPlayers: [(bundleID: String, appName: String)] = [
+        ("com.spotify.client", "Spotify"),
+        ("com.apple.Music", "Music"),
+    ]
+
+    /// The running player to target, or nil when neither Spotify nor Music is open
+    /// (in which case there's nothing local to control and the caller should fall
+    /// back to the connector).
+    private static func activeMediaPlayer() -> (bundleID: String, appName: String)? {
+        let running = NSWorkspace.shared.runningApplications
+        return mediaPlayers.first { player in
+            running.contains { $0.bundleIdentifier == player.bundleID }
+        }
+    }
+
+    /// Runs a transport command against the active player. `action` is one of
+    /// play (resume), pause, next, previous, now_playing — plus a few tolerated
+    /// synonyms. Returns `{"status": …}` (consumed by the notch confirmation) or
+    /// `{"error": …}` when no player is open.
+    static func controlMusic(action: String) async throws -> String {
+        guard let player = activeMediaPlayer() else {
+            return "{\"error\": \"no music app is open\"}"
+        }
+        let app = player.appName
+
+        switch action.lowercased() {
+        case "pause":
+            try await runAppleScript("tell application \"\(app)\" to pause")
+            return "{\"status\": \"paused\"}"
+        case "play", "resume":
+            try await runAppleScript("tell application \"\(app)\" to play")
+            return "{\"status\": \"playing\"}"
+        case "playpause", "toggle":
+            try await runAppleScript("tell application \"\(app)\" to playpause")
+            return "{\"status\": \"toggled playback\"}"
+        case "next", "skip":
+            try await runAppleScript("tell application \"\(app)\" to next track")
+            return "{\"status\": \"skipped to next track\"}"
+        case "previous", "back":
+            try await runAppleScript("tell application \"\(app)\" to previous track")
+            return "{\"status\": \"back to previous track\"}"
+        case "now_playing", "current":
+            return try await nowPlaying(app: app)
+        default:
+            return "{\"error\": \"unknown action\"}"
+        }
+    }
+
+    /// Reads the current track + play state from `app`. Tolerates no current track
+    /// (ad / podcast boundary) and serializes via JSONSerialization so track/artist
+    /// text can't break the JSON.
+    private static func nowPlaying(app: String) async throws -> String {
+        let script = """
+        tell application "\(app)"
+            set _state to player state as string
+            set _name to ""
+            set _artist to ""
+            try
+                set _name to name of current track
+                set _artist to artist of current track
+            end try
+            return _state & "\t" & _name & "\t" & _artist
+        end tell
+        """
+        let raw = try await runAppleScript(script)
+        let fields = raw.components(separatedBy: "\t")
+        let state = fields.first ?? "unknown"
+        let name = fields.count > 1 ? fields[1] : ""
+        let artist = fields.count > 2 ? fields[2] : ""
+
+        var payload: [String: Any] = ["status": state, "player": app]
+        if !name.isEmpty { payload["track"] = name }
+        if !artist.isEmpty { payload["artist"] = artist }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{\"status\": \"\(state)\"}"
+        }
+        return json
+    }
+
     // MARK: - AppleScript execution
 
     /// Runs `source` through `/usr/bin/osascript` in a child process on a

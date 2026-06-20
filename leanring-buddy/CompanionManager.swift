@@ -9,6 +9,7 @@
 
 import AVFoundation
 import AppKit
+import Carbon
 import Combine
 import EventKit
 import Foundation
@@ -94,6 +95,10 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenContentPermission = false
     @Published private(set) var hasCalendarPermission = false
     @Published private(set) var hasRemindersPermission = false
+    /// Apple Events / Automation permission to control Spotify and Music. Powers the
+    /// notch panel's now-playing card. Optional — it is intentionally NOT part of
+    /// `allPermissionsGranted`, so a user who never controls music isn't blocked.
+    @Published private(set) var hasAutomationPermission = false
     @Published private(set) var isRequestingScreenContent = false
     /// Bumped right before each native (TCC) permission prompt is triggered. The
     /// panel controller observes it and temporarily drops the notch window level so
@@ -340,6 +345,19 @@ final class CompanionManager: ObservableObject {
         let remindersStatus = EKEventStore.authorizationStatus(for: .reminder)
         hasRemindersPermission = remindersStatus == .fullAccess || remindersStatus == .writeOnly
 
+        // Automation is read without prompting (askUserIfNeeded = false). The status
+        // only reads as authorized while the target player is running, so once we've
+        // ever seen a grant we cache it and stop probing — same approach as Screen
+        // Content above.
+        if UserDefaults.standard.bool(forKey: "hasAutomationPermission") {
+            hasAutomationPermission = true
+        } else {
+            let granted = Self.isAutomationAuthorized(forBundleIdentifier: "com.spotify.client")
+                || Self.isAutomationAuthorized(forBundleIdentifier: "com.apple.Music")
+            hasAutomationPermission = granted
+            if granted { UserDefaults.standard.set(true, forKey: "hasAutomationPermission") }
+        }
+
         // Once the two out-of-band permissions (granted in System Settings) are in,
         // there's nothing left for the timer to catch — stop polling.
         if hasAccessibilityPermission && hasScreenRecordingPermission {
@@ -401,6 +419,59 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Triggers the macOS Automation prompt for the music players. If a player is
+    /// running and the decision is undetermined, this surfaces the "Macky wants to
+    /// control Spotify" dialog. If it's already denied (or no player is running, so the
+    /// system can't prompt), we fall back to opening the Automation settings pane so the
+    /// user can flip the toggle by hand.
+    func requestAutomationPermission() {
+        signalSystemPrompt()
+        let players = ["com.spotify.client", "com.apple.Music"]
+        let running = players.filter { bundleID in
+            NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleID }
+        }
+        // The AE call blocks while the dialog is up, so keep it off the main thread.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            for bundleID in running {
+                _ = await Self.requestAutomation(forBundleIdentifier: bundleID)
+            }
+            await MainActor.run {
+                guard let self else { return }
+                self.refreshAllPermissions()
+                // Couldn't get a grant via the prompt (denied, or nothing running to
+                // prompt against): send the user straight to the right settings pane.
+                if !self.hasAutomationPermission {
+                    self.openPrivacySettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+                }
+            }
+        }
+    }
+
+    /// Reads — without prompting — whether this app may send Apple events to `bundleID`.
+    /// Returns true only on an explicit authorization (`noErr`); a not-yet-decided
+    /// state, a denial, or the target not running all read as not granted.
+    private static func isAutomationAuthorized(forBundleIdentifier bundleID: String) -> Bool {
+        automationStatus(forBundleIdentifier: bundleID, askUserIfNeeded: false) == noErr
+    }
+
+    /// Asks macOS for Automation permission for `bundleID`, surfacing the system prompt
+    /// when the decision is undetermined and the target is running. Returns the status.
+    @discardableResult
+    private static func requestAutomation(forBundleIdentifier bundleID: String) -> OSStatus {
+        automationStatus(forBundleIdentifier: bundleID, askUserIfNeeded: true)
+    }
+
+    private static func automationStatus(forBundleIdentifier bundleID: String, askUserIfNeeded: Bool) -> OSStatus {
+        guard let data = bundleID.data(using: .utf8) else { return OSStatus(-1) }
+        var target = AEAddressDesc()
+        let createStatus = data.withUnsafeBytes { raw in
+            AECreateDesc(typeApplicationBundleID, raw.baseAddress, data.count, &target)
+        }
+        guard createStatus == noErr else { return OSStatus(createStatus) }
+        defer { AEDisposeDesc(&target) }
+        return AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, askUserIfNeeded)
+    }
+
     func requestScreenContentPermission() {
         guard !isRequestingScreenContent else { return }
         signalSystemPrompt()
@@ -445,10 +516,10 @@ final class CompanionManager: ObservableObject {
             // to `.listening` for the new turn. Ignore it so the notch stays live
             // on "Listening" instead of flickering back to idle.
             if self.voiceState == .listening { return }
-            if self.toolCallActive {
-                self.operationState = .executing(self.narrationText)
-                return
-            }
+            // Note: no `toolCallActive` guard here. `RealtimeClient.settleIfIdle()`
+            // only invokes this once nothing is in flight (incl. tools/MCP), so an
+            // in-flight tool can't reach this path — and the old guard raced the
+            // async `$isToolActive` sink, stranding the notch on "Executing".
             // Continuous mode never goes idle between turns: settle back to
             // "Listening" so the mic-open state stays visible in the notch. (The
             // half-duplex tail is handled by the mic gate, keyed on real playback.)
@@ -816,15 +887,22 @@ final class CompanionManager: ObservableObject {
         return String(text[...end])
     }
 
+    /// In-progress phrase for the notch while a *local* (native Swift) tool runs.
+    /// Connector (MCP) calls don't rely on this — their phrase comes from
+    /// `RealtimeClient.connectorActivityPhrase`, which overrides this — so this only
+    /// needs to cover the locally registered tools.
     private static func narrationPhrase(for toolName: String) -> String? {
         let normalized = toolName.lowercased()
         if normalized.contains("screen") { return "looking at your screen" }
-        if normalized.contains("calendar") { return "checking your calendar" }
+        if normalized.contains("calendar") || normalized.contains("slot") { return "checking your calendar" }
         if normalized.contains("reminder") { return "updating reminders" }
         if normalized.contains("volume") { return "adjusting volume" }
+        if normalized.contains("music") { return "controlling music" }
         if normalized.contains("chrome") || normalized.contains("url") { return "opening browser" }
-        if normalized.contains("mcp") || normalized.contains("composio") { return "using connector" }
-        return "executing"
+        if normalized.contains("open_app") { return "opening app" }
+        if normalized.contains("lock") { return "locking screen" }
+        if normalized.contains("disturb") { return "toggling Do Not Disturb" }
+        return "working"
     }
 
     private func openPrivacySettings(_ urlString: String) {

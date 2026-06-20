@@ -23,10 +23,12 @@ struct AurenFileDropPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             fileListOrHint
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider().background(Color.white.opacity(0.12))
             promptRow
         }
         .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             handleDrop(providers)
             return true
@@ -62,19 +64,15 @@ struct AurenFileDropPanel: View {
     }
 
     private var dropHint: some View {
-        HStack {
-            Spacer()
-            VStack(spacing: 5) {
-                Image(systemName: "arrow.down.doc")
-                    .font(.system(size: 20, weight: .light))
-                    .foregroundStyle(.gray)
-                Text("Drop files here")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.gray)
-            }
-            .padding(.vertical, 8)
-            Spacer()
+        VStack(spacing: 5) {
+            Image(systemName: "arrow.down.doc")
+                .font(.system(size: 20, weight: .light))
+                .foregroundStyle(.gray)
+            Text("Drop files here")
+                .font(.system(size: 11))
+                .foregroundStyle(.gray)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var fileChipScroll: some View {
@@ -86,6 +84,7 @@ struct AurenFileDropPanel: View {
             }
             .padding(.horizontal, 2)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var promptRow: some View {

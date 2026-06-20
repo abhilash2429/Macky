@@ -311,6 +311,27 @@ final class RealtimeClient: ObservableObject {
         ) { _ in
             try await SystemControlsIntegration.newChromeTab()
         }
+
+        registerTool(
+            name: "control_music",
+            description: "Instantly control playback in the user's already-open music app (Spotify or Apple Music). Use for transport: pause, resume/play the current track (when NO specific song is named), skip to the next track, go to the previous track, or report what's currently playing. Prefer this over any Spotify connector for these — it's instant. Do NOT use it to start a specific song, album, artist, or playlist by name; that requires the Spotify connector to search first.",
+            schema: [
+                "type": "object",
+                "properties": [
+                    "action": [
+                        "type": "string",
+                        "enum": ["play", "pause", "next", "previous", "now_playing"],
+                        "description": "play = resume the current track; pause; next = skip forward; previous = go back; now_playing = report the current track and play state."
+                    ]
+                ],
+                "required": ["action"]
+            ]
+        ) { arguments in
+            guard let action = arguments["action"] as? String else {
+                return "{\"error\": \"missing action\"}"
+            }
+            return try await SystemControlsIntegration.controlMusic(action: action)
+        }
     }
 
     /// Registers the Milestone 9 Apple Calendar tools (read a day's events,
@@ -651,12 +672,7 @@ final class RealtimeClient: ObservableObject {
             // Drop any buffered narration that no tool consumed (e.g. a plain
             // reply), so it can't be mistaken for a later tool's narration.
             pendingNarration = nil
-            if !isReceivingResponseAudio,
-               scheduledPlaybackBufferCount == 0,
-               !isToolActive,
-               activeMCPCallIDs.isEmpty {
-                onResponseCompleted?()
-            }
+            settleIfIdle()
         // The GA gpt-realtime API documents `response.output_audio.*`, but some
         // deployments still emit the older `response.audio.*` — handle both.
         case "response.audio.delta", "response.output_audio.delta":
@@ -733,16 +749,24 @@ final class RealtimeClient: ObservableObject {
             if activeMCPCallIDs.remove(callID) != nil {
                 onMCPCallEnded?()
             }
+            // The remote action has finished. Drop the "active" signal immediately
+            // (once no other MCP call is in flight) so the notch can settle the
+            // moment the turn ends — the "✓" confirmation below is cosmetic and must
+            // not gate that. Holding it kept the notch stuck on "Thinking".
+            if activeMCPCallIDs.isEmpty { isToolActive = false }
+            activityGeneration += 1
+            let generation = activityGeneration
             currentActivity = Self.successPhrase(for: item["output"] as? String ?? "{\"status\":\"done\"}")
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                guard let self, self.activeMCPCallIDs.isEmpty else { return }
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                guard let self, self.activityGeneration == generation else { return }
                 self.currentActivity = nil
-                self.isToolActive = false
+                self.settleIfIdle()
             }
+            settleIfIdle()
         } else if activeMCPCallIDs.insert(callID).inserted {
             activityGeneration += 1
-            currentActivity = pendingNarration ?? "using connector"
+            currentActivity = pendingNarration ?? Self.connectorActivityPhrase(for: toolName)
             pendingNarration = nil
             isToolActive = true
             onMCPCallStarted?(toolName)
@@ -816,11 +840,12 @@ final class RealtimeClient: ObservableObject {
     // MARK: - Session Configuration
 
     /// The session-level system prompt (Azure GPT-Realtime `instructions` field).
-    /// Defines Macky's voice-assistant behavior contract: acknowledge first, narrate
-    /// every tool call in active-present voice (the notch enumeration UI is built from
-    /// these phrases), never go silent mid-action, confirm on completion, stay brief,
-    /// only look at the screen when asked about something visual, never speak raw
-    /// internals, and reply in the user's language. Persists for the whole session.
+    /// Defines Macky's voice-assistant behavior contract: answer-first with the fewest
+    /// possible words, run tools silently (never narrate process — no "searching",
+    /// "opening", "let me check"), confirm an action only in one short clause and only
+    /// when it adds something, stay brief, only look at the screen when asked about
+    /// something visual, never speak raw internals, and reply in the user's language.
+    /// Persists for the whole session.
     private static let mackySystemPrompt = """
         You are Macky, a fast, friendly voice assistant living in the user's Mac notch. \
         Everything you say is spoken aloud and heard, never read.
@@ -833,12 +858,19 @@ final class RealtimeClient: ObservableObject {
         "3:40". Never pad with "on it", "sure", "let me check", "the answer is", or a recap.
         - No acknowledgement filler. Do not open with a throwaway phrase. Begin with the \
         substance.
-        - Narrate only slow, visible actions. When you call a tool that takes a real moment \
-        (opening an app, capturing the screen, searching a connector), say one short \
-        active-present phrase first — "opening your Slack", "checking your calendar". For \
-        instant tools, skip narration and just give the result.
-        - Confirm an action in one short clause only when it changed something — "volume's at \
-        50%", "sent it", "added to your calendar". A plain answer needs no confirmation.
+        - Never narrate your process. Do NOT say you are searching, looking, finding, \
+        checking, opening, loading, pulling up, queuing, or working on something. Give no \
+        status updates while a tool runs. Run every tool silently and speak only once you \
+        have the result. Phrases like "searching for the song", "let me find that", or \
+        "opening Spotify" are forbidden.
+        - Just do the action, then confirm in one short clause only if it adds something — \
+        "playing Back in Black", "volume's at 50%", "sent it", "added to your calendar". \
+        When the effect is obvious to the user (music starts playing, an app opens), keep \
+        it to a few words or say nothing. Never describe the steps you took to get there.
+        - For music that's already open, use the instant local control (control_music) for \
+        pause, resume, skip, previous, and "what's playing". Only reach for the Spotify \
+        connector to start a specific song, album, artist, or playlist by name — that one \
+        has to search first.
         - Short sentences, no lists or long explanations unless the user explicitly asks for \
         detail.
         - Only look at the screen when the user refers to something visual — "what's this", \
@@ -976,15 +1008,18 @@ final class RealtimeClient: ObservableObject {
             self.isResponseCancelled = false
             self.sendJSON(["type": "response.create"])
 
-            // The result is sent: briefly show a "✓ …" confirmation, then clear
-            // the activity state back to nil/false — unless a newer tool call has
-            // already taken over (generation mismatch).
+            // The handler is done and the follow-up response is requested. Drop the
+            // "active" signal now (the model's spoken reply, if any, drives the notch
+            // from here) so a short turn can't end while we're still flagged busy and
+            // leave the notch stuck. Briefly show a "✓ …" confirmation — cosmetic,
+            // it does not gate settling — unless a newer tool call has taken over.
             guard self.activityGeneration == generation else { return }
+            self.isToolActive = false
             self.currentActivity = Self.successPhrase(for: output)
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
             guard self.activityGeneration == generation else { return }
             self.currentActivity = nil
-            self.isToolActive = false
+            self.settleIfIdle()
         }
     }
 
@@ -1010,6 +1045,44 @@ final class RealtimeClient: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// A short, human progress phrase for the notch while a connector's MCP tool
+    /// runs — "Searching Spotify", "Playing on Spotify", "Sending email" — instead
+    /// of a frozen "using connector". Derived from the Composio tool name, which is
+    /// UPPER_SNAKE and prefixed with the toolkit (`SPOTIFY_START_RESUME_PLAYBACK`,
+    /// `GMAIL_SEND_EMAIL`). Notch-only: it is never spoken (the system prompt keeps
+    /// the model silent while tools run). Because each MCP call emits its own
+    /// phrase, a multi-step action shows real progress ("Searching Spotify" →
+    /// "Playing on Spotify").
+    private static func connectorActivityPhrase(for toolName: String) -> String {
+        let upper = toolName.uppercased()
+        // COMPOSIO_MANAGE_CONNECTIONS (and other meta tools) belong to no toolkit.
+        if upper.hasPrefix("COMPOSIO") { return "Connecting" }
+
+        // Toolkit display name from the registry when known (Spotify, Gmail, …),
+        // else the leading token title-cased (e.g. "Github" from GITHUB_…).
+        let toolkit = ConnectorRegistry.match(toolName: toolName)?.displayName
+            ?? toolName.split(separator: "_").first.map { $0.capitalized }
+            ?? "connector"
+
+        func has(_ keyword: String) -> Bool { upper.contains(keyword) }
+        // Order matters: "PLAY" is a substring of PLAYLIST/PLAYBACK/PLAYING, so the
+        // specific verbs (and the read/write verbs) are checked before the bare
+        // "PLAY" fallback — otherwise CREATE_PLAYLIST or GET_CURRENTLY_PLAYING would
+        // read "Playing on …".
+        if has("PREVIOUS") { return "Going back" }
+        if has("NEXT") || has("SKIP") { return "Skipping track" }
+        if has("PAUSE") || has("STOP") { return "Pausing \(toolkit)" }
+        if has("SEARCH") { return "Searching \(toolkit)" }
+        if has("SEND") { return "Sending \(toolkit == "Gmail" ? "email" : "message")" }
+        if has("CREATE") || has("ADD") || has("INSERT") || has("UPDATE") || has("EDIT")
+            || has("DELETE") || has("REMOVE") { return "Updating \(toolkit)" }
+        if has("GET") || has("FETCH") || has("LIST") || has("FIND") || has("READ") {
+            return "Checking \(toolkit)"
+        }
+        if has("RESUME") || has("PLAY") || has("START") { return "Playing on \(toolkit)" }
+        return "Using \(toolkit)"
     }
 
     /// Builds the brief confirmation phrase shown after a tool result is sent.
@@ -1315,6 +1388,21 @@ final class RealtimeClient: ObservableObject {
         guard isAudioStreamComplete, scheduledPlaybackBufferCount == 0 else { return }
         isAudioStreamComplete = false
         playbackAudioLevel = 0
+        settleIfIdle()
+    }
+
+    /// Returns the notch to rest once nothing is in flight: no active response, no
+    /// audio streaming or queued, no local tool running, no MCP call running. Called
+    /// from every completion edge (`response.done`, playback drained, tool/MCP
+    /// finished) so a lingering "✓" confirmation can no longer strand the notch on
+    /// "Thinking"/"Executing". No-ops while any work remains, so it is safe to call
+    /// speculatively.
+    private func settleIfIdle() {
+        guard !hasActiveResponse,
+              !isReceivingResponseAudio,
+              scheduledPlaybackBufferCount == 0,
+              !isToolActive,
+              activeMCPCallIDs.isEmpty else { return }
         onResponseCompleted?()
     }
 
