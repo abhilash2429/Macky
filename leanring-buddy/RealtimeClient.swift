@@ -897,13 +897,36 @@ final class RealtimeClient: ObservableObject {
         screen otherwise.
         - Never speak raw JSON, code, IDs, or system internals. Translate every result into \
         plain spoken language.
+        - When a tool result asks the user to connect or authorize an app (a connect or \
+        authorization link, e.g. the first time they use Slack, Gmail, or another web \
+        service), tell them in one short spoken line to finish connecting in the browser \
+        window that just opened, then stop — do not read the link aloud, and do not retry \
+        the action until they confirm they've connected.
         - Reply in the same language the user speaks.
 
         Personality: warm, quick, and competent — but economical. Fewer words is better.
         """
 
+    /// The full instructions sent in `session.update`: the static `mackySystemPrompt`
+    /// plus the *current* local date and time. Built fresh on every call (including
+    /// reconnects, where `sendSessionUpdate` runs again) so the model always has an
+    /// accurate "now" to anchor relative dates against — without it, a model that
+    /// computes an absolute date for a calendar/reminder instead of saying
+    /// "today"/"tomorrow" can silently land on the wrong day with no error surfaced.
+    private static func sessionInstructions(now: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        // e.g. "Saturday, 20 June 2026, 3:40 PM PDT"
+        formatter.dateFormat = "EEEE, d MMMM yyyy, h:mm a zzz"
+        return mackySystemPrompt + "\n\nThe current date and time is \(formatter.string(from: now)). " +
+            "Use this as \"now\" when the user refers to relative dates or times like \"today\", " +
+            "\"tomorrow\", \"this evening\", or \"next Friday\"."
+    }
+
     /// Sent immediately after `session.created` to configure the session with the
-    /// registered tools and the `mackySystemPrompt` system prompt.
+    /// registered tools and the `mackySystemPrompt` system prompt (plus the current
+    /// date/time, refreshed each call via `sessionInstructions`).
     private func sendSessionUpdate() {
         var tools: [[String: Any]] = registeredTools.values.map { tool in
             [
@@ -955,7 +978,7 @@ final class RealtimeClient: ObservableObject {
             "type": "session.update",
             "session": [
                 "type": "realtime",
-                "instructions": Self.mackySystemPrompt,
+                "instructions": Self.sessionInstructions(),
                 "output_modalities": ["audio"],
                 "tools": tools,
                 "tool_choice": "auto",

@@ -121,6 +121,12 @@ these are the ones that ship first. they cover 80% of what people actually ask a
 
 first launch shows a clean setup screen. user sees each integration listed and clicks connect. composio handles the OAuth flow for all web services. macOS-native permissions (calendar, reminders, mail) go through the standard apple permission dialogs. after that the model has access to everything that was connected. token refresh happens silently. user never touches auth again.
 
+### approvals (decision)
+
+**decision (2026-06-20): Composio MCP tools run with `require_approval: "never"`** — there is no per-action confirmation step before an external/irreversible action (sending an email, posting a Slack message) executes. this is a *deliberate* tradeoff in favor of Macky's core promise of voice-in/action-out latency: a voice assistant that says "should i send that? yes or no?" before every send breaks the half-second loop the whole product is built around. the model is instructed to confirm the action *after* doing it in one short clause ("sent it"), not to gate it beforehand.
+
+this is recorded here as a made decision, not an oversight, so it is not re-litigated later. the unused `AssistantOperationState.awaitingApproval` case that anticipated a gating UI is intentionally retired as dead code while this decision stands; revisiting it (e.g. gating only a defined set of irreversible actions) is a future product decision, not a bug.
+
 ---
 
 ## the cloudflare worker

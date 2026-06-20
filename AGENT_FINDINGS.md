@@ -162,3 +162,39 @@ sufficient).
   `@MainActor`; `@Published` assignment is the only main-actor work in the hot path. `rg`
   confirms every `scriptValue(s)` call site is now `await`.
 - **No Xcode build run** — static verification.
+
+## Phase 4 — System prompt gaps + approval-gating decision
+
+Four-part claim. Items 1–3 are prompt-engineering; item 4 is a product-risk decision
+(stop-and-ask, resolved by Ab before this phase).
+
+- **Item 1 — no current date/time in the prompt.** *Verified:* `mackySystemPrompt` is a
+  static string with no `Date()`; `sendSessionUpdate` passed it verbatim as `instructions`
+  with no templating (RealtimeClient.swift:958 pre-edit). No date injected anywhere.
+  *Verdict:* **confirmed.** *Action:* added `sessionInstructions(now:)` that appends the
+  current local date/time to the static prompt, built fresh on every `sendSessionUpdate`
+  (so it refreshes on reconnect). `instructions` now uses `Self.sessionInstructions()`.
+- **Item 2 — no connect/authorization-link instruction.** *Verified:* prompt had no guidance
+  for the `COMPOSIO_MANAGE_CONNECTIONS` connect-link flow. *Verdict:* **confirmed.** *Action:*
+  added one explicit prompt rule: on a connect/auth link, tell the user (one spoken line) to
+  finish connecting in the browser that just opened, don't read the link aloud, don't retry
+  until they confirm.
+- **Item 3 — "judge for yourself" narrate/skip discretion.** *Verified:* the prompt does NOT
+  ask the model to judge per-call whether a tool "takes a real moment." It already gives a
+  *deterministic* rule: "Never narrate your process… Run every tool silently and speak only
+  once you have the result." (RealtimeClient.swift ~880–884.) There is no per-call discretion
+  to remove. *Verdict:* **refuted** — the deterministic rule the phase wanted already exists.
+  *Action:* none (no change needed; logged so it isn't "fixed" into a contradiction).
+- **Item 4 — `require_approval: "never"`, `awaitingApproval` never set.** *Verified:*
+  `require_approval: "never"` is exactly what's sent for the Composio MCP tool entry
+  (RealtimeClient.swift:926); `AssistantOperationState.awaitingApproval` is defined
+  (CompanionManager.swift:32) with `activeStatusText` support but has zero assignment sites.
+  *Verdict:* **confirmed → product decision, not auto-fixed.** *Decision (Ab, 2026-06-20):*
+  **keep `require_approval: "never"`** as a deliberate latency tradeoff. Recorded as a decision
+  in `MACKY.md` ("auth and onboarding ▸ approvals") so it isn't re-litigated. No
+  `require_approval` code change. `awaitingApproval` is now confirmed dead → removed in Phase 9.
+- **Found during verification:** the "never narrate" prompt rule and the notch's
+  `currentActivity` narration are consistent — the notch shows the model's *spoken* words
+  (transcript), which under this rule are post-action confirmations, not process narration.
+  Phase 2's change (model phrase wins) does not conflict with this prompt rule.
+- **No Xcode build run** — static verification.
