@@ -1104,10 +1104,10 @@ final class MackyMusicManager: ObservableObject {
     /// it also lets the first Apple event reach Spotify/Music so macOS can show the
     /// one-time Automation permission prompt.
     func startPolling() {
-        refresh()
+        Task { @MainActor in await refresh() }
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in await self?.refresh() }
         }
     }
 
@@ -1127,9 +1127,9 @@ final class MackyMusicManager: ObservableObject {
         repeatMode == "one" ? "repeat.1" : "repeat"
     }
 
-    func refresh() {
-        if updateFromSpotify() { return }
-        if updateFromMusic() { return }
+    func refresh() async {
+        if await updateFromSpotify() { return }
+        if await updateFromMusic() { return }
         title = "Nothing playing"
         artist = "Spotify or Music"
         album = "Open a player to control it here"
@@ -1167,36 +1167,36 @@ final class MackyMusicManager: ObservableObject {
     /// Player state lags a beat after a transport command, so re-read once now and
     /// again shortly after to settle on the real values.
     private func refreshAfterCommand() {
-        refresh()
         Task { @MainActor in
+            await refresh()
             try? await Task.sleep(for: .milliseconds(350))
-            refresh()
+            await refresh()
         }
     }
 
     func toggleShuffle() {
         if activeAppName == "Spotify" {
-            _ = scriptValue("tell application \"Spotify\" to set shuffling to not shuffling")
+            runScriptDetached("tell application \"Spotify\" to set shuffling to not shuffling")
         }
-        refresh()
+        Task { @MainActor in await refresh() }
     }
 
     func toggleRepeat() {
         if activeAppName == "Spotify" {
-            _ = scriptValue("tell application \"Spotify\" to set repeating to not repeating")
+            runScriptDetached("tell application \"Spotify\" to set repeating to not repeating")
         } else {
             let targetMode = repeatMode == "off" ? "all" : "off"
-            _ = scriptValue("tell application \"Music\" to set song repeat to \(targetMode)")
+            runScriptDetached("tell application \"Music\" to set song repeat to \(targetMode)")
         }
-        refresh()
+        Task { @MainActor in await refresh() }
     }
 
     func seek(to seconds: Double) {
         guard duration > 0 else { return }
         if activeAppName == "Spotify" {
-            _ = scriptValue("tell application \"Spotify\" to set player position to \(seconds)")
+            runScriptDetached("tell application \"Spotify\" to set player position to \(seconds)")
         } else {
-            _ = scriptValue("tell application \"Music\" to set player position to \(seconds)")
+            runScriptDetached("tell application \"Music\" to set player position to \(seconds)")
         }
         elapsedTime = seconds
         timestampDate = Date()
@@ -1220,7 +1220,7 @@ final class MackyMusicManager: ObservableObject {
         return String(format: "%d:%02d", minutes, secs)
     }
 
-    private func updateFromSpotify() -> Bool {
+    private func updateFromSpotify() async -> Bool {
         guard isRunning(bundleIdentifier: "com.spotify.client") else { return false }
 
         // One Apple event instead of nine. `try` guards the cases where there is no
@@ -1247,7 +1247,7 @@ final class MackyMusicManager: ObservableObject {
             return _state & "\t" & _name & "\t" & _artist & "\t" & _album & "\t" & _dur & "\t" & _pos & "\t" & _shuffle & "\t" & _repeat & "\t" & _art
         end tell
         """
-        guard let fields = scriptValues(script, expected: 9) else {
+        guard let fields = await scriptValues(script, expected: 9) else {
             // The script failed even though Spotify is running — almost always the
             // Automation permission. Explicitly ask macOS for it so the system prompt
             // appears (a bare NSAppleScript call can fail silently without prompting).
@@ -1272,7 +1272,7 @@ final class MackyMusicManager: ObservableObject {
         return true
     }
 
-    private func updateFromMusic() -> Bool {
+    private func updateFromMusic() async -> Bool {
         guard isRunning(bundleIdentifier: "com.apple.Music") else { return false }
 
         let script = """
@@ -1293,7 +1293,7 @@ final class MackyMusicManager: ObservableObject {
             return _state & "\t" & _name & "\t" & _artist & "\t" & _album & "\t" & _dur & "\t" & _pos & "\t" & _repeat
         end tell
         """
-        guard let fields = scriptValues(script, expected: 7) else {
+        guard let fields = await scriptValues(script, expected: 7) else {
             requestAutomationPermission(forBundleIdentifier: "com.apple.Music")
             return false
         }
@@ -1370,30 +1370,50 @@ final class MackyMusicManager: ObservableObject {
     }
 
     private func runScript(command: String, in appName: String) {
-        _ = scriptValue("tell application \"\(appName)\" to \(command)")
+        runScriptDetached("tell application \"\(appName)\" to \(command)")
     }
 
+    /// Runs an AppleScript **off the main actor** and returns its string value.
+    /// `NSAppleScript.executeAndReturnError` blocks the calling thread for the full
+    /// Apple Event round-trip; running it on `@MainActor` (as the 1s poll used to)
+    /// stalled the UI every tick. `nonisolated` + an off-main detached hop keeps the
+    /// block off the main thread; callers `await` and then hop back to the main actor
+    /// only to assign `@Published` state. Mirrors the detached-`Process` pattern in
+    /// `SystemControlsIntegration.runAppleScript`.
+    private nonisolated static func executeScript(_ source: String) async -> String? {
+        await Task.detached(priority: .utility) { () -> String? in
+            var error: NSDictionary?
+            let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
+            if let error {
+                // Don't swallow the failure: when this returns nil the panel falls back
+                // to "Nothing playing" even while Spotify/Music is clearly playing. The
+                // usual cause is the macOS Automation permission to control the player
+                // being denied or never granted (error -1743 errAEEventNotPermitted),
+                // fixable in System Settings ▸ Privacy & Security ▸ Automation ▸ Macky.
+                let code = error[NSAppleScript.errorNumber] ?? "?"
+                let message = error[NSAppleScript.errorMessage] ?? "unknown"
+                print("⚠️ MackyMusicManager: AppleScript failed (\(code)): \(message)")
+            }
+            return result?.stringValue
+        }.value
+    }
+
+    /// Read-path helper: runs `source` off the main actor and returns its string value.
     @discardableResult
-    private func scriptValue(_ source: String) -> String? {
-        var error: NSDictionary?
-        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
-        if let error {
-            // Don't swallow the failure: when this returns nil the panel falls back to
-            // "Nothing playing" even while Spotify/Music is clearly playing. The usual
-            // cause is the macOS Automation permission to control the player being
-            // denied or never granted (error -1743 errAEEventNotPermitted), fixable in
-            // System Settings ▸ Privacy & Security ▸ Automation ▸ Macky.
-            let code = error[NSAppleScript.errorNumber] ?? "?"
-            let message = error[NSAppleScript.errorMessage] ?? "unknown"
-            print("⚠️ MackyMusicManager: AppleScript failed (\(code)): \(message)")
-        }
-        return result?.stringValue
+    private func scriptValue(_ source: String) async -> String? {
+        await Self.executeScript(source)
+    }
+
+    /// Fire-and-forget write-path helper for transport commands whose return value is
+    /// unused. Runs off the main actor so a transport tap never blocks the UI.
+    private func runScriptDetached(_ source: String) {
+        Task { await Self.executeScript(source) }
     }
 
     /// Runs a script that returns tab-delimited fields. Returns nil if the script
     /// failed (e.g. Automation permission not granted) so the caller can fall back.
-    private func scriptValues(_ source: String, expected: Int) -> [String]? {
-        guard let raw = scriptValue(source) else { return nil }
+    private func scriptValues(_ source: String, expected: Int) async -> [String]? {
+        guard let raw = await scriptValue(source) else { return nil }
         var fields = raw.components(separatedBy: "\t")
         guard fields.count >= expected else { return nil }
         if fields.count > expected {

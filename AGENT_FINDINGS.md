@@ -123,3 +123,42 @@ sufficient).
   the hardcoded table. MACKY.md narration contract upheld; no doc rewrite needed (Phase 11
   will add a one-line fallback caveat if warranted).
 - **No Xcode build run** — static verification (read + traced Combine delivery order).
+
+## Phase 3 — Move Spotify/Music polling off the main thread
+
+- **Claim:** `MackyMusicManager` calls `NSAppleScript(source:).executeAndReturnError`
+  directly on the main actor inside a 1s `Timer`, blocking the main thread for the full
+  Apple Event round-trip each tick — unlike `SystemControlsIntegration.runAppleScript`,
+  which already runs detached.
+- **Verification:**
+  - `MackyMusicManager` is `@MainActor` (AurenPanel.swift:1081). `scriptValue`/`scriptValues`
+    called `NSAppleScript().executeAndReturnError` **synchronously** on the main actor
+    (pre-edit ~1377–1403), reached from `refresh()` via `updateFromSpotify`/`updateFromMusic`,
+    which the 1s `Timer` invoked (~1109).
+  - `NSAppleScript.executeAndReturnError` is a synchronous, blocking Apple Event call — a
+    real main-thread stall, equivalent in effect to `Process.waitUntilExit()`. Confirmed.
+  - `SystemControlsIntegration.runAppleScript` already uses `Task.detached` + `Process`
+    (osascript) for exactly this reason — the correct pattern existed in-repo.
+  - **Severity moderation confirmed:** `startPolling`/`stopPolling` *are* scoped to
+    `BoringStyleMusicCard`'s `onAppear`/`onDisappear` (AurenPanel.swift ~168–169), so the
+    stall only occurs while the music card is visible — real, but not constant background
+    stalling.
+- **Verdict:** **confirmed** (severity moderated by the on-screen scoping).
+- **Action (AurenPanel.swift only):**
+  - Added `nonisolated static func executeScript(_:) async` that runs `NSAppleScript` inside
+    a detached utility Task, mirroring `runAppleScript`. The blocking call now runs off the
+    main thread; only `@Published` assignment stays on `@MainActor`.
+  - Read path made async: `refresh()` / `updateFromSpotify()` / `updateFromMusic()` /
+    `scriptValue` / `scriptValues` are now `async` and `await` the off-main executor; the
+    poll timer calls `Task { @MainActor in await refresh() }`.
+  - Write path (transport): `runScript`, `seek`, `toggleShuffle`, `toggleRepeat` route through
+    a fire-and-forget `runScriptDetached(_:)` so a transport tap never blocks the UI; their
+    follow-up reads use the async `refresh()`. Transport methods stay synchronous `func`s so
+    SwiftUI button actions are unchanged.
+  - Verified no external caller of `refresh`/`updateFrom*` exists outside AurenPanel.swift,
+    and that the unrelated calendar manager's own `refresh() async` (same file) is a separate
+    type.
+- **Done-when:** no AppleScript execution in `MackyMusicManager` runs synchronously on
+  `@MainActor`; `@Published` assignment is the only main-actor work in the hot path. `rg`
+  confirms every `scriptValue(s)` call site is now `await`.
+- **No Xcode build run** — static verification.
