@@ -404,3 +404,41 @@ Four-part claim. Items 1–3 are prompt-engineering; item 4 is a product-risk de
   - **Camera entitlement: kept** per Ab's decision (likely a planned feature). No change to
     `leanring-buddy.entitlements`. This was a stop-and-ask item; Ab chose keep.
 - **No Xcode build run** — static verification (`rg` of callers + exhaustive-switch check).
+
+## Phase 10 — Single source of truth for connectors
+
+- **Claim:** `MackyConnectorCatalog` (7: gmail, slack, googlecalendar, notion, github,
+  linear, spotify) and `ConnectorRegistry.connectors` (4: gmail, slack, googlecalendar,
+  spotify) are two independently hand-maintained lists that have drifted — a connected
+  Notion/GitHub/Linear toolkit never triggers the notch logo-swap because the registry has
+  no entry for it.
+- **Verification:**
+  - Diffed the two slug sets directly: registry = {gmail, slack, googlecalendar, spotify};
+    catalog = {gmail, slack, googlecalendar, notion, github, linear, spotify}. Drift confirmed
+    — notion/github/linear are missing from the registry, so `ConnectorRegistry.match` returns
+    nil for their MCP calls and the notch logo never swaps.
+  - The grid's `ConnectorIcon` already resolves `ConnectorLogo-<slug>` from the slug
+    (AurenPanel.swift:727), the same `ConnectorLogo-<slug>` convention the registry's
+    `logoAssetName` uses — so both already key off slug; only the *lists* diverged.
+  - **Worker capability surface:** the Worker (`worker/src/index.ts`) sends **no** `toolkits`
+    allowlist to Composio (full catalog) — there is no server-side toolkit list to derive from,
+    confirming a client-side merge is the right scope (the "better" Worker-driven option would
+    be net-new metadata plumbing). Ab chose **client-side merge**.
+  - All 7 `ConnectorLogo-<slug>.imageset` assets exist (incl. notion/github/linear), so adding
+    the 3 missing registry entries makes their logo-swap resolve a real asset.
+- **Verdict:** **confirmed.**
+- **Action (client-side merge, no Worker change):**
+  - `ConnectorRegistry.connectors` is now the single 7-entry list of (slug, displayName,
+    logoAssetName) and is the canonical source. Added `identity(forSlug:)`.
+  - `MackyConnectorCatalog` now holds only **UI-only** metadata (`ConnectorCardMeta`: icon,
+    category, blurb, accent, badge, examples) keyed by slug, and builds its `[MackyConnector]`
+    by joining each `ConnectorRegistry` identity with that metadata — so the grid's slug +
+    display name + logo and the logo-swap can never drift again. (`MackyConnector.id` is now
+    the slug; nothing keyed off the old `id: "calendar"`.)
+  - Updated the "ONLY hardcoded part" comment to "single client-side source of truth," and
+    documented that the grid derives from this list.
+- **Done-when:** one place (`ConnectorRegistry.connectors`) defines a connector's slug, display
+  name, and logo together; both the logo-swap (`match`) and the grid (`MackyConnectorCatalog`)
+  read from it. Confirmed.
+- **No Xcode build run** — static verification (slug-set diff, asset existence check, consumer
+  trace).

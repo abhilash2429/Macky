@@ -548,11 +548,24 @@ private struct MackyConnector: Identifiable {
     let examples: [String]
 }
 
+/// UI-only metadata for a connector card, layered on top of the shared identity
+/// (slug / display name / logo) owned by `ConnectorRegistry`. Keyed by toolkit slug so
+/// the grid's slug and name come from the registry — the two lists can no longer drift.
+private struct ConnectorCardMeta {
+    let slug: String
+    let icon: String
+    let category: String
+    let description: String
+    let accent: Color
+    let badge: ConnectorBadge
+    let examples: [String]
+}
+
 private enum MackyConnectorCatalog {
-    static let items: [MackyConnector] = [
-        MackyConnector(
-            id: "gmail",
-            name: "Gmail",
+    /// UI metadata per connector slug. The slug, display name, and logo come from
+    /// `ConnectorRegistry`; only the presentation extras live here.
+    private static let meta: [ConnectorCardMeta] = [
+        ConnectorCardMeta(
             slug: "gmail",
             icon: "envelope.fill",
             category: "Communication",
@@ -561,9 +574,7 @@ private enum MackyConnectorCatalog {
             badge: .popular(2),
             examples: ["Write a follow-up to John", "Find the latest client email", "Summarize unread mail"]
         ),
-        MackyConnector(
-            id: "slack",
-            name: "Slack",
+        ConnectorCardMeta(
             slug: "slack",
             icon: "number",
             category: "Communication",
@@ -572,9 +583,7 @@ private enum MackyConnectorCatalog {
             badge: .popular(9),
             examples: ["Send the standup update", "Catch me up on design", "Post a reminder"]
         ),
-        MackyConnector(
-            id: "calendar",
-            name: "Google Calendar",
+        ConnectorCardMeta(
             slug: "googlecalendar",
             icon: "calendar",
             category: "Planning",
@@ -583,9 +592,7 @@ private enum MackyConnectorCatalog {
             badge: .popular(3),
             examples: ["Schedule a call tomorrow", "Move my 3 PM meeting", "Find open time Friday"]
         ),
-        MackyConnector(
-            id: "notion",
-            name: "Notion",
+        ConnectorCardMeta(
             slug: "notion",
             icon: "doc.text.fill",
             category: "Knowledge",
@@ -594,9 +601,7 @@ private enum MackyConnectorCatalog {
             badge: .popular(6),
             examples: ["Add this to product notes", "Find the launch checklist", "Create a meeting page"]
         ),
-        MackyConnector(
-            id: "github",
-            name: "GitHub",
+        ConnectorCardMeta(
             slug: "github",
             icon: "chevron.left.forwardslash.chevron.right",
             category: "Developer",
@@ -605,9 +610,7 @@ private enum MackyConnectorCatalog {
             badge: .new,
             examples: ["Open a bug issue", "Summarize recent PRs", "Find failing checks"]
         ),
-        MackyConnector(
-            id: "linear",
-            name: "Linear",
+        ConnectorCardMeta(
             slug: "linear",
             icon: "line.3.horizontal.decrease.circle.fill",
             category: "Planning",
@@ -616,9 +619,7 @@ private enum MackyConnectorCatalog {
             badge: .new,
             examples: ["Create a task for this", "Move it to in progress", "List urgent bugs"]
         ),
-        MackyConnector(
-            id: "spotify",
-            name: "Spotify",
+        ConnectorCardMeta(
             slug: "spotify",
             icon: "music.note",
             category: "Media",
@@ -628,6 +629,25 @@ private enum MackyConnectorCatalog {
             examples: ["Play focus music", "Pause Spotify", "Skip this track"]
         )
     ]
+
+    /// The grid's connectors, built by joining each `ConnectorRegistry` identity with its
+    /// UI metadata. A slug present in the registry but missing metadata still appears (with
+    /// a default icon); metadata for an unknown slug is skipped — so the grid and the
+    /// logo-swap always agree on the connector set.
+    static let items: [MackyConnector] = ConnectorRegistry.connectors.map { identity in
+        let meta = meta.first { $0.slug == identity.slug }
+        return MackyConnector(
+            id: identity.slug,
+            name: identity.displayName,
+            slug: identity.slug,
+            icon: meta?.icon ?? "app.connected.to.app.below.fill",
+            category: meta?.category ?? "Apps",
+            description: meta?.description ?? "Connect \(identity.displayName) to use it by voice.",
+            accent: meta?.accent ?? Color.white.opacity(0.9),
+            badge: meta?.badge ?? .none,
+            examples: meta?.examples ?? []
+        )
+    }
 }
 
 private struct ConnectorGridCard: View {
