@@ -198,3 +198,35 @@ Four-part claim. Items 1–3 are prompt-engineering; item 4 is a product-risk de
   (transcript), which under this rule are post-action confirmations, not process narration.
   Phase 2's change (model phrase wins) does not conflict with this prompt rule.
 - **No Xcode build run** — static verification.
+
+## Phase 5 — Lock down connect-link parsing, remove debug logging
+
+- **Claim:** a `// TEMP` `print("🧩 [MCP-CAPTURE]" …)` debug block and a "provisional…
+  intentionally tolerant… until locked in" comment on `parseConnectionLink` shipped in the
+  live connector-authorization path.
+- **Verification:**
+  - `[MCP-CAPTURE]` `// TEMP` block confirmed at RealtimeClient.swift ~665–671 (logged the
+    full raw frame for any mcp / response.output_item event).
+  - The "intentionally tolerant… until locked in" comment confirmed at ~742–744.
+  - A second debug print at ~788 logged the connect link **including the full OAuth redirect
+    URL** — sensitive, should not be in device logs.
+  - The real `item.output` shape cannot be confirmed statically: the Worker (`worker/src/index.ts`)
+    only mints the Composio Tool Router session and returns `{ url, key }`; it does not
+    constrain or document the per-call `mcp_call` output shape, and no captured `[MCP-CAPTURE]`
+    frame is available in this environment. So the parser shape remains genuinely unverified.
+- **Verdict:** **confirmed** (debug leftovers present); parsing-shape correctness **inconclusive —
+  needs a live session capture**.
+- **Action (RealtimeClient.swift only):**
+  - Removed the `// TEMP` `[MCP-CAPTURE]` print block entirely (unconditionally — pure debug
+    leftover, no production purpose).
+  - Removed the URL from the connect-link print (now logs only the toolkit slug, not the
+    OAuth redirect URL).
+  - Left the tolerant `parseConnectionLink` logic in place (correct per the decision rule —
+    do not guess a narrower implementation without a live capture). Reworded the stale comment
+    so it no longer claims an active capture effort (the capture mechanism is now removed) and
+    instead states the shape is unverified and the tolerance is deliberate.
+- **Open item:** `parseConnectionLink`'s handling of the real Composio `mcp_call` output shape
+  remains unverified and should be closed out with a live `COMPOSIO_MANAGE_CONNECTIONS` capture.
+  Listed for Ab in the Phase 12 deferred-items roundup.
+- **Done-when:** `rg "MCP-CAPTURE"` → zero hits in the shipped path. Confirmed.
+- **No Xcode build run** — static verification.

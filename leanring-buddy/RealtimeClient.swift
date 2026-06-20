@@ -662,14 +662,6 @@ final class RealtimeClient: ObservableObject {
             return
         }
 
-        // TEMP (Milestone 11 capture): log raw frames for any MCP meta-tool traffic
-        // and output-item completions so we can confirm the exact event/field shape
-        // Azure surfaces for COMPOSIO_MANAGE_CONNECTIONS. Remove once the parser in
-        // handleMCPOutputItem is locked to the observed shape.
-        if type.contains("mcp") || type.contains("response.output_item") {
-            print("🧩 [MCP-CAPTURE] \(text)")
-        }
-
         switch type {
         case "session.created":
             print("session.created received")
@@ -747,9 +739,11 @@ final class RealtimeClient: ObservableObject {
     /// (`item.type == "mcp_call"`): when a COMPOSIO_MANAGE_CONNECTIONS call returns
     /// a Connect Link, parse the toolkit + redirect URL and notify the owner.
     ///
-    /// NOTE (Milestone 11): the exact `item.output` shape is being confirmed from
-    /// captured Azure frames. `parseConnectionLink` is intentionally tolerant of
-    /// several shapes until the observed one is locked in.
+    /// NOTE: the exact `item.output` shape Azure surfaces for the connect-link flow has
+    /// not been pinned down against a live Composio session, so `parseConnectionLink`
+    /// stays deliberately tolerant of several shapes (JSON string, dict, MCP content
+    /// array) with a regex fallback. Keep the defensive parsing until a captured frame
+    /// confirms the canonical shape; do not narrow it speculatively.
     private func handleMCPOutputItem(_ json: [String: Any], completed: Bool) {
         guard let item = json["item"] as? [String: Any],
               (item["type"] as? String) == "mcp_call" else {
@@ -793,7 +787,9 @@ final class RealtimeClient: ObservableObject {
 
         guard completed, let output = item["output"] else { return }
         guard let (toolkit, url) = parseConnectionLink(fromOutput: output) else { return }
-        print("🧩 RealtimeClient: connect link from \(toolName) → \(toolkit): \(url.absoluteString)")
+        // Don't log the URL itself — a Composio Connect Link is an authorization redirect
+        // and shouldn't land in device logs. Toolkit slug is enough to trace the flow.
+        print("RealtimeClient: connect link received for \(toolkit)")
         onConnectionLinkAvailable?(toolkit, url)
     }
 
