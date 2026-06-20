@@ -329,3 +329,52 @@ Four-part claim. Items 1–3 are prompt-engineering; item 4 is a product-risk de
   concurrent config fetch, the no-replay/surface-the-drop reconnect behavior, and the
   cursor-display default for screen context.
 - **No Xcode build run** — static verification (read + `rg` of all touched call sites).
+
+## Phase 8 — Observability
+
+- **Claim:** no PostHog event calls exist outside `ClickyAnalytics.swift`; failure paths
+  terminate in `print()`; no crash reporting is wired despite PLCrashReporter being a listed
+  dependency.
+- **Verification (premise partly stale):**
+  - `ClickyAnalytics.swift` **does not exist** in the repo (confirmed by `find`/`rg`). There
+    is *no* analytics layer at all — `rg PostHog/posthog` over `leanring-buddy/` returned zero
+    call sites and zero wrapper.
+  - `PostHog` (posthog-ios 3.47.0) **is** a resolved SPM package and **is linked** to the app
+    target (pbxproj: `PostHog in Frameworks`).
+  - `plcrashreporter` is in `Package.resolved` (transitive, pulled via Sparkle) but is **not
+    linked** as a product of the app target — no `CrashReporter in Frameworks` build file and
+    no `XCRemoteSwiftPackageReference` for it.
+  - `applicationDidFinishLaunching` initialized neither.
+- **Verdict:** **confirmed that no analytics/crash wiring exists**; the specific instruction
+  "add call sites to ClickyAnalytics' existing API" was **stale** (no such file/API). Per Ab's
+  decision: **build a minimal layer.**
+- **Action:**
+  - Added `MackyAnalytics.swift` — a small `@MainActor` wrapper over the linked PostHog SDK.
+    No-ops until a `POSTHOG_API_KEY` (Info.plist or env) is present, so dev builds ship
+    nothing and never break. Centralized event names + the three milestone categories.
+  - Wired the three categories to the live paths:
+    - **Turn latency:** `CompanionManager` records the push-to-talk release timestamp
+      (`turnReleaseTimestamp`, set right before `commitAudio`) and measures to the first
+      response-audio byte in `onResponseAudioStarted`.
+    - **Tool success/failure:** `RealtimeClient.dispatchFunctionCall` (native) and
+      `handleMCPOutputItem` completion branch (MCP) report `toolCall(name:isMCP:success:)`,
+      success = no thrown error and no `{"error": …}` in the output.
+    - **Connector-connect funnel:** `linkRequested` (RealtimeClient, on connect-link parse),
+      `linkOpened` (CompanionManager.openPendingConnection), `connectionConfirmed`
+      (CompanionManager.refreshConnectedToolkits, for newly-appearing toolkits).
+  - Added `MackyCrashReporter.swift` — PLCrashReporter startup wiring **guarded by
+    `#if canImport(CrashReporter)`** so the project still compiles while the product is
+    unlinked. It is a clean no-op until someone adds the `CrashReporter` package product to
+    the target in Xcode (a one-time GUI step), at which point crash reports begin next launch.
+    Both `MackyAnalytics.start()` and `MackyCrashReporter.start()` are called first in
+    `applicationDidFinishLaunching`.
+  - Left informational `print()` statements as-is (phase is additive).
+  - All call sites are on `@MainActor` (RealtimeClient + CompanionManager are both
+    `@MainActor`), matching `MackyAnalytics`'s isolation — no concurrency issues.
+- **Deferred for Ab (one-time, low-risk):** to activate crash reporting, add the
+  `CrashReporter` SPM product to the `leanring-buddy` target in Xcode. Listed in the Phase 12
+  roundup. Did **not** hand-edit the pbxproj to add the product reference because it can't be
+  verified without an Xcode build and the global rules flag project-config changes as risky.
+- **No Xcode build run** — static verification (PostHog 3.x API surface
+  `PostHogConfig(apiKey:host:)` / `PostHogSDK.shared.setup` / `.capture(_:properties:)`
+  confirmed against the resolved 3.47.0; new files auto-included via synchronized folder group).

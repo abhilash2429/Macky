@@ -800,6 +800,8 @@ final class RealtimeClient: ObservableObject {
             if activeMCPCallIDs.remove(callID) != nil {
                 adjustInFlight(-1)
                 onMCPCallEnded?()
+                let outputString = item["output"] as? String ?? ""
+                MackyAnalytics.toolCall(name: toolName, isMCP: true, success: !outputString.contains("\"error\""))
             }
             activityGeneration += 1
             let generation = activityGeneration
@@ -824,6 +826,8 @@ final class RealtimeClient: ObservableObject {
         // Don't log the URL itself — a Composio Connect Link is an authorization redirect
         // and shouldn't land in device logs. Toolkit slug is enough to trace the flow.
         print("RealtimeClient: connect link received for \(toolkit)")
+        // Connector-connect funnel step 1: the model surfaced a connect link.
+        MackyAnalytics.connectorConnect(step: .linkRequested, toolkit: toolkit)
         onConnectionLinkAvailable?(toolkit, url)
     }
 
@@ -1085,11 +1089,17 @@ final class RealtimeClient: ObservableObject {
             guard let self else { return }
             self.onToolCallStarted?(name)
             let output: String
+            var didThrow = false
             do {
                 output = try await tool.handler(arguments)
             } catch {
                 output = "{\"error\": \"\(error.localizedDescription)\"}"
+                didThrow = true
             }
+            // Success = the handler returned without throwing and its output isn't an
+            // {"error": …} payload (handlers report soft failures that way too).
+            let succeeded = !didThrow && !output.contains("\"error\"")
+            MackyAnalytics.toolCall(name: name, isMCP: false, success: succeeded)
             self.onToolCallEnded?()
 
             self.sendJSON([

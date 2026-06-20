@@ -235,6 +235,8 @@ final class CompanionManager: ObservableObject {
     }
 
     func openPendingConnection(_ connection: PendingConnection) {
+        // Connector-connect funnel step 2: the user opened the connect link in the browser.
+        MackyAnalytics.connectorConnect(step: .linkOpened, toolkit: connection.toolkit)
         NSWorkspace.shared.open(connection.redirectURL)
     }
 
@@ -261,6 +263,12 @@ final class CompanionManager: ObservableObject {
                       let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let slugs = json["connected"] as? [String] else { return }
                 let connected = Set(slugs.map { $0.lowercased() })
+                // Connector-connect funnel step 3: toolkits that just became connected
+                // since the last refresh (a confirmed connection completing the funnel).
+                let newlyConnected = connected.subtracting(self.connectedToolkits)
+                for toolkit in newlyConnected {
+                    MackyAnalytics.connectorConnect(step: .connectionConfirmed, toolkit: toolkit)
+                }
                 self.connectedToolkits = connected
                 self.pendingConnections.removeAll { connected.contains($0.toolkit.lowercased()) }
             } catch {
@@ -503,9 +511,19 @@ final class CompanionManager: ObservableObject {
 
     func clearDetectedElementLocation() {}
 
+    /// Timestamp of the most recent push-to-talk release, used to measure turn latency
+    /// (release → first response-audio byte). Nil once measured for the current turn.
+    private var turnReleaseTimestamp: Date?
+
     private func bindRealtimeClient() {
         realtimeClient.onResponseAudioStarted = { [weak self] in
             guard let self else { return }
+            // Turn latency: time from push-to-talk release to the first response-audio
+            // byte — the user-perceived "how fast did it answer". Measured once per turn.
+            if let start = self.turnReleaseTimestamp {
+                MackyAnalytics.turnLatency(milliseconds: Int(Date().timeIntervalSince(start) * 1000))
+                self.turnReleaseTimestamp = nil
+            }
             self.voiceState = .responding
             self.operationState = .speaking
         }
@@ -732,6 +750,7 @@ final class CompanionManager: ObservableObject {
             if buddyDictationManager.stopRealtimeAudioStreaming() {
                 voiceState = .processing
                 operationState = .thinking
+                turnReleaseTimestamp = Date()
                 realtimeClient.commitAudio()
                 if !pendingFileContext.isEmpty || !pendingImageContext.isEmpty {
                     realtimeClient.sendUserContext(texts: pendingFileContext, images: pendingImageContext)

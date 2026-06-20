@@ -82,6 +82,16 @@ to the notch.
 - `AppLauncherIntegration.swift` — `NSWorkspace` app launching.
 - `CompanionScreenCaptureUtility.swift` — ScreenCaptureKit for on-demand screen context.
 
+### Observability
+- `MackyAnalytics.swift` — thin wrapper over the PostHog SDK. No-ops until a
+  `POSTHOG_API_KEY` (Info.plist or env) is configured, so dev builds ship nothing. Event
+  **call sites** live in `CompanionManager` (turn latency, connector-connect funnel steps)
+  and `RealtimeClient` (native + MCP tool success/failure, connect-link requested). Add new
+  events through its `Event`/category methods, not a parallel API.
+- `MackyCrashReporter.swift` — PLCrashReporter startup wiring, guarded by
+  `#if canImport(CrashReporter)`. No-op until the `CrashReporter` package product is linked
+  to the target in Xcode (it is resolved transitively but not yet a linked product).
+
 ### Config & resources
 - `Info.plist` — bundle config, permission usage strings, the `Macky://` URL scheme.
 - `leanring-buddy.entitlements` — sandbox/capabilities, permissions, URL scheme.
