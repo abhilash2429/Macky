@@ -490,3 +490,69 @@ Four-part claim. Items 1–3 are prompt-engineering; item 4 is a product-risk de
 - **No Xcode build run** — docs-only phase; verified links/paths resolve and no in-repo doc
   still contradicts the post-Phase-10 code (except the MACKY.md product-intent conflict above,
   deliberately left for Ab).
+
+## Phase 12 — Final cross-check
+
+- **Audit-trail completeness:** every phase 0–11 has an entry above with a verdict. Confirmed
+  by `rg "^## Phase" AGENT_FINDINGS.md` → entries for 0 through 11 present.
+- **No partial reverts (per the phase's required re-checks):**
+  - Phase 6: `rg realtime-proxy.speedmac.workers.dev --type swift` → exactly **one** hit
+    (`WorkerEndpoints.swift:15`). Intact.
+  - Phase 5: `rg "MCP-CAPTURE" leanring-buddy/` → **zero** hits. Intact.
+  - Phase 2: `narrationPhrase` is used only as the `narrationText ?? Self.narrationPhrase(...)`
+    fallback (CompanionManager.swift) plus its definition. Intact.
+- **Tool-activity counter balance (Phase 1):** `adjustInFlight` sites — native +1/-1, MCP
+  +1/-1, teardown reconcile — confirmed balanced; `isToolActive` has a single writer.
+- **Phase 3 async conversion:** no synchronous `scriptValue`/`refresh()` calls remain in the
+  music manager hot path; all are `await`ed off-main with main-actor `@Published` assignment.
+- **Scope hygiene:** diffing from the pass's true parent (`6acdffa`), the only files changed
+  are those each phase intended. `AurenFileDropPanel.swift`, `SystemControlsIntegration.swift`,
+  and `leanring-buddy.entitlements` show in a `61d9a68..HEAD` diff only because they were
+  committed in the pre-existing `6acdffa "minor ui revamp"` (between the session-start snapshot
+  and Phase 0) — **not** touched by this pass. Preserved per the "do not revert dirty work" rule.
+
+### Verdict summary (all phases)
+| Phase | Verdict | Outcome |
+|-------|---------|---------|
+| 1 Tool-activity state | confirmed (1.2s not 1.5s) | fixed: single `inFlightCallCount` writer |
+| 2 Narration source | confirmed | fixed: model wins, hardcoded demoted to fallback |
+| 3 Music polling | confirmed (severity moderated) | fixed: AppleScript runs off main actor |
+| 4 Prompt gaps 1–3 | 1 & 2 confirmed, 3 refuted | fixed 1 (date) + 2 (connect-link); 3 no-op |
+| 4 Approval (item 4) | confirmed → decision | **kept `require_approval:"never"`**, documented in MACKY.md |
+| 5 Debug logging | confirmed; parser inconclusive | fixed: removed MCP-CAPTURE + URL log; parser left tolerant |
+| 6 Worker URL | confirmed | fixed: one `WorkerEndpoints.baseHost` |
+| 7a config fetch | confirmed | fixed: concurrent fetch + follow-up session.update |
+| 7b reconnect audio | confirmed | fixed: surface drop via `lastError`, no unsafe replay |
+| 7c partial update | partially confirmed | not fixed (off hot path; Azure merge unverifiable) |
+| 7d app cache | confirmed | fixed: 60s TTL cache |
+| 7e screen capture | confirmed/partly refuted | fixed: cursor-display default + `all_screens` flag |
+| 7 volume | confirmed | not fixed (deliberate bezel tradeoff) |
+| 8 Observability | premise stale | built MackyAnalytics + crash wiring + 3 event categories |
+| 9 Dead code | confirmed | removed clearDetectedElementLocation + awaitingApproval |
+| 9 Camera entitlement | confirmed unused → decision | **kept** per Ab |
+| 10 Connectors | confirmed | fixed: one ConnectorRegistry list feeds grid + logo-swap |
+| 11 Docs | confirmed | fixed in-repo docs; MACKY.md conflict + context file flagged |
+
+### Deferred / open items for Ab (one place, as required)
+1. **Connect-link parser shape (Phase 5):** `parseConnectionLink`'s handling of the real
+   Composio `mcp_call` output remains unverified — close out with a live
+   `COMPOSIO_MANAGE_CONNECTIONS` frame capture.
+2. **Crash reporting activation (Phase 8):** add the `CrashReporter` (PLCrashReporter) SPM
+   product to the `leanring-buddy` target in Xcode (one-time GUI step). `MackyCrashReporter`
+   is wired behind `#if canImport(CrashReporter)` and activates automatically once linked.
+3. **PostHog key (Phase 8):** set `POSTHOG_API_KEY` (Info.plist/build setting or env) to start
+   shipping events; until then `MackyAnalytics` no-ops.
+4. **Partial session.update (Phase 7c):** revisit only if a live session confirms Azure GA
+   supports a `turn_detection`-only partial update; not worth the risk otherwise.
+5. **Volume tap latency (Phase 7):** revisit the up-to-16-tap/25ms bezel tradeoff if latency
+   matters more than the native volume bezel animation.
+6. **MACKY.md narration conflict (Phase 11):** decide whether Macky should speak progress
+   while tools run (loosen the prompt) or stay silent (update MACKY.md lines 42/61). Currently
+   the code is silent-execution; MACKY.md still describes talk-while-running.
+7. **External `context` file (Phase 11):** stale ("Milestone 1 in progress"); update directly
+   or retire in favor of the root `AGENTS.md`.
+
+- **No Xcode build run** for any phase (per root `AGENTS.md`: local `xcodebuild` disturbs TCC
+  permissions). All verification was static: reading changed code, `rg` for callers/strings,
+  and confirming new files are picked up by the project's synchronized folder group. A real
+  Xcode build by Ab is the final confirmation, plus linking `CrashReporter` to activate item 2.
