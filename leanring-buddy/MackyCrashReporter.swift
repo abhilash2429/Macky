@@ -42,7 +42,13 @@ enum MackyCrashReporter {
         if reporter.hasPendingCrashReport() {
             if let data = try? reporter.loadPendingCrashReportDataAndReturnError(),
                let report = try? PLCrashReport(data: data) {
-                let text = PLCrashReportTextFormatter.stringValue(for: report, with: .iOS) ?? "unavailable"
+                // PLCrashReportTextFormat has a single case, imported from the C constant
+                // `PLCrashReportTextFormatiOS`; the formatter API is the class method
+                // `stringValueForCrashReport(_:withTextFormat:)`.
+                let text = PLCrashReportTextFormatter.stringValue(
+                    forCrashReport: report,
+                    withTextFormat: PLCrashReportTextFormatiOS
+                ) ?? "unavailable"
                 print("💥 MackyCrashReporter: recovered crash report from previous session:\n\(text)")
             }
             reporter.purgePendingCrashReport()
