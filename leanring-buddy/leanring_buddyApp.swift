@@ -41,9 +41,9 @@ final class MackyAppDelegate: NSObject, NSApplicationDelegate {
         )
 
         let manager = CompanionManager()
-        manager.start()
         companionManager = manager
         notchPanelController = NotchPanelController(companionManager: manager)
+        manager.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

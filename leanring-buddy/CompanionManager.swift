@@ -351,18 +351,10 @@ final class CompanionManager: ObservableObject {
         let remindersStatus = EKEventStore.authorizationStatus(for: .reminder)
         hasRemindersPermission = remindersStatus == .fullAccess || remindersStatus == .writeOnly
 
-        // Automation is read without prompting (askUserIfNeeded = false). The status
-        // only reads as authorized while the target player is running, so once we've
-        // ever seen a grant we cache it and stop probing — same approach as Screen
-        // Content above.
-        if UserDefaults.standard.bool(forKey: "hasAutomationPermission") {
-            hasAutomationPermission = true
-        } else {
-            let granted = Self.isAutomationAuthorized(forBundleIdentifier: "com.spotify.client")
-                || Self.isAutomationAuthorized(forBundleIdentifier: "com.apple.Music")
-            hasAutomationPermission = granted
-            if granted { UserDefaults.standard.set(true, forKey: "hasAutomationPermission") }
-        }
+        // Automation is optional and Apple Events permission checks can stall launch on
+        // fresh Macs. Only trust the cached grant here; explicit Settings → Automation
+        // requests perform the live check/prompt off the main thread.
+        hasAutomationPermission = UserDefaults.standard.bool(forKey: "hasAutomationPermission")
 
         // Once the two out-of-band permissions (granted in System Settings) are in,
         // there's nothing left for the timer to catch — stop polling.
