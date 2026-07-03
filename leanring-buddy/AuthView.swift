@@ -12,6 +12,7 @@ import SwiftUI
 struct AuthView: View {
     @ObservedObject var authManager: AuthManager
     @State private var email: String = ""
+    @FocusState private var emailFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,37 +25,49 @@ struct AuthView: View {
                 emailInputState
             }
         }
-        .padding(28)
-        .frame(width: 420)
+        .padding(24)
+        .frame(maxWidth: 360)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
     }
 
     // MARK: - Email input
 
     private var emailInputState: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
+        VStack(spacing: 14) {
+            // The glowing blue Macky glyph — the brand identity.
+            MackyGlyphLogo(size: 40, glow: true)
+                .padding(.bottom, 2)
+
+            VStack(spacing: 6) {
                 Text("Welcome to Macky")
-                    .font(.system(size: 18, weight: .bold))
+                    .font(.system(size: 21, weight: .bold, design: .rounded))
                     .foregroundColor(DS.Colors.textPrimary)
                 Text("Sign in with your email to get started.")
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .foregroundColor(DS.Colors.textSecondary)
             }
+            .multilineTextAlignment(.center)
 
             TextField("you@example.com", text: $email)
                 .textFieldStyle(.plain)
-                .font(.system(size: 14))
+                .font(.system(size: 13))
                 .foregroundColor(DS.Colors.textPrimary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .focused($emailFocused)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 11)
+                .frame(maxWidth: .infinity)
                 .background(
-                    RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .fill(Color.white.opacity(0.08))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(
+                            emailFocused ? DS.Colors.accent : DS.Colors.borderSubtle,
+                            lineWidth: emailFocused ? 1.5 : 1
+                        )
+                        .animation(.smooth(duration: 0.15), value: emailFocused)
                 )
                 .onSubmit(submit)
 
@@ -62,6 +75,7 @@ struct AuthView: View {
                 Text(message)
                     .font(.system(size: 12))
                     .foregroundColor(DS.Colors.destructiveText)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -73,19 +87,29 @@ struct AuthView: View {
                             .tint(DS.Colors.textOnAccent)
                     }
                     Text(authManager.phase == .sending ? "Sending…" : "Send magic link")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(DS.Colors.textOnAccent)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
+                .padding(.vertical, 12)
                 .background(
-                    RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
+                    Capsule(style: .continuous)
                         .fill(isEmailValid ? DS.Colors.accent : DS.Colors.accent.opacity(0.4))
                 )
             }
             .buttonStyle(.plain)
             .pointerCursor()
             .disabled(!isEmailValid || authManager.phase == .sending)
+
+            // Footer privacy reassurance.
+            HStack(spacing: 6) {
+                Image(systemName: "lock")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Your mic is on only while you hold the key.")
+                    .font(.system(size: 10))
+            }
+            .foregroundColor(DS.Colors.textTertiary)
+            .padding(.top, 2)
         }
     }
 

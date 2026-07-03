@@ -340,7 +340,7 @@ final class RealtimeClient: ObservableObject {
 
         registerTool(
             name: "control_music",
-            description: "Instantly control playback in the user's already-open music app (Spotify or Apple Music). Use for transport: pause, resume/play the current track (when NO specific song is named), skip to the next track, go to the previous track, or report what's currently playing. Prefer this over any Spotify connector for these — it's instant. Do NOT use it to start a specific song, album, artist, or playlist by name; that requires the Spotify connector to search first.",
+            description: "Instantly control playback in the user's already-open music app (Spotify or Apple Music). Use for transport: pause, resume/play the current track (when NO specific song is named), skip to the next track, go to the previous track, or report what's currently playing. Prefer this over any connector for these — it's instant. Do NOT use it to start a specific song, album, artist, or playlist by name; use play_spotify_track for that.",
             schema: [
                 "type": "object",
                 "properties": [
@@ -357,6 +357,26 @@ final class RealtimeClient: ObservableObject {
                 return "{\"error\": \"missing action\"}"
             }
             return try await SystemControlsIntegration.controlMusic(action: action)
+        }
+
+        registerTool(
+            name: "play_spotify_track",
+            description: "Play a SPECIFIC song, artist, album, or playlist by name on Spotify. Use this whenever the user names what to play — \"play Blinding Lights\", \"play some Taylor Swift\", \"put on my focus playlist\". It searches Spotify and starts playback in one step (opening the Spotify app if needed), so it's fast and reliable — always prefer it over any Spotify connector for starting playback. Do NOT use control_music for a named song; that only controls whatever is already loaded.",
+            schema: [
+                "type": "object",
+                "properties": [
+                    "query": [
+                        "type": "string",
+                        "description": "What to play, as spoken — a song title, optionally with the artist, e.g. \"Blinding Lights The Weeknd\" or \"lofi beats\"."
+                    ]
+                ],
+                "required": ["query"]
+            ]
+        ) { arguments in
+            guard let query = arguments["query"] as? String else {
+                return "{\"error\": \"missing query\"}"
+            }
+            return try await SystemControlsIntegration.playSpotifyTrack(query: query)
         }
     }
 
@@ -920,10 +940,11 @@ final class RealtimeClient: ObservableObject {
         "playing Back in Black", "volume's at 50%", "sent it", "added to your calendar". \
         When the effect is obvious to the user (music starts playing, an app opens), keep \
         it to a few words or say nothing. Never describe the steps you took to get there.
-        - For music that's already open, use the instant local control (control_music) for \
-        pause, resume, skip, previous, and "what's playing". Only reach for the Spotify \
-        connector to start a specific song, album, artist, or playlist by name — that one \
-        has to search first.
+        - Music: to start a SPECIFIC song, artist, album, or playlist by name, always use \
+        the play_spotify_track tool — it searches and plays in one fast step. For \
+        transport on what's already open (pause, resume, skip, previous, "what's \
+        playing"), use the instant local control (control_music). Never use the Spotify \
+        connector to start playback; play_spotify_track is faster and more reliable.
         - Short sentences, no lists or long explanations unless the user explicitly asks for \
         detail.
         - Only look at the screen when the user refers to something visual — "what's this", \

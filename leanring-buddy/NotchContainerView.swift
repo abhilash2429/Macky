@@ -127,7 +127,7 @@ struct NotchContainerView: View {
     private var headerOrStatus: some View {
         if isOpen {
             MackyPanelHeader(selectedPage: $panelPage, onClose: { close(userInitiated: true) })
-                .frame(height: max(32, notch.effectiveClosedNotchHeight))
+                .frame(height: max(28, notch.effectiveClosedNotchHeight))
         } else if companionManager.isAssistantActive {
             AurenStatusBar(companionManager: companionManager)
         } else {
@@ -283,19 +283,19 @@ private struct MackyPanelHeader: View {
     var onClose: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            MackyLogoView(size: 18)
+        HStack(spacing: 8) {
+            MackyGlyphLogo(size: 15, glow: false)
 
             Text("Macky")
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.9))
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
 
             Spacer()
 
-            HeaderIcon(systemName: "house.fill", isSelected: selectedPage == .home) { selectedPage = .home }
-            HeaderIcon(systemName: "puzzlepiece.extension.fill", isSelected: selectedPage == .connectors) { selectedPage = .connectors }
+            HeaderIcon(systemName: "house", isSelected: selectedPage == .home) { selectedPage = .home }
+            HeaderIcon(systemName: "square.grid.2x2", isSelected: selectedPage == .connectors) { selectedPage = .connectors }
             HeaderIcon(systemName: "paperclip", isSelected: selectedPage == .files) { selectedPage = .files }
-            HeaderIcon(systemName: "gearshape.fill", isSelected: selectedPage == .settings) { selectedPage = .settings }
+            HeaderIcon(systemName: "sun.max", isSelected: selectedPage == .settings) { selectedPage = .settings }
             HeaderIcon(systemName: "chevron.up", isSelected: false, action: onClose)
         }
         .padding(.horizontal, 4)
@@ -310,10 +310,16 @@ private struct HeaderIcon: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isSelected ? .white : .white.opacity(0.55))
-                .frame(width: 28, height: 28)
-                .background(Circle().fill(isSelected ? Color.white.opacity(0.15) : Color.white.opacity(0.06)))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(isSelected ? .white : .white.opacity(0.6))
+                .frame(width: 27, height: 27)
+                .background(
+                    Circle()
+                        .fill(isSelected ? Color.white.opacity(0.14) : Color.white.opacity(0.05))
+                )
+                .overlay(
+                    Circle().strokeBorder(Color.white.opacity(isSelected ? 0.14 : 0.07), lineWidth: 1)
+                )
         }
         .buttonStyle(.plain)
     }
@@ -364,7 +370,7 @@ private struct MackyPanelOnboardingView: View {
         HStack(spacing: 5) {
             ForEach(0..<MackyPanelOnboardingStep.allCases.count, id: \.self) { index in
                 Capsule()
-                    .fill(index <= step.rawValue ? Color.white.opacity(0.82) : Color.white.opacity(0.14))
+                    .fill(index <= step.rawValue ? DS.Colors.accent : Color.white.opacity(0.14))
                     .frame(height: 3)
             }
         }
@@ -431,7 +437,7 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
         case .welcome:
             return "Voice, tools, approvals, connectors, and setup all happen from the notch panel."
         case .microphone:
-            return "Macky needs microphone access to hear push-to-talk requests."
+            return "Macky needs microphone access to hear your push-to-talk requests. Audio capture only starts when you hold the key."
         case .screenRecording:
             return "Screen Recording lets Macky understand visible app context when you ask for help."
         case .screenContent:
@@ -454,7 +460,7 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
         case .welcome, .hotkey, .finished:
             return ""
         case .microphone:
-            return "Audio capture only starts when you use push-to-talk."
+            return "Nothing is recorded in the background — only while the key is held."
         case .screenRecording, .screenContent:
             return "Screen context is sent only when Macky needs it for your request."
         case .accessibility:
@@ -512,29 +518,28 @@ private struct MackyOnboardingWelcomeView: View {
         ZStack {
             MackyOnboardingGlow()
 
-            VStack(spacing: 12) {
-                MackyLogoView(size: 64, color: .white)
-                    .shadow(color: DS.Colors.accentText.opacity(0.42), radius: 24)
+            VStack(spacing: 11) {
+                MackyGlyphLogo(size: 46, glow: true)
 
                 VStack(spacing: 3) {
                     Text("Macky")
-                        .font(.system(size: 32, weight: .semibold, design: .rounded))
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                     Text("Welcome")
-                        .font(.system(size: 18, weight: .medium))
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.white.opacity(0.56))
                 }
 
                 Button(action: onContinue) {
                     Text("Get started")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.black)
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 7)
                         .background(Capsule().fill(.white))
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 12)
+                .padding(.top, 9)
             }
             .padding(.bottom, 18)
         }
@@ -548,61 +553,70 @@ private struct MackyOnboardingPermissionView: View {
     let onSkip: () -> Void
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 15) {
+            // 54px rounded icon tile with a soft accent wash.
             Image(systemName: isGranted ? "checkmark.circle.fill" : step.icon)
-                .font(.system(size: 48, weight: .semibold))
+                .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(isGranted ? DS.Colors.success : DS.Colors.accentText)
-                .padding(.top, 6)
+                .frame(width: 54, height: 54)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill((isGranted ? DS.Colors.success : DS.Colors.accentText).opacity(0.14))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder((isGranted ? DS.Colors.success : DS.Colors.accentText).opacity(0.28), lineWidth: 1)
+                )
+                .padding(.top, 4)
 
-            VStack(spacing: 8) {
+            VStack(spacing: 7) {
                 Text(step.title)
-                    .font(.system(size: 24, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(DS.Colors.textPrimary)
 
                 Text(step.description)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.68))
+                    .font(.system(size: 12))
+                    .foregroundStyle(DS.Colors.textSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 430)
+                    .frame(maxWidth: 380)
             }
 
             if !step.privacyNote.isEmpty {
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
                     Image(systemName: "lock.shield")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.48))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DS.Colors.textTertiary)
                     Text(step.privacyNote)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.52))
+                        .font(.system(size: 10))
+                        .foregroundStyle(DS.Colors.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(10)
-                .frame(maxWidth: 430, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: 380, alignment: .center)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.055)))
             }
 
-            HStack(spacing: 10) {
-                Button("Not Now", action: onSkip)
+            HStack(spacing: 11) {
+                Button("Not now", action: onSkip)
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Capsule().fill(Color.white.opacity(0.08)))
+                    .foregroundStyle(DS.Colors.textSecondary)
 
                 Button(action: onAllow) {
-                    Text(isGranted ? "Continue" : "Allow Access")
+                    Text(isGranted ? "Continue" : "Allow access")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 8)
-                        .background(Capsule().fill(.white))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 9)
+                        .background(Capsule().fill(DS.Colors.accent))
                 }
                 .buttonStyle(.plain)
             }
+            .padding(.top, 3)
         }
-        .padding(.horizontal, 28)
+        .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .background(MackyOnboardingGlow().opacity(0.58))
     }
@@ -614,49 +628,58 @@ private struct MackyOnboardingHotkeyView: View {
     let onSkip: () -> Void
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             Image(systemName: "keyboard")
-                .font(.system(size: 46, weight: .semibold))
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(DS.Colors.accentText)
+                .frame(width: 46, height: 46)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(DS.Colors.accentText.opacity(0.14))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(DS.Colors.accentText.opacity(0.28), lineWidth: 1)
+                )
 
-            VStack(spacing: 7) {
-                Text("Set Push-to-Talk")
-                    .font(.system(size: 24, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+            VStack(spacing: 5) {
+                Text("Set push-to-talk")
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .foregroundStyle(DS.Colors.textPrimary)
                 Text("This shortcut is the only trigger you need; setup stays in the panel.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.62))
+                    .font(.system(size: 10))
+                    .foregroundStyle(DS.Colors.textSecondary)
                     .multilineTextAlignment(.center)
             }
 
             HotkeySettingsView(companionManager: companionManager)
-                .padding(12)
-                .frame(maxWidth: 430)
-                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.06)))
+                .padding(10)
+                .frame(maxWidth: 340)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.06)))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
                 )
 
-            HStack(spacing: 10) {
+            HStack(spacing: 9) {
                 Button("Skip", action: onSkip)
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.62))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 7)
                     .background(Capsule().fill(Color.white.opacity(0.08)))
 
                 Button("Continue", action: onContinue)
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.black)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 7)
                     .background(Capsule().fill(.white))
             }
         }
-        .padding(.horizontal, 28)
+        .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .background(MackyOnboardingGlow().opacity(0.58))
     }
@@ -667,33 +690,42 @@ private struct MackyOnboardingFinishedView: View {
     let onFinish: () -> Void
 
     var body: some View {
-        VStack(spacing: 15) {
+        VStack(spacing: 11) {
             Image(systemName: "sparkles")
-                .font(.system(size: 54, weight: .semibold))
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(DS.Colors.accentText)
+                .frame(width: 46, height: 46)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(DS.Colors.accentText.opacity(0.14))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(DS.Colors.accentText.opacity(0.28), lineWidth: 1)
+                )
 
-            Text("You're All Set")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+            Text("You're all set")
+                .font(.system(size: 21, weight: .bold, design: .rounded))
+                .foregroundStyle(DS.Colors.textPrimary)
 
             Text(hasAllPermissions ? "Macky is ready in the notch." : "You can finish now and grant remaining access later in panel settings.")
-                .font(.system(size: 13))
-                .foregroundStyle(.white.opacity(0.62))
+                .font(.system(size: 10))
+                .foregroundStyle(DS.Colors.textSecondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 430)
+                .frame(maxWidth: 340)
 
             Button(action: onFinish) {
                 Text("Start using Macky")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.black)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 9)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 8)
                     .background(Capsule().fill(.white))
             }
             .buttonStyle(.plain)
-            .padding(.top, 8)
+            .padding(.top, 6)
         }
-        .padding(.horizontal, 28)
+        .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .background(MackyOnboardingGlow())
     }

@@ -21,92 +21,92 @@ struct AurenFileDropPanel: View {
     @State private var promptText = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            fileListOrHint
+        VStack(alignment: .leading, spacing: 12) {
+            dropZone
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider().background(Color.white.opacity(0.12))
-            promptRow
+            if !droppedURLs.isEmpty {
+                attachedChips
+            }
+            askCard
         }
-        .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             handleDrop(providers)
             return true
         }
+    }
+
+    // MARK: - Drop zone
+
+    private var dropZone: some View {
+        VStack(spacing: 9) {
+            Image(systemName: "arrow.up.to.line")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(DS.Colors.textSecondary)
+            Text("Drop files here")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(DS.Colors.textSecondary)
+            Text("or drag straight onto the notch to attach")
+                .font(.system(size: 10))
+                .foregroundStyle(DS.Colors.textTertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Near-transparent black at rest (matches the reference), lifting only a
+        // touch on drag-over. No blue/violet wash so the zone reads as flat black.
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(DS.Gradients.panelSubtle)
-        )
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(isTargeted ? 0.08 : 0.04))
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.white.opacity(isTargeted ? 0.06 : 0.015))
                 .animation(.smooth(duration: 0.15), value: isTargeted)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(
-                    isTargeted ? Color.white.opacity(0.3) : Color.white.opacity(0.08),
-                    lineWidth: 1
+                    isTargeted ? Color.white.opacity(0.32) : Color.white.opacity(0.12),
+                    style: StrokeStyle(lineWidth: 1.4, dash: [6, 4])
                 )
                 .animation(.smooth(duration: 0.15), value: isTargeted)
         )
     }
 
-    // MARK: - Sub-views
+    // MARK: - Attached file chips (row between the drop zone and the ask card)
 
-    @ViewBuilder
-    private var fileListOrHint: some View {
-        if droppedURLs.isEmpty {
-            dropHint
-        } else {
-            fileChipScroll
-        }
-    }
-
-    private var dropHint: some View {
-        VStack(spacing: 5) {
-            Image(systemName: "arrow.down.doc")
-                .font(.system(size: 20, weight: .light))
-                .foregroundStyle(.gray)
-            Text("Drop files here")
-                .font(.system(size: 11))
-                .foregroundStyle(.gray)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var fileChipScroll: some View {
+    private var attachedChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
+            HStack(spacing: 8) {
                 ForEach(droppedURLs, id: \.self) { url in
                     FileChip(url: url) { droppedURLs.removeAll { $0 == url } }
                 }
             }
-            .padding(.horizontal, 2)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private var promptRow: some View {
-        HStack(spacing: 8) {
+    // MARK: - Ask card (separate, with accent send button)
+
+    private var askCard: some View {
+        HStack(spacing: 10) {
             TextField("Ask something about these files…", text: $promptText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
-                .foregroundStyle(.white)
+                .foregroundStyle(DS.Colors.textPrimary)
                 .onSubmit { sendIfReady() }
-            sendButton
-        }
-    }
 
-    private var sendButton: some View {
-        Button { sendIfReady() } label: {
-            Image(systemName: "arrow.up.circle.fill")
-                .font(.system(size: 22))
-                .foregroundStyle(canSend ? Color.white : Color.gray.opacity(0.4))
+            Button { sendIfReady() } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(DS.Colors.textOnAccent)
+                    .frame(width: 29, height: 29)
+                    // Full bright accent to match the reference; only softens when
+                    // there's genuinely nothing to send.
+                    .background(Circle().fill(canSend ? DS.Colors.accent : DS.Colors.accent.opacity(0.7)))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+            .animation(.smooth(duration: 0.15), value: canSend)
         }
-        .buttonStyle(.plain)
-        .disabled(!canSend)
-        .animation(.smooth(duration: 0.15), value: canSend)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 13).fill(Color.white.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
     }
 
     // MARK: - Helpers
@@ -147,26 +147,27 @@ struct FileChip: View {
     let onRemove: () -> Void
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             Image(systemName: iconName)
-                .font(.system(size: 10))
-                .foregroundStyle(.gray)
+                .font(.system(size: 11))
+                .foregroundStyle(iconTint)
             Text(url.lastPathComponent)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.9))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(DS.Colors.textPrimary.opacity(0.92))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: 120)
             Button { onRemove() } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.gray)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(DS.Colors.textTertiary)
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(Capsule().fill(Color.white.opacity(0.1)))
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(Capsule().fill(Color.white.opacity(0.06)))
+        .overlay(Capsule().strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
     }
 
     private var iconName: String {
@@ -178,6 +179,16 @@ struct FileChip: View {
         case "zip", "tar", "gz", "rar": return "archivebox.fill"
         case "swift", "py", "js", "ts", "go", "rs": return "chevron.left.forwardslash.chevron.right"
         default: return "doc.fill"
+        }
+    }
+
+    /// Leading-icon tint by file type: pdf red, images accent-blue, everything
+    /// else the neutral secondary text color.
+    private var iconTint: Color {
+        switch url.pathExtension.lowercased() {
+        case "pdf": return DS.Colors.destructive
+        case "png", "jpg", "jpeg", "webp", "gif": return DS.Colors.accentText
+        default: return DS.Colors.textSecondary
         }
     }
 }
