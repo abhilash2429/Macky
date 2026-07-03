@@ -126,6 +126,12 @@ final class RealtimeClient: ObservableObject {
     /// `response.created`/our `response.create` and `response.done`). Gates
     /// `response.cancel` so we never cancel when nothing is running.
     private var hasActiveResponse = false
+    /// Clears a push-to-talk turn if the server never acknowledges `response.create`.
+    /// Without this, a dropped/ignored response request leaves the notch in "Thinking"
+    /// and makes the next press send a bogus `response.cancel`.
+    private var responseStartTimeoutTask: Task<Void, Never>?
+    /// Bumped for each `response.create` so stale timeout tasks from earlier turns no-op.
+    private var responseStartGeneration = 0
     /// True after a barge-in `response.cancel`, until the next response actually
     /// begins. Used to drop late audio deltas from the killed response.
     private var isResponseCancelled = false
@@ -649,6 +655,8 @@ final class RealtimeClient: ObservableObject {
         receiveLoopTask = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
+        responseStartTimeoutTask?.cancel()
+        responseStartTimeoutTask = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
 
@@ -720,11 +728,17 @@ final class RealtimeClient: ObservableObject {
         case "session.created":
             print("session.created received")
             sendSessionUpdate()
+        case "session.updated":
+            print("session.updated received")
         case "response.created":
             // A fresh response has truly started → allow its audio to play.
+            responseStartTimeoutTask?.cancel()
+            responseStartTimeoutTask = nil
             hasActiveResponse = true
             isResponseCancelled = false
         case "response.done":
+            responseStartTimeoutTask?.cancel()
+            responseStartTimeoutTask = nil
             hasActiveResponse = false
             // A full turn finished: hand the captured transcripts to the owner for
             // the history list, then reset for the next turn.
@@ -781,9 +795,13 @@ final class RealtimeClient: ObservableObject {
         case "response.output_item.done":
             handleMCPOutputItem(json, completed: true)
         case "error":
+            responseStartTimeoutTask?.cancel()
+            responseStartTimeoutTask = nil
+            hasActiveResponse = false
             let message = (json["error"] as? [String: Any])?["message"] as? String ?? text
             print("⚠️ RealtimeClient: server error: \(message)")
             lastError = message
+            settleIfIdle()
         default:
             break
         }
@@ -1007,7 +1025,7 @@ final class RealtimeClient: ObservableObject {
 
         // GA gpt-realtime session schema: `type` is required, audio formats and
         // turn detection are nested under `audio.input` / `audio.output`. In
-        // push-to-talk mode `turn_detection` is OMITTED so commit + response.create
+        // push-to-talk mode `turn_detection` is null so commit + response.create
         // are driven manually. Continuous-listening mode sets it to server VAD so
         // the model auto-detects turns and replies hands-free. Audio is PCM16 24kHz
         // mono in both directions.
@@ -1028,6 +1046,8 @@ final class RealtimeClient: ObservableObject {
                 "create_response": true,
                 "interrupt_response": true
             ]
+        } else {
+            inputAudio["turn_detection"] = NSNull()
         }
         sendJSON([
             "type": "session.update",
@@ -1404,7 +1424,7 @@ final class RealtimeClient: ObservableObject {
     }
 
     /// Marks the end of the user's utterance (push-to-talk key release).
-    func commitAudio() {
+    func commitAudio() -> Bool {
         // A reconnect mid-utterance dropped chunks (and cleared the server buffer), so
         // the committed audio would be incomplete. Surface it instead of committing a
         // partial turn the user would hear get answered wrong, and skip the commit.
@@ -1413,19 +1433,40 @@ final class RealtimeClient: ObservableObject {
             lastError = "Lost connection while you were talking — try again."
             audioDroppedDuringUtterance = false
             appendedAudioChunkCount = 0
-            return
+            return false
+        }
+        guard appendedAudioChunkCount > 0 else {
+            print("⚠️ RealtimeClient: commit skipped — no audio chunks captured")
+            lastError = "I didn't catch any audio — try holding the shortcut a little longer."
+            return false
         }
         print("📤 RealtimeClient: commit audio (\(appendedAudioChunkCount) chunks)")
         appendedAudioChunkCount = 0
         sendJSON(["type": "input_audio_buffer.commit"])
+        return true
     }
 
     /// Asks the model to generate a response to the committed audio.
     func requestResponse() {
         print("📨 RealtimeClient: response.create")
-        hasActiveResponse = true
         isResponseCancelled = false
         sendJSON(["type": "response.create"])
+        scheduleResponseStartTimeout()
+    }
+
+    private func scheduleResponseStartTimeout() {
+        responseStartGeneration += 1
+        let generation = responseStartGeneration
+        responseStartTimeoutTask?.cancel()
+        responseStartTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            guard let self,
+                  self.responseStartGeneration == generation,
+                  !self.hasActiveResponse else { return }
+            print("⚠️ RealtimeClient: response.create timed out before response.created")
+            self.lastError = "The realtime service didn't start a response — try again."
+            self.settleIfIdle()
+        }
     }
 
     // MARK: - Audio Output (model voice → speakers)
@@ -1566,6 +1607,8 @@ final class RealtimeClient: ObservableObject {
             sendJSON(["type": "response.cancel"])
             hasActiveResponse = false
         }
+        responseStartTimeoutTask?.cancel()
+        responseStartTimeoutTask = nil
         // Drop any deltas still arriving for the cancelled response.
         isResponseCancelled = true
 

@@ -738,7 +738,11 @@ final class CompanionManager: ObservableObject {
                 voiceState = .processing
                 operationState = .thinking
                 turnReleaseTimestamp = Date()
-                realtimeClient.commitAudio()
+                guard realtimeClient.commitAudio() else {
+                    voiceState = .idle
+                    operationState = .idle
+                    return
+                }
                 if !pendingFileContext.isEmpty || !pendingImageContext.isEmpty {
                     realtimeClient.sendUserContext(texts: pendingFileContext, images: pendingImageContext)
                     clearPendingAttachments()
