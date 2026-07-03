@@ -172,9 +172,10 @@ For a human running the app.
 2. **Grant permissions** when prompted — Microphone, Accessibility (for the global
    push-to-talk tap), and Screen Recording (for screen context). Without Accessibility the
    hotkey will not fire; without Microphone there is no voice input.
-3. **Sign in** through the magic-link screen: enter your email, click the link that arrives
-   by email (it opens the app via the `Macky://auth` URL scheme), and the session is saved
-   to your Keychain.
+3. **Sign in or skip for now** through the magic-link screen: enter your email, click the
+   link that arrives by email (it opens the app via the `Macky://auth` URL scheme), and
+   the session is saved to your Keychain. During early testing, you can also click
+   **Skip for now** to continue onboarding without a saved session.
 4. **Use it:** hold the push-to-talk shortcut (default modifier-only chord; configurable in
    the hotkey settings), speak, and release. Watch the notch for the listening waveform;
    the panel expands only when there is something to show.

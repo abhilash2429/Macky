@@ -2,12 +2,12 @@
 //  AuthManager.swift
 //  leanring-buddy
 //
-//  Magic-link authentication. On launch the app checks `hasSession` (a Keychain
-//  lookup); if there's no session it shows AuthView. The user submits their email
-//  (requestMagicLink); the Worker emails them a clickable link that bounces through
-//  `/auth/open` into the `Macky://auth?token=…` deep link. Opening it routes back
-//  through `handleIncomingURL` → `verify`, which stores the session in the Keychain
-//  and flips `phase` to `.authenticated`.
+//  Magic-link authentication. On launch the app checks for a Keychain session or
+//  the temporary local skip flag; if neither exists it shows AuthView. The user can
+//  submit their email (requestMagicLink), then the Worker emails them a clickable
+//  link that bounces through `/auth/open` into the `Macky://auth?token=…` deep link.
+//  Opening it routes back through `handleIncomingURL` → `verify`, which stores the
+//  session in the Keychain and flips `phase` to `.authenticated`.
 //
 
 import Combine
@@ -35,9 +35,12 @@ final class AuthManager: ObservableObject {
     /// `WorkerEndpoints` so self-hosting only requires changing it in one place.
     private let workerBaseURL = WorkerEndpoints.httpsBase
     private static let keychainService = "macky.session"
+    private static let skippedAuthDefaultsKey = "macky.authSkippedForNow"
 
     private init() {
-        phase = AuthManager.loadSession() != nil ? .authenticated : .idle
+        phase = AuthManager.loadSession() != nil || AuthManager.hasSkippedAuth
+            ? .authenticated
+            : .idle
     }
 
     // MARK: - Session state
@@ -45,6 +48,16 @@ final class AuthManager: ObservableObject {
     /// True when a session blob is present in the Keychain.
     var hasSession: Bool {
         AuthManager.loadSession() != nil
+    }
+
+    private static var hasSkippedAuth: Bool {
+        UserDefaults.standard.bool(forKey: skippedAuthDefaultsKey)
+    }
+
+    func skipAuthenticationForNow() {
+        UserDefaults.standard.set(true, forKey: Self.skippedAuthDefaultsKey)
+        pendingEmail = nil
+        phase = .authenticated
     }
 
     // MARK: - Request a magic link
@@ -187,6 +200,7 @@ final class AuthManager: ObservableObject {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService
         ] as CFDictionary)
+        UserDefaults.standard.removeObject(forKey: Self.skippedAuthDefaultsKey)
         pendingEmail = nil
         phase = .idle
     }

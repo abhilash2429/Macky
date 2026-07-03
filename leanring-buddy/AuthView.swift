@@ -4,7 +4,8 @@
 //
 //  First-launch sign-in screen hosted inside the expanded notch panel. Collects
 //  the user's email, asks the Worker for a magic link, then waits for the
-//  `Macky://auth?token=…` link to be opened and verified.
+//  `Macky://auth?token=…` link to be opened and verified. During early testing,
+//  the user can skip this step locally and continue onboarding.
 //
 
 import SwiftUI
@@ -86,6 +87,22 @@ struct AuthView: View {
             .buttonStyle(.plain)
             .pointerCursor()
             .disabled(!isEmailValid || authManager.phase == .sending)
+
+            Button("Skip for now") {
+                authManager.skipAuthenticationForNow()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(DS.Colors.textTertiary)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 2)
+            .pointerCursor()
+            .disabled(authManager.phase == .sending)
+
+            Text("You can sign in later when magic-link auth is ready.")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 

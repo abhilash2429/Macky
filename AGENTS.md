@@ -184,8 +184,8 @@ For a human getting this project running locally.
    download Sparkle, PostHog, and PLCrashReporter.
 3. On first launch, grant the macOS permission prompts (Microphone, Accessibility, Screen
    Recording). These power push-to-talk, the global hotkey, and screen context.
-4. Sign in via the magic-link flow (see `worker/AGENTS.md`), then **hold the push-to-talk
-   shortcut, speak, and release**.
+4. Sign in via the magic-link flow (see `worker/AGENTS.md`) or click **Skip for now**
+   during early testing, then **hold the push-to-talk shortcut, speak, and release**.
 
 ### Run the backend
 - From `worker/`: `npx wrangler dev` for local, `npx wrangler deploy` to publish.
