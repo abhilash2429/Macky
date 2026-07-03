@@ -38,6 +38,10 @@ export default {
       return handleComposioConnections(env);
     }
 
+    if (url.pathname === "/spotify-play" && request.method === "POST") {
+      return handleSpotifyPlay(request, env);
+    }
+
     if (url.pathname === "/auth/magic-link" && request.method === "POST") {
       return handleMagicLink(request, env);
     }
@@ -244,6 +248,189 @@ async function handleComposioConnections(env: Env): Promise<Response> {
     console.error("Composio connections error", err);
     return jsonResponse({ error: "composio connections error" }, 500);
   }
+}
+
+/// Executes a single Composio tool for COMPOSIO_USER_ID via the REST execute
+/// endpoint and returns the parsed `{ successful, data, error }` envelope. This is
+/// the *direct* path (no MCP tool-router discovery), so it's one hop with no voice
+/// model in the loop — the whole point of the fast Spotify route below.
+async function composioExecute(
+  env: Env,
+  slug: string,
+  args: Record<string, unknown>
+): Promise<{ successful: boolean; data: any; error: unknown }> {
+  const response = await fetch(
+    `https://backend.composio.dev/api/v3/tools/execute/${slug}`,
+    {
+      method: "POST",
+      headers: {
+        "x-api-key": env.COMPOSIO_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ user_id: COMPOSIO_USER_ID, arguments: args }),
+    }
+  );
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    console.error("Composio execute failed", slug, response.status, body);
+    return { successful: false, data: null, error: `execute ${slug} ${response.status}` };
+  }
+  const json = (await response.json()) as {
+    successful?: boolean;
+    data?: unknown;
+    error?: unknown;
+  };
+  return {
+    successful: json.successful === true,
+    data: json.data ?? null,
+    error: json.error ?? null,
+  };
+}
+
+/// True when a Composio START_RESUME_PLAYBACK failure is Spotify's NO_ACTIVE_DEVICE
+/// (or the follow-on "Device not found" when a device_id was passed for an idle
+/// client). Both mean: nothing is awake to play on — the app must open Spotify
+/// locally first, then retry. Detected by string match because Composio nests the
+/// raw Spotify error as JSON text inside `error`/`data`.
+function isNoActiveDevice(result: { error: unknown; data: any }): boolean {
+  const blob = JSON.stringify(result.error ?? "") + JSON.stringify(result.data ?? "");
+  return (
+    blob.includes("NO_ACTIVE_DEVICE") ||
+    blob.includes("No active device") ||
+    blob.includes("Device not found")
+  );
+}
+
+/// POST /spotify-play — the fast, direct "play a track by name" path. Does the whole
+/// search→play chain server-side in one request (no MCP tool-router discovery, no
+/// voice model driving multiple hops), so the app calls one native tool and gets one
+/// clean result.
+///
+/// Body: `{ query: string }` (e.g. "blinding lights the weeknd").
+/// Steps:
+///   1. SPOTIFY_SEARCH_FOR_ITEM → top track URI + name/artist.
+///   2. SPOTIFY_GET_AVAILABLE_DEVICES → pick an active device_id if one exists.
+///   3. SPOTIFY_START_RESUME_PLAYBACK with that URI (and device_id when known).
+///
+/// Returns:
+///   • `{ status: "playing", track, artist }` on success.
+///   • `{ needs_device: true, track, artist, query }` when Spotify has no awake device
+///     — the app opens Spotify locally and retries. NEVER a fake success: the whole
+///     "says playing but nothing plays" bug was the old path reporting success here.
+///   • `{ error }` when the search finds nothing or a call hard-fails.
+async function handleSpotifyPlay(request: Request, env: Env): Promise<Response> {
+  let query = "";
+  let knownUri = "";
+  try {
+    const body = (await request.json()) as { query?: unknown; uri?: unknown };
+    query = typeof body.query === "string" ? body.query.trim() : "";
+    // On a retry (after the app opened Spotify locally), the URI from the first
+    // call is passed back so we skip the redundant search.
+    knownUri = typeof body.uri === "string" ? body.uri.trim() : "";
+  } catch {
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (!query && !knownUri) {
+    return jsonResponse({ error: "missing query" }, 400);
+  }
+
+  try {
+    let uri = knownUri;
+    let trackName = "";
+    let artist = "";
+
+    // 1. Search for the best-matching track (skipped when a URI was carried over
+    //    from a prior needs_device response).
+    if (!uri) {
+      const search = await composioExecute(env, "SPOTIFY_SEARCH_FOR_ITEM", {
+        q: query,
+        type: ["track"],
+        limit: 1,
+      });
+      if (!search.successful) {
+        console.error("Spotify search failed", JSON.stringify(search.error));
+        return jsonResponse({ error: "search failed" }, 502);
+      }
+      const track = search.data?.tracks?.items?.[0];
+      uri = track?.uri ?? "";
+      if (!uri) {
+        return jsonResponse({ error: "no track found", query });
+      }
+      trackName = track?.name ?? "";
+      artist = (track?.artists ?? [])
+        .map((a: { name?: string }) => a?.name)
+        .filter(Boolean)
+        .join(", ");
+    }
+
+    // 2. Find a device to target. Prefer an already-active device; if the only
+    //    devices are idle, we still capture one to try a transfer below. Spotify
+    //    won't start on a fully-idle client without help.
+    const devicesResult = await composioExecute(
+      env,
+      "SPOTIFY_GET_AVAILABLE_DEVICES",
+      {}
+    );
+    const devices: Array<{ id?: string; is_active?: boolean }> =
+      devicesResult.data?.devices ?? [];
+    const activeDevice = devices.find((d) => d.is_active);
+    const idleDevice = devices.find((d) => d.id);
+
+    // 3. Start playback. Only pass device_id for an active device — passing it for
+    //    an idle one returns "Device not found" (verified).
+    const play = await startPlayback(
+      env,
+      uri,
+      activeDevice?.is_active ? activeDevice.id : undefined
+    );
+    if (play.successful) {
+      return jsonResponse({ status: "playing", track: trackName, artist, uri });
+    }
+
+    // 3b. No active device, but a known (idle) device exists — e.g. a phone that's
+    //    logged in but asleep. Transfer playback to it (play:true wakes it), then
+    //    the transfer itself starts the track context. This is the "any device"
+    //    fallback for when the Mac has no Spotify app to open.
+    if (isNoActiveDevice(play) && idleDevice?.id) {
+      const transfer = await composioExecute(env, "SPOTIFY_TRANSFER_PLAYBACK", {
+        device_ids: [idleDevice.id],
+        play: true,
+      });
+      if (transfer.successful) {
+        const retry = await startPlayback(env, uri, idleDevice.id);
+        if (retry.successful) {
+          return jsonResponse({ status: "playing", track: trackName, artist, uri });
+        }
+      }
+    }
+
+    if (isNoActiveDevice(play)) {
+      // Nothing awake anywhere. Tell the app to open Spotify locally and call again
+      // with the resolved URI. NEVER a fake success — that was the original bug.
+      return jsonResponse({ needs_device: true, track: trackName, artist, uri, query });
+    }
+
+    console.error("Spotify play failed", JSON.stringify(play.error));
+    return jsonResponse({ error: "play failed" }, 502);
+  } catch (err) {
+    console.error("Spotify play error", err);
+    return jsonResponse({ error: "spotify play error" }, 500);
+  }
+}
+
+/// Thin wrapper around SPOTIFY_START_RESUME_PLAYBACK: plays `uri`, optionally on a
+/// specific `deviceId`. Split out so the search path and the transfer-retry path
+/// share one call site.
+async function startPlayback(
+  env: Env,
+  uri: string,
+  deviceId?: string
+): Promise<{ successful: boolean; data: any; error: unknown }> {
+  const args: Record<string, unknown> = { uris: [uri] };
+  if (deviceId) {
+    args.device_id = deviceId;
+  }
+  return composioExecute(env, "SPOTIFY_START_RESUME_PLAYBACK", args);
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

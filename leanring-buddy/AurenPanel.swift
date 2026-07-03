@@ -42,14 +42,14 @@ struct AurenPanel: View {
 
     private var home: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 11) {
                 if companionManager.isAssistantActive {
                     AssistantActivityCard(companionManager: companionManager)
                 }
 
-                HStack(alignment: .top, spacing: 14) {
+                HStack(alignment: .top, spacing: 11) {
                     // LEFT — music on top, recent activity (history) below it.
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 11) {
                         BoringStyleMusicCard(music: music)
 
                         if !companionManager.recentInteractions.isEmpty {
@@ -60,10 +60,10 @@ struct AurenPanel: View {
                             }
                         }
                     }
-                    .frame(width: 330)
+                    .frame(width: 300)
 
                     // RIGHT — calendar and reminders.
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 10) {
                         CalendarCard(sidebar: sidebar)
                         RemindersCard(sidebar: sidebar)
                     }
@@ -106,25 +106,30 @@ private struct AssistantActivityCard: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .padding(3)
-                    .frame(width: 24, height: 18)
+                    .frame(width: 26, height: 18)
                     .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.white))
                     .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             } else {
                 VoiceActivityView(companionManager: companionManager, realtimeClient: companionManager.realtimeClient)
-                    .frame(width: 24, height: 18)
+                    .frame(width: 26, height: 18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(DS.Gradients.panelSubtle)
+                    )
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(companionManager.activeStatusText.isEmpty ? "Ready" : companionManager.activeStatusText)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(DS.Colors.textPrimary)
                 Text("Macky is working in the notch.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.52))
+                    .font(.system(size: 9))
+                    .foregroundStyle(DS.Colors.textTertiary)
             }
             Spacer()
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.07)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
     }
 }
 
@@ -134,11 +139,11 @@ private struct BoringStyleMusicCard: View {
     @State private var sliderValue: Double = 0
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 11) {
             albumArt
-                .frame(width: 132, height: 132)
+                .frame(width: 100, height: 100)
 
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 songInfo
                 TimelineView(.animation(minimumInterval: music.isPlaying ? 0.5 : nil)) { _ in
                     progressSlider
@@ -149,17 +154,18 @@ private struct BoringStyleMusicCard: View {
                     music.openActiveMusicApp()
                 } label: {
                     Label(music.activeAppName, systemImage: "arrow.up.forward.app")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: 8, weight: .medium))
                         .foregroundStyle(.white.opacity(0.48))
                 }
                 .buttonStyle(.plain)
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(11)
         // Same flat surface as the Calendar/Reminders cards so the home page reads
         // as one cohesive panel instead of a distinct, album-tinted left container.
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
         .onReceive(music.$elapsedTime) { elapsedTime in
             if !isDragging {
                 sliderValue = elapsedTime
@@ -186,25 +192,25 @@ private struct BoringStyleMusicCard: View {
             Image(nsImage: music.activeAppIcon)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 24, height: 24)
-                .padding(5)
+                .frame(width: 18, height: 18)
+                .padding(4)
                 .background(Circle().fill(Color.black.opacity(0.78)))
-                .offset(x: 8, y: 8)
+                .offset(x: 6, y: 6)
         }
     }
 
     private var songInfo: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(music.title)
-                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
                 .lineLimit(1)
             Text(music.artist)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.white.opacity(0.58))
                 .lineLimit(1)
             Text(music.album)
-                .font(.system(size: 10))
+                .font(.system(size: 9))
                 .foregroundStyle(.white.opacity(0.36))
                 .lineLimit(1)
         }
@@ -233,13 +239,13 @@ private struct BoringStyleMusicCard: View {
                 Spacer()
                 Text(music.timeString(from: music.duration))
             }
-            .font(.system(size: 9, weight: .medium))
+            .font(.system(size: 8, weight: .medium))
             .foregroundStyle(.white.opacity(0.42))
         }
     }
 
     private var controlToolbar: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 6) {
             MusicButton(icon: "shuffle", isActive: music.isShuffled) { music.toggleShuffle() }
             MusicButton(icon: "backward.fill") { music.previous() }
             MusicButton(icon: music.isPlaying ? "pause.fill" : "play.fill", isPrimary: true) { music.togglePlay() }
@@ -258,9 +264,9 @@ private struct MusicButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: isPrimary ? 15 : 12, weight: .semibold))
+                .font(.system(size: isPrimary ? 12 : 10, weight: .semibold))
                 .foregroundStyle(isPrimary ? .black : (isActive ? .red : .white))
-                .frame(width: isPrimary ? 34 : 26, height: isPrimary ? 34 : 26)
+                .frame(width: isPrimary ? 26 : 20, height: isPrimary ? 26 : 20)
                 .background(Circle().fill(isPrimary ? Color.white : Color.white.opacity(0.12)))
         }
         .buttonStyle(.plain)
@@ -272,16 +278,15 @@ private struct CalendarCard: View {
     @State private var selectedDate = Date()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Month + year on one line above the day wheel so the narrow right
-            // column can't squeeze "Jun"/"2026" into a wrapped two-line stack.
-            Text("\(selectedDate.formatted(.dateTime.month(.abbreviated))) \(selectedDate.formatted(.dateTime.year()))")
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
+        VStack(alignment: .leading, spacing: 9) {
+            // Full month + year, matching the screenshot's "July 2026" heading.
+            Text("\(selectedDate.formatted(.dateTime.month(.wide))) \(selectedDate.formatted(.dateTime.year()))")
+                .font(.system(size: 15, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
-            MackyDateWheel(selectedDate: $selectedDate)
+            MackyWeekStrip(selectedDate: $selectedDate)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if sidebar.selectedEvents.isEmpty {
@@ -290,26 +295,28 @@ private struct CalendarCard: View {
                     title: Calendar.current.isDateInToday(selectedDate) ? "No events today" : "No events"
                 )
             } else {
-                ForEach(sidebar.selectedEvents.prefix(3)) { event in
+                ForEach(Array(sidebar.selectedEvents.prefix(3).enumerated()), id: \.element.id) { index, event in
                     HStack(spacing: 8) {
                         RoundedRectangle(cornerRadius: 1.5)
-                            .fill(event.color)
-                            .frame(width: 3, height: 28)
+                            .fill(index == 0 ? DS.Colors.accentText : DS.Colors.floatingGradientPurple)
+                            .frame(width: 3, height: 26)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(event.title)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.92))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(DS.Colors.textPrimary)
                                 .lineLimit(1)
                             Text(event.timeString)
-                                .font(.system(size: 10))
-                                .foregroundStyle(.white.opacity(0.45))
+                                .font(.system(size: 9))
+                                .foregroundStyle(DS.Colors.textTertiary)
                         }
+                        Spacer(minLength: 0)
                     }
                 }
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
         .task { await sidebar.loadEvents(for: selectedDate) }
         .onChange(of: selectedDate) { _, newDate in
             Task { await sidebar.loadEvents(for: newDate) }
@@ -317,53 +324,45 @@ private struct CalendarCard: View {
     }
 }
 
-private struct MackyDateWheel: View {
+/// A clean week strip — weekday initial over the day number, six days across,
+/// today highlighted in a soft rounded tile. Matches the calendar header in the
+/// panel screenshots (e.g. "W T F S S M / 1 2 3 4 5 6" with today filled).
+private struct MackyWeekStrip: View {
     @Binding var selectedDate: Date
-    @State private var scrollPosition: Int?
 
+    /// Six consecutive days starting today, so the current day leads the strip.
     private let days: [Date] = {
         let calendar = Calendar.current
-        return (-7...14).compactMap { calendar.date(byAdding: .day, value: $0, to: Date()) }
+        let start = calendar.startOfDay(for: Date())
+        return (0..<6).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
     }()
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 1) {
-                ForEach(Array(days.enumerated()), id: \.offset) { index, day in
-                    let isSelected = Calendar.current.isDate(day, inSameDayAs: selectedDate)
-                    let isToday = Calendar.current.isDateInToday(day)
-                    Button {
-                        selectedDate = day
-                        withAnimation(.smooth(duration: 0.2)) {
-                            scrollPosition = index
-                        }
-                    } label: {
-                        VStack(spacing: 5) {
-                            Text(day.formatted(.dateTime.weekday(.narrow)))
-                                .font(.system(size: 8, weight: .medium))
-                            Text(day.formatted(.dateTime.day()))
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .foregroundStyle(isSelected ? .white : Color(white: isToday ? 0.92 : 0.62))
-                        .frame(width: 25, height: 40)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(isSelected ? Color.white.opacity(0.14) : Color.clear)
-                        )
+        HStack(spacing: 3) {
+            ForEach(Array(days.enumerated()), id: \.offset) { _, day in
+                let isSelected = Calendar.current.isDate(day, inSameDayAs: selectedDate)
+                Button {
+                    withAnimation(.smooth(duration: 0.18)) { selectedDate = day }
+                } label: {
+                    VStack(spacing: 6) {
+                        Text(day.formatted(.dateTime.weekday(.narrow)))
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(DS.Colors.textTertiary)
+                        Text(day.formatted(.dateTime.day()))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(isSelected ? .white : DS.Colors.textPrimary.opacity(0.9))
                     }
-                    .buttonStyle(.plain)
-                    .id(index)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(isSelected ? Color.white.opacity(0.12) : Color.clear)
+                    )
                 }
+                .buttonStyle(.plain)
             }
-            .scrollTargetLayout()
         }
-        .frame(width: 178, height: 44)
-        .scrollPosition(id: $scrollPosition, anchor: .center)
-        .scrollTargetBehavior(.viewAligned)
-        .onAppear {
-            selectedDate = Date()
-            scrollPosition = 7
-        }
+        .onAppear { selectedDate = Date() }
     }
 }
 
@@ -371,11 +370,12 @@ private struct RemindersCard: View {
     @ObservedObject var sidebar: AurenSidebarData
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 9) {
             Text("Reminders")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55))
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(DS.Colors.textTertiary)
                 .textCase(.uppercase)
+                .tracking(1.2)
 
             if sidebar.reminders.isEmpty {
                 EmptyPanelLine(icon: "checklist", title: "No open reminders")
@@ -386,22 +386,24 @@ private struct RemindersCard: View {
                             sidebar.complete(reminder)
                         }
                     } label: {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 9) {
                             Image(systemName: "circle")
-                                .font(.system(size: 12))
+                                .font(.system(size: 12, weight: .light))
+                                .foregroundStyle(DS.Colors.textTertiary)
                             Text(reminder.title)
-                                .font(.system(size: 11))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(DS.Colors.textPrimary.opacity(0.9))
                                 .lineLimit(1)
                             Spacer()
                         }
-                        .foregroundStyle(.white.opacity(0.82))
                     }
                     .buttonStyle(.plain)
                 }
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
     }
 }
 
@@ -410,16 +412,16 @@ private struct EmptyPanelLine: View {
     let title: String
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: icon)
-                .font(.system(size: 13))
+                .font(.system(size: 10))
                 .foregroundStyle(.white.opacity(0.42))
             Text(title)
-                .font(.system(size: 11))
+                .font(.system(size: 9))
                 .foregroundStyle(.white.opacity(0.52))
             Spacer()
         }
-        .frame(height: 28)
+        .frame(height: 22)
     }
 }
 
@@ -428,8 +430,8 @@ private struct ConnectorsPanel: View {
     @State private var searchText = ""
 
     private let columns = [
-        GridItem(.flexible(), spacing: 16),
-        GridItem(.flexible(), spacing: 16)
+        GridItem(.flexible(), spacing: 9),
+        GridItem(.flexible(), spacing: 9)
     ]
 
     private var filteredConnectors: [MackyConnector] {
@@ -441,26 +443,11 @@ private struct ConnectorsPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 11) {
             searchBar
 
-            HStack(spacing: 10) {
-                Text("Connectors")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Capsule().fill(Color.black))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-
-                Spacer()
-
-                ConnectorFilterChip(title: "Filter by")
-                ConnectorFilterChip(title: "Sort by")
-            }
-
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVGrid(columns: columns, spacing: 16) {
+                LazyVGrid(columns: columns, spacing: 9) {
                     ForEach(filteredConnectors) { connector in
                         ConnectorGridCard(
                             connector: connector,
@@ -471,28 +458,28 @@ private struct ConnectorsPanel: View {
                         )
                     }
                 }
-                .padding(.bottom, 14)
+                .padding(.bottom, 12)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 12)
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
         .onAppear { companionManager.refreshConnectedToolkits() }
     }
 
     private var searchBar: some View {
         HStack(spacing: 9) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white.opacity(0.4))
-            TextField("Search connectors…", text: $searchText)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(DS.Colors.textTertiary)
+            TextField("Search 250+ connectors…", text: $searchText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 14))
-                .foregroundStyle(.white)
+                .font(.system(size: 12))
+                .foregroundStyle(DS.Colors.textPrimary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.05)))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.09), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.white.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
     }
 
     private func pendingConnection(for connector: MackyConnector) -> PendingConnection? {
@@ -508,25 +495,6 @@ private struct ConnectorsPanel: View {
         rawValue
             .lowercased()
             .filter { $0.isLetter || $0.isNumber }
-    }
-}
-
-private struct ConnectorFilterChip: View {
-    let title: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.6))
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.4))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.white.opacity(0.1), lineWidth: 1))
     }
 }
 
@@ -658,18 +626,18 @@ private struct ConnectorGridCard: View {
     let onOpenPending: (PendingConnection) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 12) {
-                ConnectorIcon(connector: connector, size: 44, iconSize: 20)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                ConnectorIcon(connector: connector, size: 40, iconSize: 18)
 
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text(connector.name)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(DS.Colors.textPrimary)
                         .lineLimit(1)
-                    badge
+                    statusBadge
                 }
-                .padding(.top, 4)
+                .padding(.top, 2)
 
                 Spacer(minLength: 0)
 
@@ -677,34 +645,30 @@ private struct ConnectorGridCard: View {
             }
 
             Text(connector.description)
-                .font(.system(size: 13))
-                .foregroundStyle(.white.opacity(0.5))
+                .font(.system(size: 11))
+                .foregroundStyle(DS.Colors.textSecondary)
+                .lineSpacing(2)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, minHeight: 152, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.04)))
+        .padding(13)
+        .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.05)))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(DS.Colors.borderSubtle, lineWidth: 1)
         )
     }
 
+    /// Connection-status pill under the connector name: "Connected" in a success
+    /// tone when the toolkit is live, "Connect" in an accent tone otherwise.
     @ViewBuilder
-    private var badge: some View {
-        switch connector.badge {
-        case .new:
-            Text("New")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color(hex: "#E8845C"))
-        case .popular(let rank):
-            Text("#\(rank) popular")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.38))
-        case .none:
-            EmptyView()
+    private var statusBadge: some View {
+        if isConnected {
+            Badge(text: "Connected", tone: .success)
+        } else {
+            Badge(text: "Connect", tone: .accent)
         }
     }
 
@@ -712,10 +676,11 @@ private struct ConnectorGridCard: View {
     private var actionButton: some View {
         if isConnected {
             // Live, end-to-end connection: show a tick, no action needed.
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 20, weight: .regular))
+            Image(systemName: "checkmark")
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(DS.Colors.success)
                 .frame(width: 30, height: 30)
+                .background(Circle().fill(DS.Colors.success.opacity(0.16)))
                 .help("\(connector.name) is connected")
         } else {
             Button {
@@ -726,14 +691,39 @@ private struct ConnectorGridCard: View {
                 }
             } label: {
                 Image(systemName: pendingConnection != nil ? "arrow.triangle.2.circlepath" : "plus")
-                    .font(.system(size: 18, weight: .regular))
-                    .foregroundStyle(pendingConnection != nil ? DS.Colors.accentText : .white.opacity(0.65))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(DS.Colors.textOnAccent)
                     .frame(width: 30, height: 30)
+                    .background(Circle().fill(DS.Colors.accent))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(pendingConnection != nil ? "Open authorization link" : "Connect \(connector.name)")
         }
+    }
+}
+
+/// A small status pill used on connector cards. `success` reads as a live
+/// connection, `accent` as an available-to-connect action.
+private struct Badge: View {
+    enum Tone { case success, accent }
+    let text: String
+    let tone: Tone
+
+    private var foreground: Color {
+        tone == .success ? DS.Colors.success : DS.Colors.accentText
+    }
+    private var fill: Color {
+        tone == .success ? DS.Colors.success.opacity(0.16) : DS.Colors.accent.opacity(0.16)
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(fill))
     }
 }
 
@@ -748,7 +738,7 @@ private struct ConnectorIcon: View {
     }
 
     var body: some View {
-        let corner = min(14, size * 0.28)
+        let corner = min(11, size * 0.28)
         Group {
             if let logoImage {
                 // Official logo on a white tile so dark logos (Notion, GitHub) and
@@ -762,27 +752,33 @@ private struct ConnectorIcon: View {
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
                             .fill(Color.white)
                     )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-                    )
             } else {
-                // Fallback: accent-tinted SF Symbol (e.g. a toolkit with no bundled logo).
+                // Fallback: the brand mark/letter in the brand color on a white tile,
+                // matching the official-logo treatment for toolkits without a bundled
+                // logo asset.
                 Image(systemName: connector.icon)
                     .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(connector.accent)
+                    .foregroundStyle(brandMarkColor)
                     .frame(width: size, height: size)
                     .background(
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .fill(connector.accent.opacity(0.14))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .strokeBorder(connector.accent.opacity(0.22), lineWidth: 1)
+                            .fill(Color.white)
                     )
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+    }
+
+    /// The connector's brand accent, but never near-white — a white-ish mark on the
+    /// white tile would vanish, so those fall back to a legible dark ink.
+    private var brandMarkColor: Color {
+        guard let components = NSColor(connector.accent).usingColorSpace(.sRGB) else {
+            return connector.accent
+        }
+        let luminance = 0.299 * components.redComponent
+            + 0.587 * components.greenComponent
+            + 0.114 * components.blueComponent
+        return luminance > 0.82 ? DS.Colors.background : connector.accent
     }
 }
 
@@ -799,48 +795,59 @@ private struct SettingsPanel: View {
 
         var icon: String {
             switch self {
-            case .general: return "gear"
-            case .permissions: return "hand.raised.fill"
+            case .general: return "gearshape"
+            case .permissions: return "lock.shield"
             case .shortcuts: return "keyboard"
             case .account: return "person.crop.circle"
             }
         }
     }
 
+    /// A live, accurate summary of connected connectors — never a hardcoded 0.
+    /// Reads the real set of connected toolkits from the worker (populated by
+    /// `refreshConnectedToolkits`), so Settings reflects what's actually wired up.
+    private var connectorsSummary: String {
+        let count = companionManager.connectedToolkits.count
+        return count == 1 ? "1 connected" : "\(count) connected"
+    }
+
     var body: some View {
         HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                MackyLogoView(size: 46)
+            VStack(alignment: .leading, spacing: 3) {
+                MackyGlyphLogo(size: 26, glow: false)
                     .padding(.leading, 6)
-                    .padding(.bottom, 14)
+                    .padding(.bottom, 12)
 
                 ForEach(SettingsTab.allCases, id: \.self) { tab in
+                    let isSelected = selectedTab == tab
                     Button {
                         selectedTab = tab
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: tab.icon)
-                                .font(.system(size: 12, weight: .semibold))
-                                .frame(width: 16)
+                                .font(.system(size: 11, weight: .medium))
+                                .frame(width: 14)
                             Text(tab.rawValue)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
                             Spacer()
                         }
-                        .foregroundStyle(selectedTab == tab ? .white : .white.opacity(0.55))
+                        .foregroundStyle(isSelected ? DS.Colors.textPrimary : DS.Colors.textSecondary)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(selectedTab == tab ? Color.white.opacity(0.12) : Color.clear)
+                                .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
                         )
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .frame(width: 150, alignment: .topLeading)
-            .padding(.top, 10)
+            .frame(width: 132, alignment: .topLeading)
+            .padding(.top, 8)
 
-            Divider().background(Color.white.opacity(0.12))
+            Rectangle()
+                .fill(Color.white.opacity(0.1))
+                .frame(width: 1)
 
             ScrollView(.vertical, showsIndicators: false) {
                 settingsDetail
@@ -849,32 +856,34 @@ private struct SettingsPanel: View {
             }
         }
         .padding(.horizontal, 18)
+        .onAppear { companionManager.refreshConnectedToolkits() }
     }
 
     @ViewBuilder
     private var settingsDetail: some View {
         switch selectedTab {
         case .general:
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 9) {
                 PanelTitle("General", subtitle: "Panel, status, and active-state controls.")
                 SettingsInfoRow(icon: "capsule.portrait.fill", title: "Notch UI", value: "Enabled")
                 SettingsInfoRow(icon: "waveform", title: "Active state", value: companionManager.activeStatusText.isEmpty ? "Idle" : companionManager.activeStatusText)
-                SettingsInfoRow(icon: "puzzlepiece.extension.fill", title: "Connectors", value: "\(companionManager.pendingConnections.count) pending")
+                SettingsInfoRow(
+                    icon: "square.grid.2x2",
+                    title: "Connectors",
+                    value: connectorsSummary
+                )
             }
         case .permissions:
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 9) {
                 PanelTitle("Permissions", subtitle: "Grant access without leaving the panel flow.")
                 SettingsPermissionRow(title: "Microphone", granted: companionManager.hasMicrophonePermission) {
                     companionManager.requestMicrophonePermission()
                 }
-                SettingsPermissionRow(title: "Screen Recording", granted: companionManager.hasScreenRecordingPermission) {
-                    companionManager.requestScreenRecordingPermission()
-                }
-                SettingsPermissionRow(title: "Screen Content", granted: companionManager.hasScreenContentPermission) {
-                    companionManager.requestScreenContentPermission()
-                }
                 SettingsPermissionRow(title: "Accessibility", granted: companionManager.hasAccessibilityPermission) {
                     companionManager.requestAccessibilityPermission()
+                }
+                SettingsPermissionRow(title: "Automation (AppleScript)", granted: companionManager.hasAutomationPermission) {
+                    companionManager.requestAutomationPermission()
                 }
                 SettingsPermissionRow(title: "Calendar", granted: companionManager.hasCalendarPermission) {
                     companionManager.requestCalendarPermission()
@@ -882,19 +891,22 @@ private struct SettingsPanel: View {
                 SettingsPermissionRow(title: "Reminders", granted: companionManager.hasRemindersPermission) {
                     companionManager.requestRemindersPermission()
                 }
-                SettingsPermissionRow(title: "Automation", granted: companionManager.hasAutomationPermission) {
-                    companionManager.requestAutomationPermission()
+                SettingsPermissionRow(title: "Screen Recording", granted: companionManager.hasScreenRecordingPermission) {
+                    companionManager.requestScreenRecordingPermission()
+                }
+                SettingsPermissionRow(title: "Screen Content", granted: companionManager.hasScreenContentPermission) {
+                    companionManager.requestScreenContentPermission()
                 }
             }
         case .shortcuts:
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 9) {
                 PanelTitle("Shortcuts", subtitle: "Push-to-talk listens globally while Macky is running.")
                 HotkeySettingsView(companionManager: companionManager)
                     .padding(12)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
             }
         case .account:
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 9) {
                 PanelTitle("Account", subtitle: "Session and app controls.")
                 Button("Reset onboarding") {
                     companionManager.setPanelOnboardingComplete(false)
@@ -911,10 +923,10 @@ private struct SettingsPanel: View {
                     NSApp.terminate(nil)
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.red.opacity(0.85))
                 .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
             }
         }
@@ -927,21 +939,23 @@ private struct SettingsInfoRow: View {
     let value: String
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.white.opacity(0.58))
-                .frame(width: 18)
+                .frame(width: 16)
             Text(title)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.82))
+                .foregroundStyle(.white.opacity(0.88))
             Spacer()
             Text(value)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.46))
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.5))
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.055)))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
     }
 }
 
@@ -949,10 +963,10 @@ private extension View {
     func mackySettingsButton() -> some View {
         self
             .buttonStyle(.plain)
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(.white.opacity(0.78))
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 7)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
     }
 }
@@ -963,20 +977,35 @@ private struct SettingsPermissionRow: View {
     let action: () -> Void
 
     var body: some View {
-        HStack {
-            Label(title, systemImage: granted ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(granted ? Color.green : Color.white.opacity(0.72))
+        HStack(spacing: 10) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 15, weight: granted ? .medium : .light))
+                .foregroundStyle(granted ? DS.Colors.success : DS.Colors.textTertiary)
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(DS.Colors.textPrimary)
             Spacer()
-            Button(granted ? "Granted" : "Grant") { action() }
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(granted ? .white.opacity(0.38) : .black)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(granted ? Color.white.opacity(0.08) : Color.white))
-                .disabled(granted)
+            if granted {
+                Text("Granted")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(DS.Colors.success)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(DS.Colors.success.opacity(0.15)))
+            } else {
+                Button("Allow") { action() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(DS.Colors.textOnAccent)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(DS.Colors.accent))
+            }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
     }
 }
 
@@ -992,12 +1021,13 @@ private struct PanelTitle: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .foregroundStyle(DS.Colors.textPrimary)
             Text(subtitle)
-                .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.52))
+                .font(.system(size: 11))
+                .foregroundStyle(DS.Colors.textTertiary)
         }
+        .padding(.bottom, 4)
     }
 }
 
@@ -1013,9 +1043,10 @@ private struct PanelSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.45))
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(DS.Colors.textTertiary)
                 .textCase(.uppercase)
+                .tracking(1.2)
             content()
         }
     }
@@ -1072,26 +1103,28 @@ struct ActivityRow: View {
         Button {
             withAnimation(.smooth(duration: 0.18)) { isExpanded.toggle() }
         } label: {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DS.Colors.textPrimary)
                         .lineLimit(1)
                     Spacer()
                     Text(timeString)
                         .font(.system(size: 10))
-                        .foregroundStyle(.white.opacity(0.42))
+                        .foregroundStyle(DS.Colors.textTertiary)
                 }
                 if isExpanded, let detail {
                     Text(detail)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .font(.system(size: 10))
+                        .foregroundStyle(DS.Colors.textSecondary)
                 }
             }
-            .padding(10)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.055)))
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .disabled(detail == nil)

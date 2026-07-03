@@ -40,13 +40,18 @@ struct AurenStatusBar: View {
                 .fill(Color.black)
                 .frame(width: m.bridgeWidth)
 
-            // RIGHT — voice waveform
+            // RIGHT — dot-matrix spinner while thinking, voice waveform otherwise
             HStack {
-                VoiceActivityView(
-                    companionManager: companionManager,
-                    realtimeClient: companionManager.realtimeClient
-                )
-                .frame(width: 24, height: 16)
+                if companionManager.voiceState == .processing || companionManager.toolCallActive {
+                    DotMatrixLoaderView()
+                        .frame(width: 23, height: 23)
+                } else {
+                    VoiceActivityView(
+                        companionManager: companionManager,
+                        realtimeClient: companionManager.realtimeClient
+                    )
+                    .frame(width: 24, height: 20)
+                }
             }
             .frame(
                 width: NotchConstants.waveformBoxSize,

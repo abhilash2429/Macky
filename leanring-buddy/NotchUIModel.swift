@@ -33,8 +33,8 @@ enum NotchConstants {
         height: openNotchSize.height + shadowPadding
     )
     /// Corner radii for the NotchShape in each state: (top, bottom).
-    static let openedCornerRadius: (top: CGFloat, bottom: CGFloat) = (top: 19, bottom: 24)
-    static let closedCornerRadius: (top: CGFloat, bottom: CGFloat) = (top: 6, bottom: 14)
+    static let openedCornerRadius: (top: CGFloat, bottom: CGFloat) = (top: 22, bottom: 28)
+    static let closedCornerRadius: (top: CGFloat, bottom: CGFloat) = (top: 10, bottom: 18)
     /// Fallback notch width when the screen's menu-bar auxiliary areas misreport.
     static let fallbackNotchWidth: CGFloat = 185
     /// Width of the floating bar on displays that have no physical notch.

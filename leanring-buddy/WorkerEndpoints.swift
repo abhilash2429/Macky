@@ -28,4 +28,9 @@ enum WorkerEndpoints {
 
     /// List of the user's active toolkit connections (`/composio-connections`).
     static let composioConnectionsURL = URL(string: "\(httpsBase)/composio-connections")!
+
+    /// Fast, direct "play a Spotify track by name" route (`/spotify-play`). Does the
+    /// search→play chain server-side in one hop, bypassing the slow MCP tool-router
+    /// discovery the model would otherwise drive across several round-trips.
+    static let spotifyPlayURL = URL(string: "\(httpsBase)/spotify-play")!
 }
