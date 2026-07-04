@@ -3,6 +3,9 @@ export interface Env {
   COMPOSIO_API_KEY: string;
   // Pending magic-link tokens: token -> email, 15-minute TTL.
   AUTH_TOKENS: KVNamespace;
+  // Durable session state for typed non-realtime events. The realtime socket remains
+  // byte-forwarded; this object is the foundation for reconnect-safe side channels.
+  SESSION_OBJECTS: DurableObjectNamespace;
   // Resend API key, used to deliver magic-link emails. No domain required: with
   // the shared onboarding@resend.dev sender, Resend delivers to the address you
   // signed up with. Set as a secret: `npx wrangler secret put RESEND_API_KEY`.
@@ -17,6 +20,75 @@ export interface Env {
 
 /// Fixed Composio user for now. M14 (real per-user auth) swaps this one line.
 const COMPOSIO_USER_ID = "speed-test-user";
+const DEFAULT_SESSION_ID = "default";
+
+interface TypedSessionEvent {
+  version: 1;
+  type: string;
+  messageId?: string;
+  sessionId?: string;
+  taskId?: string;
+  timestamp?: string;
+  payload?: unknown;
+}
+
+interface SessionSnapshot {
+  sessionId: string;
+  currentRealtimeSessionId?: string;
+  recentEvents: TypedSessionEvent[];
+  updatedAt: string;
+}
+
+export class MackySessionObject implements DurableObject {
+  constructor(private state: DurableObjectState) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const sessionId = url.searchParams.get("sessionId") || DEFAULT_SESSION_ID;
+
+    if (request.method === "GET" && url.pathname === "/state") {
+      return jsonResponse(await this.snapshot(sessionId));
+    }
+
+    if (request.method === "POST" && url.pathname === "/event") {
+      const event = await readTypedSessionEvent(request, sessionId);
+      if (!event) return jsonResponse({ error: "invalid event" }, 400);
+      const snapshot = await this.snapshot(sessionId);
+      snapshot.recentEvents.push(event);
+      snapshot.recentEvents = snapshot.recentEvents.slice(-50);
+      snapshot.updatedAt = event.timestamp ?? new Date().toISOString();
+      await this.state.storage.put(sessionId, snapshot);
+      return jsonResponse({ ok: true });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+
+  private async snapshot(sessionId: string): Promise<SessionSnapshot> {
+    const existing = await this.state.storage.get<SessionSnapshot>(sessionId);
+    return existing ?? {
+      sessionId,
+      recentEvents: [],
+      updatedAt: new Date().toISOString(),
+    };
+  }
+}
+
+async function readTypedSessionEvent(request: Request, sessionId: string): Promise<TypedSessionEvent | null> {
+  const body = (await request.json().catch(() => null)) as Partial<TypedSessionEvent> | null;
+  if (!body || body.version !== 1 || typeof body.type !== "string" || !body.type) {
+    return null;
+  }
+  return {
+    version: 1,
+    type: body.type,
+    messageId: typeof body.messageId === "string" ? body.messageId : crypto.randomUUID(),
+    sessionId: typeof body.sessionId === "string" ? body.sessionId : sessionId,
+    taskId: typeof body.taskId === "string" ? body.taskId : undefined,
+    timestamp: typeof body.timestamp === "string" ? body.timestamp : new Date().toISOString(),
+    payload: body.payload,
+  };
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -40,6 +112,14 @@ export default {
 
     if (url.pathname === "/spotify-play" && request.method === "POST") {
       return handleSpotifyPlay(request, env);
+    }
+
+    if (url.pathname === "/session/state" && request.method === "GET") {
+      return forwardSessionObject(request, url, env, "/state");
+    }
+
+    if (url.pathname === "/session/event" && request.method === "POST") {
+      return forwardSessionObject(request, url, env, "/event");
     }
 
     if (url.pathname === "/auth/magic-link" && request.method === "POST") {
@@ -438,6 +518,21 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function forwardSessionObject(
+  request: Request,
+  url: URL,
+  env: Env,
+  pathname: "/state" | "/event"
+): Response | Promise<Response> {
+  const sessionId = url.searchParams.get("sessionId") || DEFAULT_SESSION_ID;
+  const id = env.SESSION_OBJECTS.idFromName(sessionId);
+  const stub = env.SESSION_OBJECTS.get(id);
+  const target = new URL(request.url);
+  target.pathname = pathname;
+  target.searchParams.set("sessionId", sessionId);
+  return stub.fetch(new Request(target.toString(), request));
 }
 
 /// POST /auth/magic-link — stores a one-time token (token -> email) in KV with a

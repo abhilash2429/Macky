@@ -11,6 +11,14 @@ binding = "AUTH_TOKENS"
 id = "c5eb3022f5e84d9ab0e35f73f03db48e"
 preview_id = "ea8c338135f5483799f57060586ea2ac"
 
+[[durable_objects.bindings]]
+name = "SESSION_OBJECTS"
+class_name = "MackySessionObject"
+
+[[migrations]]
+tag = "v1-session-objects"
+new_sqlite_classes = ["MackySessionObject"]
+
 # Magic-link emails are sent via Resend (no domain required).
 # One-time setup before this works:
 #   1. Create a free account at https://resend.com using the email you want the

@@ -108,6 +108,8 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let realtimeClient = RealtimeClient()
+    let visualGuidanceOverlayController = VisualGuidanceOverlayController()
+    let subAgentProgressController = SubAgentProgressController()
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var controlTriplePressCancellable: AnyCancellable?
@@ -138,6 +140,7 @@ final class CompanionManager: ObservableObject {
     private var lastNarration: String?
     private var turnUsedTool = false
     private var activeToolCount = 0
+    private var pendingVisualGuidanceSequence: VisualGuidanceSequence?
 
     var allPermissionsGranted: Bool {
         hasAccessibilityPermission
@@ -503,6 +506,45 @@ final class CompanionManager: ObservableObject {
     private var turnReleaseTimestamp: Date?
 
     private func bindRealtimeClient() {
+        subAgentProgressController.onCancel = { [weak self] in
+            self?.visualGuidanceOverlayController.clear()
+        }
+        visualGuidanceOverlayController.onSequenceCompleted = { [weak self] in
+            self?.subAgentProgressController.hide()
+        }
+
+        realtimeClient.onVisualGuidanceSequenceRequested = { [weak self] sequence in
+            guard let self else { return "{\"error\": \"app unavailable\"}" }
+            self.pendingVisualGuidanceSequence = sequence
+            self.subAgentProgressController.show(currentStep: "Building visual guide")
+            self.subAgentProgressController.markCompleted("Built visual guide", next: "Waiting for narration")
+            return "{\"status\": \"visual guidance queued for narration\"}"
+        }
+
+        realtimeClient.onVisualGuidanceClearRequested = { [weak self] in
+            guard let self else { return "{\"error\": \"app unavailable\"}" }
+            self.pendingVisualGuidanceSequence = nil
+            self.visualGuidanceOverlayController.clear()
+            self.subAgentProgressController.hide()
+            return "{\"status\": \"cleared\"}"
+        }
+
+        realtimeClient.onCursorMoveRequested = { command, space in
+            do {
+                return try await CursorGuidanceIntegration.move(to: command, coordinateSpace: space)
+            } catch {
+                return "{\"error\": \"\(Self.escapeForJSON(error.localizedDescription))\"}"
+            }
+        }
+
+        realtimeClient.onCursorClickRequested = { command, space in
+            do {
+                return try await CursorGuidanceIntegration.click(at: command, coordinateSpace: space)
+            } catch {
+                return "{\"error\": \"\(Self.escapeForJSON(error.localizedDescription))\"}"
+            }
+        }
+
         realtimeClient.onResponseAudioStarted = { [weak self] in
             guard let self else { return }
             // Turn latency: time from push-to-talk release to the first response-audio
@@ -513,6 +555,7 @@ final class CompanionManager: ObservableObject {
             }
             self.voiceState = .responding
             self.operationState = .speaking
+            self.startPendingVisualGuidanceIfNeeded()
         }
 
         realtimeClient.onResponseCompleted = { [weak self] in
@@ -606,6 +649,13 @@ final class CompanionManager: ObservableObject {
                 }
             }
             .store(in: &realtimeActivityCancellables)
+    }
+
+    private func startPendingVisualGuidanceIfNeeded() {
+        guard let sequence = pendingVisualGuidanceSequence else { return }
+        pendingVisualGuidanceSequence = nil
+        visualGuidanceOverlayController.run(sequence: sequence)
+        subAgentProgressController.markCompleted("Narration started", next: "Showing overlay")
     }
 
     private func beginToolActivity(toolName: String) {
@@ -903,6 +953,11 @@ final class CompanionManager: ObservableObject {
             return text
         }
         return String(text[...end])
+    }
+
+    private static func escapeForJSON(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     /// FALLBACK ONLY — not the primary narration source. The product contract

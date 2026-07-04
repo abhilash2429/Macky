@@ -27,13 +27,12 @@ enum CompanionScreenCaptureUtility {
     /// Captures connected displays as JPEG data, labeling each with whether the user's
     /// cursor is on that screen.
     ///
-    /// `cursorScreenOnly` (the default) captures **only the display the cursor is on** —
-    /// almost every "what's on my screen" question is about the one screen the user is
-    /// looking at, and capturing+encoding every monitor is wasted latency and tokens.
-    /// Pass `false` only when the request is genuinely about more than one screen (the
-    /// `get_screen_context` tool lets the model ask for that explicitly). On a
-    /// single-display Mac the two paths are identical.
-    static func captureAllScreensAsJPEG(cursorScreenOnly: Bool = true) async throws -> [CompanionScreenCapture] {
+    /// `mainScreenOnly` captures **only the main display**, which keeps visual-guidance
+    /// coordinates aligned with Macky's main-display overlay. `cursorScreenOnly` remains
+    /// available for older call sites, but visual teaching should prefer the main display.
+    /// Pass both flags as false only when the request is genuinely about more than one
+    /// screen. On a single-display Mac all paths are identical.
+    static func captureAllScreensAsJPEG(cursorScreenOnly: Bool = true, mainScreenOnly: Bool = false) async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -73,10 +72,17 @@ enum CompanionScreenCaptureUtility {
             return false
         }
 
-        // Fast path: capture only the cursor display (the first after sorting) unless
-        // all screens were explicitly requested. Skips the capture + JPEG encode of
-        // every other monitor, which is the common single-screen-question case.
-        let sortedDisplays = cursorScreenOnly ? Array(allSortedDisplays.prefix(1)) : allSortedDisplays
+        let sortedDisplays: [SCDisplay]
+        if mainScreenOnly,
+           let mainDisplayID = NSScreen.main?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+           let mainDisplay = content.displays.first(where: { $0.displayID == mainDisplayID }) {
+            sortedDisplays = [mainDisplay]
+        } else {
+            // Fast path: capture only the cursor display (the first after sorting) unless
+            // all screens were explicitly requested. Skips the capture + JPEG encode of
+            // every other monitor, which is the common single-screen-question case.
+            sortedDisplays = cursorScreenOnly ? Array(allSortedDisplays.prefix(1)) : allSortedDisplays
+        }
 
         var capturedScreens: [CompanionScreenCapture] = []
 
@@ -114,7 +120,7 @@ enum CompanionScreenCaptureUtility {
 
             let screenLabel: String
             if sortedDisplays.count == 1 {
-                screenLabel = "user's screen (cursor is here)"
+                screenLabel = isCursorScreen ? "user's screen (cursor is here)" : "user's main screen"
             } else if isCursorScreen {
                 screenLabel = "screen \(displayIndex + 1) of \(sortedDisplays.count) — cursor is on this screen (primary focus)"
             } else {

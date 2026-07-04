@@ -77,6 +77,14 @@ final class RealtimeClient: ObservableObject {
     /// "Connect <App>" row in the notch panel.
     var onConnectionLinkAvailable: ((_ toolkit: String, _ redirectURL: URL) -> Void)?
 
+    /// Local visual guidance hooks. RealtimeClient owns tool dispatch, while the app
+    /// coordinator owns AppKit windows and cursor effects so the client stays focused
+    /// on realtime protocol concerns.
+    var onVisualGuidanceSequenceRequested: (@MainActor (VisualGuidanceSequence) async -> String)?
+    var onVisualGuidanceClearRequested: (@MainActor () async -> String)?
+    var onCursorMoveRequested: (@MainActor (CursorCommand, VisualGuidanceCoordinateSpace?) async -> String)?
+    var onCursorClickRequested: (@MainActor (CursorCommand, VisualGuidanceCoordinateSpace?) async -> String)?
+
     /// Transcript of the current turn's user speech, captured from
     /// `conversation.item.input_audio_transcription.completed`.
     private var pendingUserPhrase = ""
@@ -230,6 +238,7 @@ final class RealtimeClient: ObservableObject {
         configuration.waitsForConnectivity = true
         self.urlSession = URLSession(configuration: configuration)
         registerBuiltInTools()
+        registerVisualGuidanceTools()
         registerSystemControlTools()
         registerCalendarTools()
         registerRemindersTools()
@@ -244,24 +253,148 @@ final class RealtimeClient: ObservableObject {
     private func registerBuiltInTools() {
         registerTool(
             name: "get_screen_context",
-            description: "Capture and look at the user's screen. Call this only when the user refers to something on their screen, asks what they're looking at, or you need to see the screen to help. By default this captures only the screen the cursor is on, which is what the user almost always means. Set all_screens to true ONLY when the user clearly asks about more than one display (e.g. \"look across all my screens\", \"what's on my other monitor\").",
+            description: "Capture a fresh screenshot when the user asks for help with what is on screen. Default captures the main display so visual guidance coordinates match the teaching overlay. Set all_screens to true only when the user explicitly asks about multiple displays.",
             schema: [
                 "type": "object",
                 "properties": [
                     "all_screens": [
                         "type": "boolean",
-                        "description": "Capture every connected display instead of just the cursor's screen. Default false. Only set true when the user explicitly refers to multiple screens."
+                        "description": "Capture every connected display instead of just the main display. Default false. Only set true when the user explicitly refers to multiple screens."
                     ]
                 ]
             ]
         ) { [weak self] arguments in
             guard let self else { return "{\"error\": \"client unavailable\"}" }
             let allScreens = arguments["all_screens"] as? Bool ?? false
-            let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(cursorScreenOnly: !allScreens)
+            let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(cursorScreenOnly: false, mainScreenOnly: !allScreens)
             // Images can't live in a function_call_output, so attach them as a
             // separate user message before the function result is sent.
             self.sendScreenContext(captures)
-            return "{\"status\": \"captured\", \"screen_count\": \(captures.count)}"
+            return Self.screenCaptureResultJSON(captures)
+        }
+    }
+
+    /// Registers the visual teaching tools used when Macky guides the user through
+    /// visible app UI with a full-screen overlay and optional cursor movement.
+    private func registerVisualGuidanceTools() {
+        let coordinateProperties: [String: Any] = [
+            "x": ["type": "number", "description": "X coordinate in the latest screenshot's top-left coordinate space."],
+            "y": ["type": "number", "description": "Y coordinate in the latest screenshot's top-left coordinate space."],
+            "source_width": ["type": "number", "description": "Width of the screenshot coordinate space used for x/y."],
+            "source_height": ["type": "number", "description": "Height of the screenshot coordinate space used for x/y."],
+            "duration_ms": ["type": "integer", "description": "Optional smooth movement duration in milliseconds."]
+        ]
+
+        registerTool(
+            name: "show_visual_guidance",
+            description: "Show a timed full-screen teaching overlay with highlights, arrows, labels, and polygons. Use this after get_screen_context when the user asks for help in a visual app like Figma or After Effects. Coordinates must be based on the latest screenshot. Keep sequences short and clear.",
+            schema: [
+                "type": "object",
+                "properties": [
+                    "title": ["type": "string"],
+                    "source_width": ["type": "number", "description": "Width of the screenshot coordinate space."],
+                    "source_height": ["type": "number", "description": "Height of the screenshot coordinate space."],
+                    "steps": [
+                        "type": "array",
+                        "description": "Timed visual steps. Each step clears before the next by default.",
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "narration_cue": ["type": "string"],
+                                "duration_ms": ["type": "integer"],
+                                "clear_before_next": ["type": "boolean"],
+                                "canvas": [
+                                    "type": "array",
+                                    "items": [
+                                        "type": "object",
+                                        "properties": [
+                                            "type": ["type": "string", "enum": ["highlight", "arrow", "label", "polygon"]],
+                                            "x": ["type": "number"],
+                                            "y": ["type": "number"],
+                                            "width": ["type": "number"],
+                                            "height": ["type": "number"],
+                                            "to_x": ["type": "number"],
+                                            "to_y": ["type": "number"],
+                                            "text": ["type": "string"],
+                                            "points": [
+                                                "type": "array",
+                                                "items": [
+                                                    "type": "object",
+                                                    "properties": ["x": ["type": "number"], "y": ["type": "number"]],
+                                                    "required": ["x", "y"]
+                                                ]
+                                            ]
+                                        ],
+                                        "required": ["type"]
+                                    ]
+                                ],
+                                "cursor": [
+                                    "type": "object",
+                                    "properties": [
+                                        "type": ["type": "string", "enum": ["move", "click"]],
+                                        "x": ["type": "number"],
+                                        "y": ["type": "number"],
+                                        "duration_ms": ["type": "integer"]
+                                    ],
+                                    "required": ["type", "x", "y"]
+                                ]
+                            ],
+                            "required": ["canvas"]
+                        ]
+                    ]
+                ],
+                "required": ["steps"]
+            ]
+        ) { [weak self] arguments in
+            guard let self else { return "{\"error\": \"client unavailable\"}" }
+            guard let callback = self.onVisualGuidanceSequenceRequested else {
+                return "{\"error\": \"visual guidance unavailable\"}"
+            }
+            let data = try JSONSerialization.data(withJSONObject: arguments)
+            let sequence = try JSONDecoder().decode(VisualGuidanceSequence.self, from: data)
+            return await callback(sequence)
+        }
+
+        registerTool(
+            name: "clear_visual_guidance",
+            description: "Clear Macky's visual teaching overlay. Use when the user says stop, cancel, clear the overlay, or when the guide is no longer relevant.",
+            schema: ["type": "object", "properties": [String: Any]()]
+        ) { [weak self] _ in
+            guard let self else { return "{\"error\": \"client unavailable\"}" }
+            guard let callback = self.onVisualGuidanceClearRequested else {
+                return "{\"status\": \"cleared\"}"
+            }
+            return await callback()
+        }
+
+        registerTool(
+            name: "move_cursor",
+            description: "Smoothly move the cursor to point at a UI element while explaining. Use only during explicit visual guidance. Do not use for background automation.",
+            schema: ["type": "object", "properties": coordinateProperties, "required": ["x", "y"]]
+        ) { [weak self] arguments in
+            guard let self else { return "{\"error\": \"client unavailable\"}" }
+            guard let command = Self.cursorCommand(from: arguments, type: .move) else {
+                return "{\"error\": \"invalid cursor target\"}"
+            }
+            guard let callback = self.onCursorMoveRequested else {
+                return "{\"error\": \"cursor unavailable\"}"
+            }
+            return await callback(command.command, command.space)
+        }
+
+        registerTool(
+            name: "click_at",
+            description: "Click a low-risk UI target during explicit visual guidance. Never use for delete, publish, share, overwrite, invite, purchase, payment, submit, or other destructive/risky actions; ask the user to click those manually until approval UI is implemented.",
+            schema: ["type": "object", "properties": coordinateProperties, "required": ["x", "y"]]
+        ) { [weak self] arguments in
+            guard let self else { return "{\"error\": \"client unavailable\"}" }
+            guard let command = Self.cursorCommand(from: arguments, type: .click) else {
+                return "{\"error\": \"invalid click target\"}"
+            }
+            guard let callback = self.onCursorClickRequested else {
+                return "{\"error\": \"cursor unavailable\"}"
+            }
+            return await callback(command.command, command.space)
         }
     }
 
@@ -550,6 +683,57 @@ final class RealtimeClient: ObservableObject {
         if let intValue = value as? Int { return intValue }
         if let doubleValue = value as? Double { return Int(doubleValue) }
         return nil
+    }
+
+    private static func doubleArgument(_ value: Any?) -> Double? {
+        if let doubleValue = value as? Double { return doubleValue }
+        if let intValue = value as? Int { return Double(intValue) }
+        return nil
+    }
+
+    private static func cursorCommand(from arguments: [String: Any], type: CursorCommandType) -> (command: CursorCommand, space: VisualGuidanceCoordinateSpace?)? {
+        guard let x = doubleArgument(arguments["x"]), let y = doubleArgument(arguments["y"]) else { return nil }
+        let command = CursorCommand(type: type, x: x, y: y, durationMs: intArgument(arguments["duration_ms"]))
+        let space: VisualGuidanceCoordinateSpace?
+        if let width = doubleArgument(arguments["source_width"]),
+           let height = doubleArgument(arguments["source_height"]),
+           width > 0,
+           height > 0 {
+            space = VisualGuidanceCoordinateSpace(width: width, height: height)
+        } else {
+            space = nil
+        }
+        return (command, space)
+    }
+
+    private static func screenCaptureResultJSON(_ captures: [CompanionScreenCapture]) -> String {
+        let screens = captures.map { capture in
+            [
+                "label": capture.label,
+                "display_width_points": capture.displayWidthInPoints,
+                "display_height_points": capture.displayHeightInPoints,
+                "screenshot_width": capture.screenshotWidthInPixels,
+                "screenshot_height": capture.screenshotHeightInPixels,
+                "is_cursor_screen": capture.isCursorScreen,
+                "display_frame": [
+                    "x": capture.displayFrame.origin.x,
+                    "y": capture.displayFrame.origin.y,
+                    "width": capture.displayFrame.width,
+                    "height": capture.displayFrame.height
+                ]
+            ] as [String: Any]
+        }
+        let payload: [String: Any] = [
+            "status": "captured",
+            "screen_count": captures.count,
+            "coordinate_space": "top_left_screenshot_pixels",
+            "screens": screens
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{\"status\": \"captured\", \"screen_count\": \(captures.count)}"
+        }
+        return json
     }
 
     /// Registers a function tool. The schema is the JSON-Schema `parameters`
@@ -931,53 +1115,46 @@ final class RealtimeClient: ObservableObject {
     // MARK: - Session Configuration
 
     /// The session-level system prompt (Azure GPT-Realtime `instructions` field).
-    /// Defines Macky's voice-assistant behavior contract: answer-first with the fewest
-    /// possible words, run tools silently (never narrate process — no "searching",
-    /// "opening", "let me check"), confirm an action only in one short clause and only
-    /// when it adds something, stay brief, only look at the screen when asked about
-    /// something visual, never speak raw internals, and reply in the user's language.
-    /// Persists for the whole session.
+    /// Defines Macky's voice-assistant behavior: brief by default, personality for
+    /// simple actions, and explicit screen-teaching behavior when the user asks for
+    /// visual help. Persists for the whole session.
     private static let mackySystemPrompt = """
-        You are Macky, a fast, friendly voice assistant living in the user's Mac notch. \
+        You are Macky, a fast, friendly voice-first macOS personal assistant living in the user's Mac notch. \
         Everything you say is spoken aloud and heard, never read.
 
-        Answer-first, minimum words. Reply with exactly what the request needs and nothing \
-        more — no preamble, no filler, no restating the question.
+        Default mode: answer-first, minimum words. Reply with exactly what the request needs \
+        and nothing more. Direct questions get only the answer. "42 plus 60" → "102". \
+        "What time is it" → "3:40".
 
-        Non-negotiable rules:
-        - Direct questions get only the answer. "42 plus 60" → "102". "What time is it" → \
-        "3:40". Never pad with "on it", "sure", "let me check", "the answer is", or a recap.
-        - No acknowledgement filler. Do not open with a throwaway phrase. Begin with the \
-        substance.
-        - Never narrate your process. Do NOT say you are searching, looking, finding, \
-        checking, opening, loading, pulling up, queuing, or working on something. Give no \
-        status updates while a tool runs. Run every tool silently and speak only once you \
-        have the result. Phrases like "searching for the song", "let me find that", or \
-        "opening Spotify" are forbidden.
-        - Just do the action, then confirm in one short clause only if it adds something — \
-        "playing Back in Black", "volume's at 50%", "sent it", "added to your calendar". \
-        When the effect is obvious to the user (music starts playing, an app opens), keep \
-        it to a few words or say nothing. Never describe the steps you took to get there.
-        - Music: to start a SPECIFIC song, artist, album, or playlist by name, always use \
-        the play_spotify_track tool — it searches and plays in one fast step. For \
-        transport on what's already open (pause, resume, skip, previous, "what's \
-        playing"), use the instant local control (control_music). Never use the Spotify \
-        connector to start playback; play_spotify_track is faster and more reliable.
-        - Short sentences, no lists or long explanations unless the user explicitly asks for \
-        detail.
-        - Only look at the screen when the user refers to something visual — "what's this", \
-        "what am I looking at", "what's on my screen", "can you see…". Never capture the \
-        screen otherwise.
-        - Never speak raw JSON, code, IDs, or system internals. Translate every result into \
-        plain spoken language.
-        - When a tool result asks the user to connect or authorize an app (a connect or \
-        authorization link, e.g. the first time they use Slack, Gmail, or another web \
-        service), tell them in one short spoken line to finish connecting in the browser \
-        window that just opened, then stop — do not read the link aloud, and do not retry \
-        the action until they confirm they've connected.
+        Simple actions: do the action, then confirm with a short, natural line only if useful. \
+        Be lively without being chatty. If the user asks for a rock song, play it and a short \
+        "rock on" style response is good. When the effect is obvious, a few words or silence is enough.
+
+        Visual help mode:
+        - When the user is stuck in an app, asks for help with "this", asks what to click, or asks to be \
+        taught/walked through something visible, immediately call get_screen_context for a fresh screenshot.
+        - For Figma, After Effects, Premiere Pro, Xcode, Notion, Terminal, and similar visible-app help, \
+        reason from the screenshot first. Do not describe what you see unless it helps.
+        - For step-by-step teaching, use show_visual_guidance with a short sequence of highlights, arrows, \
+        labels, or polygons. Coordinates must use the latest screenshot's top-left coordinate space and include \
+        source_width/source_height from the screen capture result.
+        - Move the cursor while speaking when pointing helps. Use click_at only for safe, low-risk clicks the \
+        user clearly asked for as part of guidance.
+        - Never click delete, publish, share, overwrite, invite, purchase, payment, submit, or other risky/destructive \
+        controls. Ask the user to click those manually until approval UI is available.
+        - Keep teaching steps clear and short. One idea per step. Prefer visual guidance over long spoken lists.
+        - If the user says stop, cancel, clear the overlay, or never mind, call clear_visual_guidance and stop.
+
+        Tool rules:
+        - Music: to start a SPECIFIC song, artist, album, or playlist by name, always use play_spotify_track. \
+        For transport on what's already open (pause, resume, skip, previous, "what's playing"), use control_music.
+        - Only capture the screen when the user refers to something visual or asks for screen/app help.
+        - Never speak raw JSON, code IDs, coordinates, or system internals. Translate results into plain spoken language.
+        - When a tool result asks the user to connect or authorize an app, tell them in one short spoken line to finish \
+        connecting in the browser window that just opened, then stop.
         - Reply in the same language the user speaks.
 
-        Personality: warm, quick, and competent — but economical. Fewer words is better.
+        Personality: warm, quick, and competent. Brief for normal tasks; clear and helpful for visual teaching.
         """
 
     /// The full instructions sent in `session.update`: the static `mackySystemPrompt`

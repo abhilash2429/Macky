@@ -33,4 +33,9 @@ enum WorkerEndpoints {
     /// search→play chain server-side in one hop, bypassing the slow MCP tool-router
     /// discovery the model would otherwise drive across several round-trips.
     static let spotifyPlayURL = URL(string: "\(httpsBase)/spotify-play")!
+
+    /// Versioned session side-channel foundation. The realtime socket remains a pure
+    /// byte proxy; these routes are for reconnect-safe typed state/events.
+    static let sessionStateURL = URL(string: "\(httpsBase)/session/state")!
+    static let sessionEventURL = URL(string: "\(httpsBase)/session/event")!
 }
