@@ -7,6 +7,7 @@
 
 import AppKit
 import SwiftUI
+import Combine
 
 final class SubAgentProgressPanel: NSPanel {
     init(contentRect: NSRect) {
@@ -41,21 +42,32 @@ final class SubAgentProgressController: ObservableObject {
     var onCancel: (() -> Void)?
 
     func show(taskTitle: String = "Visual guidance", agentName: String = "Visual Canvas Agent", currentStep: String = "Preparing guide") {
-        state.isVisible = true
-        state.taskTitle = taskTitle
-        state.agentName = agentName
-        state.currentStep = currentStep
+        state = SubAgentProgressState(
+            isVisible: true,
+            isExpanded: state.isExpanded,
+            taskTitle: taskTitle,
+            agentName: agentName,
+            currentStep: currentStep,
+            completedSteps: []
+        )
         ensurePanel()
         positionPanel()
         panel?.orderFrontRegardless()
     }
 
     func markCompleted(_ step: String, next: String) {
-        if !state.completedSteps.contains(step) {
-            state.completedSteps.append(step)
+        // Tool callbacks can arrive during the progress view's first render. Defer
+        // this cosmetic update one run-loop tick so SwiftUI never sees a publish from
+        // inside its own update pass.
+        Task { @MainActor [weak self] in
+            guard let self, self.state.isVisible else { return }
+            var nextState = self.state
+            if !nextState.completedSteps.contains(step) {
+                nextState.completedSteps.append(step)
+            }
+            nextState.currentStep = next
+            self.state = nextState
         }
-        state.currentStep = next
-        positionPanel()
     }
 
     func hide() {
@@ -64,7 +76,9 @@ final class SubAgentProgressController: ObservableObject {
     }
 
     func toggleExpanded() {
-        state.isExpanded.toggle()
+        var nextState = state
+        nextState.isExpanded.toggle()
+        state = nextState
         positionPanel()
     }
 
