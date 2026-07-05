@@ -522,7 +522,7 @@ async function startPlayback(
 }
 
 /// Generates visual-guidance canvas commands from a screenshot. The Swift app captures
-/// the screen locally and POSTs the JPEG here; we run a vision Chat Completions call on the
+/// the screen locally and POSTs the JPEG here; we run a vision Responses API call on the
 /// same Azure resource as the realtime endpoint and return a ready-to-play
 /// VisualGuidanceSequence as `canvas_payload`. Keeping this off the realtime path preserves
 /// the pure-byte-proxy invariant for `/realtime`, and returning finished coordinates means
@@ -558,8 +558,7 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   }
 
   const deployment = env.CANVAS_VISION_MODEL || "gpt-5.5";
-  const azureUrl =
-    `https://auren-resource.services.ai.azure.com/openai/deployments/${deployment}/chat/completions?api-version=2024-10-21`;
+  const azureUrl = "https://auren-resource.services.ai.azure.com/openai/v1/responses";
 
   const systemPrompt = canvasVisionSystemPrompt(logicalWidth, logicalHeight);
   const userText =
@@ -575,24 +574,23 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
         "api-key": env.AZURE_OPENAI_API_KEY,
       },
       body: JSON.stringify({
-        messages: [
-          { role: "system", content: systemPrompt },
+        model: deployment,
+        instructions: systemPrompt,
+        input: [
           {
             role: "user",
             content: [
-              { type: "text", text: userText },
+              { type: "input_text", text: userText },
               {
-                type: "image_url",
-                image_url: {
-                  url: `data:image/jpeg;base64,${jpegBase64}`,
-                  detail: "high",
-                },
+                type: "input_image",
+                image_url: `data:image/jpeg;base64,${jpegBase64}`,
+                detail: "high",
               },
             ],
           },
         ],
-        response_format: { type: "json_object" },
-        max_tokens: 2000,
+        text: { format: { type: "json_object" } },
+        max_output_tokens: 2000,
       }),
     });
   } catch (err) {
@@ -612,10 +610,18 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   let content = "";
   try {
     const data = (await azureResponse.json()) as {
-      choices?: Array<{ message?: { content?: unknown } }>;
+      output_text?: unknown;
+      output?: Array<{ content?: Array<{ type?: string; text?: unknown }> }>;
     };
-    const raw = data.choices?.[0]?.message?.content;
-    content = typeof raw === "string" ? raw : "";
+    if (typeof data.output_text === "string") {
+      content = data.output_text;
+    } else {
+      content = (data.output ?? [])
+        .flatMap((item) => item.content ?? [])
+        .filter((part) => part.type === "output_text" && typeof part.text === "string")
+        .map((part) => part.text as string)
+        .join("\n");
+    }
   } catch (err) {
     console.error("Canvas vision response parse failed", err);
     return jsonResponse({ canvas_payload: null, error: "vision response unreadable" });
