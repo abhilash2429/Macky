@@ -8,8 +8,8 @@ compatibility_date = "2025-06-11"
 #   npx wrangler kv namespace create AUTH_TOKENS --preview
 [[kv_namespaces]]
 binding = "AUTH_TOKENS"
-id = "c5eb3022f5e84d9ab0e35f73f03db48e"
-preview_id = "ea8c338135f5483799f57060586ea2ac"
+id = "9fb206927354473a9b24e3fe81739843"
+preview_id = "1bcdd4aaa4f34aa2891a137fc5121a9f"
 
 [[durable_objects.bindings]]
 name = "SESSION_OBJECTS"
@@ -31,7 +31,7 @@ new_sqlite_classes = ["MackySessionObject"]
 [vars]
 MAGIC_LINK_FROM = "onboarding@resend.dev"
 # Public origin of this Worker, used to build the clickable link in the email.
-PUBLIC_BASE_URL = "https://realtime-proxy.speedmac.workers.dev"
+PUBLIC_BASE_URL = "https://realtime-proxy.winky-secrets.workers.dev"
 # Azure deployment name for the canvas vision model (visual-guidance coordinates).
 # Runs on the same Azure resource / AZURE_OPENAI_API_KEY as the realtime endpoint.
 CANVAS_VISION_MODEL = "gpt-5.5"

@@ -563,7 +563,7 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   const systemPrompt = canvasVisionSystemPrompt(logicalWidth, logicalHeight);
   const userText =
     (transcript || "Help the user with what's currently on screen.") +
-    `\n\nDisplay logical dimensions: ${logicalWidth}x${logicalHeight}`;
+    `\n\nReturn the visual guide as JSON. Display logical dimensions: ${logicalWidth}x${logicalHeight}`;
 
   let azureResponse: Response;
   try {
