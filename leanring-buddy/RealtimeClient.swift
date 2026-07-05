@@ -90,6 +90,11 @@ final class RealtimeClient: ObservableObject {
     /// assistant audio-transcript done event.
     private var pendingModelTranscript = ""
 
+    /// Most recent screen capture from get_screen_context. The realtime model sees
+    /// these images directly; the GPT-5.5 canvas tool reuses the same capture when
+    /// the model later asks for coordinate-accurate visual guidance.
+    private var latestScreenCaptures: [CompanionScreenCapture] = []
+
     /// The model's most recent spoken narration, captured from
     /// `conversation.item.created`. Buffered here (rather than shown immediately)
     /// because at creation time we don't yet know whether a tool call follows —
@@ -251,7 +256,7 @@ final class RealtimeClient: ObservableObject {
     private func registerBuiltInTools() {
         registerTool(
             name: "get_screen_context",
-            description: "Capture a fresh screenshot when the user asks for help with what is on screen. Default captures the main display so visual guidance coordinates match the teaching overlay. Set all_screens to true only when the user explicitly asks about multiple displays.",
+            description: "Capture a fresh screenshot when the user asks for help with what is on screen. The screenshot is attached to the realtime conversation so you can inspect it directly. Default captures the main display so coordinates match the teaching overlay. Set all_screens to true only when the user explicitly asks about multiple displays.",
             schema: [
                 "type": "object",
                 "properties": [
@@ -265,65 +270,18 @@ final class RealtimeClient: ObservableObject {
             guard let self else { return "{\"error\": \"client unavailable\"}" }
             let allScreens = arguments["all_screens"] as? Bool ?? false
             let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(cursorScreenOnly: false, mainScreenOnly: !allScreens)
-            // The screenshot no longer goes to the realtime model. Instead the Worker's
-            // vision model turns it into ready-to-play visual-guidance coordinates, and we
-            // auto-start that sequence here. The realtime model only narrates.
-            return await self.generateAndStartVisualGuidance(from: captures)
+            self.latestScreenCaptures = captures
+            // Images cannot live in a function_call_output, so attach them as a separate
+            // user message before the function result is sent. The realtime model remains
+            // the brain: it sees the screen, decides what to say, and optionally asks GPT-5.5
+            // for coordinate-accurate visual guidance with generate_visual_guidance.
+            self.sendScreenContext(captures)
+            return Self.screenCaptureResultJSON(captures)
         }
     }
 
-    /// Turns a fresh screen capture into a visual-guidance overlay: sends the JPEG to the
-    /// Worker's `/canvas-vision` route, decodes the returned sequence, and queues it through
-    /// `onVisualGuidanceSequenceRequested` (which presents it in sync with the model's
-    /// narration). Returns a short status the realtime model uses to decide what to say.
-    private func generateAndStartVisualGuidance(from captures: [CompanionScreenCapture]) async -> String {
-        // Prefer the cursor screen; otherwise the first capture (main screen).
-        guard let capture = captures.first(where: { $0.isCursorScreen }) ?? captures.first else {
-            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"no screen captured\"}"
-        }
-
-        // The vision model targets the user's request. The get_screen_context call can fire
-        // before Whisper finishes transcribing, so wait briefly for the transcript, then fall
-        // back to an image-only prompt if it never arrives.
-        let transcript = await awaitUserTranscript(timeout: 1.5)
-
-        let payload: [String: Any]
-        do {
-            payload = try await callCanvasVision(
-                jpegBase64: capture.imageData.base64EncodedString(),
-                transcript: transcript,
-                logicalWidth: capture.screenshotWidthInPixels,
-                logicalHeight: capture.screenshotHeightInPixels
-            )
-        } catch {
-            print("⚠️ RealtimeClient: canvas-vision request failed: \(error.localizedDescription)")
-            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"vision request failed\"}"
-        }
-
-        guard let canvasPayload = payload["canvas_payload"] as? String, !canvasPayload.isEmpty else {
-            let reason = (payload["error"] as? String) ?? "no guidance produced"
-            print("⚠️ RealtimeClient: canvas-vision returned no payload: \(reason)")
-            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"visual guidance could not be generated; describe the steps verbally instead\"}"
-        }
-
-        guard let sequence = try? JSONDecoder().decode(
-            VisualGuidanceSequence.self,
-            from: Data(canvasPayload.utf8)
-        ) else {
-            print("⚠️ RealtimeClient: canvas-vision payload did not decode to a sequence")
-            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"visual guidance was malformed; describe the steps verbally instead\"}"
-        }
-
-        guard let callback = self.onVisualGuidanceSequenceRequested else {
-            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"visual guidance unavailable\"}"
-        }
-        // Queues the sequence; it's presented when the model's narration audio starts.
-        _ = await callback(sequence)
-        return "{\"status\": \"visual guidance ready\", \"guidance_started\": true}"
-    }
-
-    /// POSTs the screenshot to the Worker's `/canvas-vision` route and returns the parsed
-    /// JSON. Mirrors the existing worker-call pattern (no auth header, like `/spotify-play`).
+    /// POSTs the latest screenshot to the Worker's `/canvas-vision` route and returns the
+    /// parsed JSON. Mirrors the existing worker-call pattern (no auth header, like `/spotify-play`).
     private func callCanvasVision(
         jpegBase64: String,
         transcript: String,
@@ -346,26 +304,105 @@ final class RealtimeClient: ObservableObject {
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     }
 
-    /// Waits up to `timeout` seconds for the current turn's user transcript to arrive, then
-    /// returns it (or a generic fallback if it never lands). Polls because the transcript is
-    /// set by a separate realtime event on the main actor; awaiting yields so it can process.
-    private func awaitUserTranscript(timeout: TimeInterval) async -> String {
-        let deadline = Date().addingTimeInterval(timeout)
-        while pendingUserPhrase.isEmpty && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s
-        }
-        let phrase = pendingUserPhrase.trimmingCharacters(in: .whitespacesAndNewlines)
-        return phrase.isEmpty ? "Help the user with what's currently on screen." : phrase
-    }
-
     /// Registers the visual teaching tools used when Macky guides the user through
     /// visible app UI with a full-screen overlay and optional cursor movement.
     private func registerVisualGuidanceTools() {
-        // The model no longer builds visual guidance coordinates or drives the cursor.
-        // `get_screen_context` captures the screen, the Worker's vision model produces the
-        // full sequence (highlights, arrows, labels, and any cursor moves/clicks), and it's
-        // played back automatically. The model only narrates. The one tool it still needs is
-        // a way to dismiss the overlay when the user asks.
+        let canvasCommandSchema: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "type": ["type": "string", "enum": ["highlight", "arrow", "label", "polygon"]],
+                "x": ["type": "number"],
+                "y": ["type": "number"],
+                "width": ["type": "number"],
+                "height": ["type": "number"],
+                "to_x": ["type": "number"],
+                "to_y": ["type": "number"],
+                "text": ["type": "string"],
+                "points": [
+                    "type": "array",
+                    "items": [
+                        "type": "object",
+                        "properties": [
+                            "x": ["type": "number"],
+                            "y": ["type": "number"]
+                        ],
+                        "required": ["x", "y"]
+                    ]
+                ]
+            ],
+            "required": ["type"]
+        ]
+
+        let visualGuidanceSequenceSchema: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "title": ["type": "string"],
+                "source_width": ["type": "number", "description": "Width of the screenshot coordinate space."],
+                "source_height": ["type": "number", "description": "Height of the screenshot coordinate space."],
+                "steps": [
+                    "type": "array",
+                    "description": "Timed visual steps. Each step clears before the next by default.",
+                    "items": [
+                        "type": "object",
+                        "properties": [
+                            "narration_cue": ["type": "string"],
+                            "duration_ms": ["type": "integer"],
+                            "clear_before_next": ["type": "boolean"],
+                            "canvas": [
+                                "type": "array",
+                                "items": canvasCommandSchema
+                            ],
+                            "cursor": [
+                                "type": "object",
+                                "properties": [
+                                    "type": ["type": "string", "enum": ["move", "click"]],
+                                    "x": ["type": "number"],
+                                    "y": ["type": "number"],
+                                    "duration_ms": ["type": "integer"]
+                                ],
+                                "required": ["type", "x", "y"]
+                            ]
+                        ],
+                        "required": ["canvas"]
+                    ]
+                ]
+            ],
+            "required": ["source_width", "source_height", "steps"]
+        ]
+
+        registerTool(
+            name: "generate_visual_guidance",
+            description: "Ask Macky's deeper GPT-5.5 vision helper to generate coordinate-accurate visual guidance from the latest screen capture. Use only after get_screen_context when you need precise highlights, arrows, labels, or safe pointing. You remain responsible for deciding whether visual guidance is needed and for narrating it.",
+            schema: [
+                "type": "object",
+                "properties": [
+                    "guidance_request": [
+                        "type": "string",
+                        "description": "Specific instruction for the visual guide to produce, based on what you saw in the latest screen capture."
+                    ]
+                ],
+                "required": ["guidance_request"]
+            ]
+        ) { [weak self] arguments in
+            guard let self else { return "{\"error\": \"client unavailable\"}" }
+            let guidanceRequest = (arguments["guidance_request"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return await self.generateVisualGuidancePayload(guidanceRequest: guidanceRequest)
+        }
+
+        registerTool(
+            name: "show_visual_guidance",
+            description: "Show a timed full-screen teaching overlay with highlights, arrows, labels, polygons, and optional safe cursor movement. Use a sequence returned by generate_visual_guidance, or a simple sequence you can confidently build from the latest screenshot metadata.",
+            schema: visualGuidanceSequenceSchema
+        ) { [weak self] arguments in
+            guard let self else { return "{\"error\": \"client unavailable\"}" }
+            guard let callback = self.onVisualGuidanceSequenceRequested else {
+                return "{\"error\": \"visual guidance unavailable\"}"
+            }
+            let data = try JSONSerialization.data(withJSONObject: arguments)
+            let sequence = try JSONDecoder().decode(VisualGuidanceSequence.self, from: data)
+            return await callback(sequence)
+        }
+
         registerTool(
             name: "clear_visual_guidance",
             description: "Clear Macky's visual teaching overlay. Use when the user says stop, cancel, clear the overlay, or when the guide is no longer relevant.",
@@ -376,6 +413,56 @@ final class RealtimeClient: ObservableObject {
                 return "{\"status\": \"cleared\"}"
             }
             return await callback()
+        }
+    }
+
+    /// Uses the latest realtime-visible screen capture as input to the GPT-5.5 canvas
+    /// helper, then returns the generated sequence as JSON for the realtime model to review
+    /// and pass to `show_visual_guidance` when appropriate.
+    private func generateVisualGuidancePayload(guidanceRequest: String?) async -> String {
+        guard let capture = latestScreenCaptures.first(where: { $0.isCursorScreen }) ?? latestScreenCaptures.first else {
+            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"call get_screen_context first so realtime can inspect the screen\"}"
+        }
+
+        let requestText = guidanceRequest?.isEmpty == false
+            ? guidanceRequest!
+            : (pendingUserPhrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Help the user with what's currently on screen."
+                : pendingUserPhrase)
+
+        let payload: [String: Any]
+        do {
+            payload = try await callCanvasVision(
+                jpegBase64: capture.imageData.base64EncodedString(),
+                transcript: requestText,
+                logicalWidth: capture.screenshotWidthInPixels,
+                logicalHeight: capture.screenshotHeightInPixels
+            )
+        } catch {
+            print("⚠️ RealtimeClient: canvas-vision request failed: \(error.localizedDescription)")
+            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"vision request failed\"}"
+        }
+
+        guard let canvasPayload = payload["canvas_payload"] as? String, !canvasPayload.isEmpty else {
+            let reason = (payload["error"] as? String) ?? "no guidance produced"
+            print("⚠️ RealtimeClient: canvas-vision returned no payload: \(reason)")
+            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"visual guidance could not be generated\"}"
+        }
+
+        guard let sequence = try? JSONDecoder().decode(
+            VisualGuidanceSequence.self,
+            from: Data(canvasPayload.utf8)
+        ) else {
+            print("⚠️ RealtimeClient: canvas-vision payload did not decode to a sequence")
+            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"visual guidance was malformed\"}"
+        }
+
+        do {
+            _ = try sequence.validated()
+            return "{\"status\": \"visual_guidance_generated\", \"sequence\": \(canvasPayload)}"
+        } catch {
+            print("⚠️ RealtimeClient: canvas-vision sequence was invalid: \(error.localizedDescription)")
+            return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"visual guidance was invalid\"}"
         }
     }
 
@@ -875,6 +962,7 @@ final class RealtimeClient: ObservableObject {
         // start, flush local playback so the model stops talking the instant the
         // user barges in; the server auto-commits and auto-creates the response.
         case "input_audio_buffer.speech_started":
+            latestScreenCaptures = []
             interruptPlayback()
             onSpeechStarted?()
         case "input_audio_buffer.speech_stopped":
@@ -1062,15 +1150,19 @@ final class RealtimeClient: ObservableObject {
 
         Visual help mode:
         - When the user is stuck in an app, asks for help with "this", asks what to click, or asks to be \
-        taught/walked through something visible, immediately call get_screen_context.
-        - get_screen_context does everything: it captures the screen and automatically builds and starts the \
-        on-screen visual guide (highlights, arrows, labels, and any pointing). You do NOT build coordinates or \
-        move the cursor yourself — that is handled for you. Your job is to narrate the steps out loud, clearly \
-        and in order, while the overlay plays.
-        - When get_screen_context returns guidance_started true, walk the user through the steps in plain spoken \
-        language. If it returns visual_guidance_unavailable, tell the user the visual guide couldn't be shown and \
-        describe the steps verbally instead.
-        - Keep teaching clear and short. One idea per step. Prefer walking through the visual guide over long spoken lists.
+        taught/walked through something visible, immediately call get_screen_context for a fresh screenshot.
+        - You are the brain for visual help. First reason from the screenshot yourself. Do not pretend you can see \
+        the screen until get_screen_context has returned and the screenshot has been attached.
+        - If the user only needs an explanation, answer from the screenshot in clear spoken language.
+        - If the user needs visual teaching, call generate_visual_guidance with a specific request. It uses GPT-5.5 \
+        only as a precise coordinate/content helper and returns a sequence object. Review that sequence, then call \
+        show_visual_guidance with the sequence fields while you narrate the same steps out loud.
+        - Do not make up coordinates. For overlay/cursor actions, use the latest screenshot coordinate space and \
+        source_width/source_height from get_screen_context or generate_visual_guidance.
+        - Only allow cursor clicks for safe, low-risk clicks the user clearly asked for. Never click delete, \
+        publish, share, overwrite, invite, purchase, payment, submit, or other risky/destructive controls.
+        - Keep teaching clear and short. One idea per step. Prefer visual guidance over long spoken lists.
+        - If generate_visual_guidance returns visual_guidance_unavailable, describe the steps verbally instead.
         - If the user says stop, cancel, clear the overlay, or never mind, call clear_visual_guidance and stop.
 
         Tool rules:
@@ -1372,10 +1464,67 @@ final class RealtimeClient: ObservableObject {
         }
     }
 
+    /// Metadata returned from get_screen_context. The image itself is attached as a
+    /// separate conversation item, while this result gives the realtime model the coordinate
+    /// space it should use when it asks for or shows visual guidance.
+    private static func screenCaptureResultJSON(_ captures: [CompanionScreenCapture]) -> String {
+        let screens = captures.map { capture in
+            [
+                "label": capture.label,
+                "display_width_points": capture.displayWidthInPoints,
+                "display_height_points": capture.displayHeightInPoints,
+                "screenshot_width": capture.screenshotWidthInPixels,
+                "screenshot_height": capture.screenshotHeightInPixels,
+                "is_cursor_screen": capture.isCursorScreen,
+                "display_frame": [
+                    "x": capture.displayFrame.origin.x,
+                    "y": capture.displayFrame.origin.y,
+                    "width": capture.displayFrame.width,
+                    "height": capture.displayFrame.height
+                ]
+            ] as [String: Any]
+        }
+        let payload: [String: Any] = [
+            "status": "captured",
+            "screen_count": captures.count,
+            "coordinate_space": "top_left_logical_screen_points",
+            "screens": screens
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{\"status\": \"captured\", \"screen_count\": \(captures.count)}"
+        }
+        return json
+    }
+
     /// Adds the captured screens to the conversation as a user message with
     /// input_image content. The Realtime API can't carry images inside a
     /// function_call_output, so the get_screen_context handler attaches them
     /// here; the model then sees them when it generates its response.
+    private func sendScreenContext(_ captures: [CompanionScreenCapture]) {
+        guard !captures.isEmpty else { return }
+
+        var content: [[String: Any]] = []
+        for capture in captures {
+            content.append(["type": "input_text", "text": capture.label])
+            let base64Image = capture.imageData.base64EncodedString()
+            content.append([
+                "type": "input_image",
+                "image_url": "data:image/jpeg;base64,\(base64Image)"
+            ])
+        }
+
+        print("🖼 RealtimeClient: attaching \(captures.count) screen image(s) to conversation")
+        sendJSON([
+            "type": "conversation.item.create",
+            "item": [
+                "type": "message",
+                "role": "user",
+                "content": content
+            ]
+        ])
+    }
+
     /// Injects user-dropped file context (text and/or images) into the
     /// conversation as a user message, so the model sees it when generating its
     /// next response. Call this before `requestResponse()`. No-op when there's
@@ -1501,6 +1650,7 @@ final class RealtimeClient: ObservableObject {
     func clearAudioBuffer() {
         appendedAudioChunkCount = 0
         audioDroppedDuringUtterance = false
+        latestScreenCaptures = []
         sendJSON(["type": "input_audio_buffer.clear"])
     }
 

@@ -34,10 +34,11 @@ enum WorkerEndpoints {
     /// discovery the model would otherwise drive across several round-trips.
     static let spotifyPlayURL = URL(string: "\(httpsBase)/spotify-play")!
 
-    /// Visual-guidance vision route (`/canvas-vision`). The app POSTs a screenshot JPEG +
-    /// transcript + logical dimensions; the Worker runs a vision model and returns a
-    /// ready-to-play `canvas_payload` (VisualGuidanceSequence JSON). Keeps coordinate
-    /// generation off the realtime model and off the pure-proxy `/realtime` socket.
+    /// Visual-guidance vision route (`/canvas-vision`). When the realtime model asks for
+    /// precise visual guidance, the app POSTs the latest screenshot JPEG + instruction +
+    /// logical dimensions; the Worker runs a vision model and returns a `canvas_payload`
+    /// (VisualGuidanceSequence JSON). Keeps coordinate generation off the pure-proxy
+    /// `/realtime` socket without taking screen reasoning away from realtime.
     static let canvasVisionURL = URL(string: "\(httpsBase)/canvas-vision")!
 
     /// Versioned session side-channel foundation. The realtime socket remains a pure

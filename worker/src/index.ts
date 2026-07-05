@@ -522,11 +522,12 @@ async function startPlayback(
 }
 
 /// Generates visual-guidance canvas commands from a screenshot. The Swift app captures
-/// the screen locally and POSTs the JPEG here; we run a vision Responses API call on the
-/// same Azure resource as the realtime endpoint and return a ready-to-play
-/// VisualGuidanceSequence as `canvas_payload`. Keeping this off the realtime path preserves
-/// the pure-byte-proxy invariant for `/realtime`, and returning finished coordinates means
-/// the realtime model ("R2") never estimates coordinates — it only narrates.
+/// the screen locally and POSTs the JPEG here when the realtime model explicitly asks for
+/// deeper coordinate help; we run a vision Responses API call on the same Azure resource as
+/// the realtime endpoint and return a VisualGuidanceSequence as `canvas_payload`. Keeping
+/// this off the realtime path preserves the pure-byte-proxy invariant for `/realtime`, while
+/// the realtime model remains the brain that sees the screenshot, decides whether this helper
+/// is needed, and chooses when to show the returned guide.
 ///
 /// Success: { canvas_payload: "<sequence JSON string>", error: null }
 /// Failure: { canvas_payload: null, error: "<reason>" } (HTTP 200 so the app reads the
