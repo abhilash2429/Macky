@@ -66,6 +66,11 @@ enum CursorGuidanceIntegration {
         t * t * (3 - 2 * t)
     }
 
+    // `NSEvent.mouseLocation` and AppKit screen frames use a bottom-left origin; CGEvent /
+    // CGWarpMouseCursorPosition expect a top-left origin on the primary display. This performs
+    // the single, correct flip. All AppKit points fed to CGEvent must go through here — do NOT
+    // add a second flip anywhere upstream, and do NOT multiply by a display scale factor (the
+    // screenshot is captured in logical points, so coordinates are already in logical space).
     private static func quartzPoint(fromAppKitPoint point: CGPoint) -> CGPoint {
         let mainBounds = CGDisplayBounds(CGMainDisplayID())
         return CGPoint(x: point.x, y: mainBounds.height - point.y)

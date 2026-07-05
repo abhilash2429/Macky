@@ -16,6 +16,10 @@ export interface Env {
   // Public origin of this Worker, used to build the clickable https link in the
   // email (e.g. https://realtime-proxy.speedmac.workers.dev).
   PUBLIC_BASE_URL: string;
+  // Azure deployment name for the canvas vision model that generates visual-guidance
+  // coordinates from a screenshot. Defaults to "gpt-5.5" when unset. Runs on the same
+  // Azure resource / api-key as the realtime endpoint.
+  CANVAS_VISION_MODEL: string;
 }
 
 /// Fixed Composio user for now. M14 (real per-user auth) swaps this one line.
@@ -112,6 +116,10 @@ export default {
 
     if (url.pathname === "/spotify-play" && request.method === "POST") {
       return handleSpotifyPlay(request, env);
+    }
+
+    if (url.pathname === "/canvas-vision" && request.method === "POST") {
+      return handleCanvasVision(request, env);
     }
 
     if (url.pathname === "/session/state" && request.method === "GET") {
@@ -511,6 +519,167 @@ async function startPlayback(
     args.device_id = deviceId;
   }
   return composioExecute(env, "SPOTIFY_START_RESUME_PLAYBACK", args);
+}
+
+/// Generates visual-guidance canvas commands from a screenshot. The Swift app captures
+/// the screen locally and POSTs the JPEG here; we run a vision Chat Completions call on the
+/// same Azure resource as the realtime endpoint and return a ready-to-play
+/// VisualGuidanceSequence as `canvas_payload`. Keeping this off the realtime path preserves
+/// the pure-byte-proxy invariant for `/realtime`, and returning finished coordinates means
+/// the realtime model ("R2") never estimates coordinates — it only narrates.
+///
+/// Success: { canvas_payload: "<sequence JSON string>", error: null }
+/// Failure: { canvas_payload: null, error: "<reason>" } (HTTP 200 so the app reads the
+///          structured null instead of throwing on a non-2xx status).
+async function handleCanvasVision(request: Request, env: Env): Promise<Response> {
+  let jpegBase64 = "";
+  let transcript = "";
+  let logicalWidth = 0;
+  let logicalHeight = 0;
+  try {
+    const body = (await request.json()) as {
+      jpegBase64?: unknown;
+      transcript?: unknown;
+      logicalWidth?: unknown;
+      logicalHeight?: unknown;
+    };
+    jpegBase64 = typeof body.jpegBase64 === "string" ? body.jpegBase64 : "";
+    transcript = typeof body.transcript === "string" ? body.transcript : "";
+    logicalWidth = typeof body.logicalWidth === "number" ? Math.round(body.logicalWidth) : 0;
+    logicalHeight = typeof body.logicalHeight === "number" ? Math.round(body.logicalHeight) : 0;
+  } catch {
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (!jpegBase64) {
+    return jsonResponse({ error: "missing jpegBase64" }, 400);
+  }
+  if (logicalWidth <= 0 || logicalHeight <= 0) {
+    return jsonResponse({ error: "missing or invalid logical dimensions" }, 400);
+  }
+
+  const deployment = env.CANVAS_VISION_MODEL || "gpt-5.5";
+  const azureUrl =
+    `https://auren-resource.services.ai.azure.com/openai/deployments/${deployment}/chat/completions?api-version=2024-10-21`;
+
+  const systemPrompt = canvasVisionSystemPrompt(logicalWidth, logicalHeight);
+  const userText =
+    (transcript || "Help the user with what's currently on screen.") +
+    `\n\nDisplay logical dimensions: ${logicalWidth}x${logicalHeight}`;
+
+  let azureResponse: Response;
+  try {
+    azureResponse = await fetch(azureUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": env.AZURE_OPENAI_API_KEY,
+      },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: userText },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${jpegBase64}`,
+                  detail: "high",
+                },
+              },
+            ],
+          },
+        ],
+        response_format: { type: "json_object" },
+        max_tokens: 2000,
+      }),
+    });
+  } catch (err) {
+    console.error("Canvas vision fetch failed", err);
+    return jsonResponse({ canvas_payload: null, error: "vision request failed" });
+  }
+
+  if (!azureResponse.ok) {
+    const detail = await azureResponse.text().catch(() => "");
+    console.error("Canvas vision non-OK", azureResponse.status, detail);
+    return jsonResponse({
+      canvas_payload: null,
+      error: `vision model error (status ${azureResponse.status})`,
+    });
+  }
+
+  let content = "";
+  try {
+    const data = (await azureResponse.json()) as {
+      choices?: Array<{ message?: { content?: unknown } }>;
+    };
+    const raw = data.choices?.[0]?.message?.content;
+    content = typeof raw === "string" ? raw : "";
+  } catch (err) {
+    console.error("Canvas vision response parse failed", err);
+    return jsonResponse({ canvas_payload: null, error: "vision response unreadable" });
+  }
+  if (!content) {
+    return jsonResponse({ canvas_payload: null, error: "vision returned empty content" });
+  }
+
+  // Strip any accidental markdown fencing before parsing.
+  const cleaned = content
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  let sequence: unknown;
+  try {
+    sequence = JSON.parse(cleaned);
+  } catch (err) {
+    console.error("Canvas vision JSON.parse failed", err);
+    return jsonResponse({ canvas_payload: null, error: "vision returned invalid JSON" });
+  }
+
+  const steps = (sequence as { steps?: unknown } | null)?.steps;
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return jsonResponse({ canvas_payload: null, error: "vision returned no steps" });
+  }
+
+  return jsonResponse({ canvas_payload: JSON.stringify(sequence), error: null });
+}
+
+/// The system prompt for the canvas vision model. Inlines the VisualGuidanceSequence schema
+/// (mirrors leanring-buddy/VisualGuidanceModels.swift) and states the coordinate contract:
+/// logical points, top-left origin, and the arrow tail/head semantics (Bug 5).
+function canvasVisionSystemPrompt(logicalWidth: number, logicalHeight: number): string {
+  return [
+    "You generate a visual teaching overlay for a macOS screenshot.",
+    "Return ONLY a valid JSON object matching this schema — no markdown fencing, no prose:",
+    "{",
+    '  "title": string (optional),',
+    `  "source_width": number (set to ${logicalWidth}),`,
+    `  "source_height": number (set to ${logicalHeight}),`,
+    '  "steps": [ {',
+    '    "narration_cue": string (optional),',
+    '    "duration_ms": integer (optional),',
+    '    "clear_before_next": boolean (optional, default true),',
+    '    "canvas": [ {',
+    '      "type": "highlight" | "arrow" | "label" | "polygon",',
+    '      "x": number, "y": number,',
+    '      "width": number, "height": number,   // highlight rect size',
+    '      "to_x": number, "to_y": number,       // arrow head/tip',
+    '      "text": string,                        // label text',
+    '      "points": [ { "x": number, "y": number } ]  // polygon (3-16 points)',
+    "    } ],",
+    '    "cursor": { "type": "move" | "click", "x": number, "y": number, "duration_ms": integer } (optional)',
+    "  } ]",
+    "}",
+    "",
+    `Coordinates are in LOGICAL SCREEN POINTS with a TOP-LEFT origin: x in 0..${logicalWidth}, y in 0..${logicalHeight}.`,
+    "For an arrow, (x,y) is the TAIL where the arrow starts, and (to_x,to_y) is the HEAD/TIP pointing at the target UI element.",
+    "For a highlight, (x,y) is the top-left corner and width/height size the box around the target.",
+    `Always set source_width=${logicalWidth} and source_height=${logicalHeight}.`,
+    "Keep the sequence short and clear. Point precisely at the real on-screen UI elements.",
+  ].join("\n");
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

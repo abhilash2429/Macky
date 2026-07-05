@@ -21,13 +21,9 @@ struct AurenStatusBar: View {
         // waveform right. The bar's total width == the window width == m.totalWidth.
         let m = notch.activeBarMetrics(for: companionManager.activeStatusText)
         HStack(spacing: 0) {
-            // FAR LEFT — the persistent animated Macky logo (brand identity), or the
-            // active connector's logo while a Composio MCP tool call is running.
-            MackyNotchLogo(connector: companionManager.activeConnectorToolCall)
-                .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
-
-            // LEFT — animated status text, capped to m.textWidth so long narration
-            // like "looking at your screen" truncates with "…" instead of clipping.
+            // LEFT — animated status text in a fixed-width slot (no logo). The slot is
+            // constant across every state, so long narration like "looking at your
+            // screen" truncates with "…" instead of resizing the notch.
             statusTextView
                 .frame(width: m.textWidth, alignment: .leading)
                 .padding(.leading, NotchConstants.statusLeadingPad)
@@ -86,48 +82,6 @@ struct AurenStatusBar: View {
         }
         .animation(.smooth(duration: 0.22), value: text)
         .clipped()
-    }
-}
-
-/// The persistent animated Macky logo shown on the closed notch's left flank.
-/// Its padding makes it occupy exactly `NotchConstants.logoFlankWidth`, matching
-/// the geometry the host window is sized to.
-///
-/// While a registered Composio connector's MCP tool call is running, `connector` is
-/// non-nil and its bundled logo replaces the animated logo for the call's duration. If
-/// the logo asset can't be resolved, it falls through to the animated logo so the chrome
-/// never shows a broken image.
-struct MackyNotchLogo: View {
-    var connector: ConnectorIdentity?
-
-    private var connectorLogo: NSImage? {
-        guard let name = connector?.logoAssetName else { return nil }
-        return NSImage(named: name)
-    }
-
-    var body: some View {
-        Group {
-            if let connectorLogo {
-                let side = NotchConstants.notchLogoWidth
-                let corner = side * 0.28
-                // Official logo on a white tile (matching the connectors-grid treatment)
-                // so dark and multicolor logos stay legible against the black notch.
-                Image(nsImage: connectorLogo)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .padding(side * 0.16)
-                    .frame(width: side, height: side)
-                    .background(
-                        RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .fill(Color.white)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-            } else {
-                MackyAnimatedLogoView(size: NotchConstants.notchLogoWidth)
-            }
-        }
-        .padding(.leading, NotchConstants.logoLeadingPad)
-        .padding(.trailing, NotchConstants.logoTrailingGap)
     }
 }
 

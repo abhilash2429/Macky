@@ -529,22 +529,6 @@ final class CompanionManager: ObservableObject {
             return "{\"status\": \"cleared\"}"
         }
 
-        realtimeClient.onCursorMoveRequested = { command, space in
-            do {
-                return try await CursorGuidanceIntegration.move(to: command, coordinateSpace: space)
-            } catch {
-                return "{\"error\": \"\(Self.escapeForJSON(error.localizedDescription))\"}"
-            }
-        }
-
-        realtimeClient.onCursorClickRequested = { command, space in
-            do {
-                return try await CursorGuidanceIntegration.click(at: command, coordinateSpace: space)
-            } catch {
-                return "{\"error\": \"\(Self.escapeForJSON(error.localizedDescription))\"}"
-            }
-        }
-
         realtimeClient.onResponseAudioStarted = { [weak self] in
             guard let self else { return }
             // Turn latency: time from push-to-talk release to the first response-audio

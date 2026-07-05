@@ -159,11 +159,14 @@ final class NotchPanelController {
         return NSRect(x: originX, y: top - height, width: m.totalWidth, height: height)
     }
 
-    /// The frame the closed notch should occupy right now, given the live status
-    /// text (idle footprint when there's nothing to show).
+    /// The frame the closed notch should occupy right now. While the assistant is
+    /// active it's the constant active bar (matches what `AurenStatusBar` renders,
+    /// including states with no status text like continuous-listening); otherwise the
+    /// bare idle cutout. Keying off `isAssistantActive` — not whether the text is
+    /// empty — keeps the window from clipping the waveform in a text-less active state.
     private func closedTargetFrame(for screen: NSScreen) -> NSRect {
-        let text = companionManager.activeStatusText
-        return text.isEmpty ? idleClosedFrame : activeFrame(for: screen, text: text)
+        guard companionManager.isAssistantActive else { return idleClosedFrame }
+        return activeFrame(for: screen, text: companionManager.activeStatusText)
     }
 
     // MARK: - State observation
@@ -178,19 +181,29 @@ final class NotchPanelController {
             }
             .store(in: &cancellables)
 
-        // While closed, resize the window to fit the live status text (or the
-        // idle cutout when there's nothing to show). Narration changes the text
-        // too, so it's part of the trigger.
-        Publishers.CombineLatest3(
+        // While closed, switch between the idle cutout and the constant active bar as
+        // the assistant becomes active/idle. Every signal that feeds `isAssistantActive`
+        // / `activeStatusText` is a trigger, so the frame can't lag behind what the
+        // status bar renders (e.g. continuous-listening or a text-less active state).
+        let activityA = Publishers.CombineLatest3(
             companionManager.$voiceState,
             companionManager.$toolCallActive,
             companionManager.$narrationText
         )
-        .receive(on: DispatchQueue.main)
-        .sink { [weak self] _, _, _ in
-            self?.applyClosedActivity()
-        }
-        .store(in: &cancellables)
+        .map { _, _, _ in () }
+
+        let activityB = Publishers.CombineLatest(
+            companionManager.$operationState,
+            companionManager.$isContinuousListeningActive
+        )
+        .map { _, _ in () }
+
+        Publishers.Merge(activityA, activityB)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.applyClosedActivity()
+            }
+            .store(in: &cancellables)
 
         // When a native permission dialog is about to appear, drop the panel below
         // it so the dialog isn't hidden behind the notch. `dropDuplicates`/skipping

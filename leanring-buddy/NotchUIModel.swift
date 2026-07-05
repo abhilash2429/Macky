@@ -42,25 +42,17 @@ enum NotchConstants {
 
     // MARK: - Active closed-bar layout
 
-    /// Rendered width of the animated Macky logo that lives on the closed notch's
-    /// left flank (height follows the 280:220 aspect ratio).
-    static let notchLogoWidth: CGFloat = 20
-    /// Leading inset before the logo so it clears the shape's rounded corner.
-    static let logoLeadingPad: CGFloat = 7
-    /// Gap between the logo and whatever follows it (status text or the cutout).
-    static let logoTrailingGap: CGFloat = 5
-    /// Total width the persistent logo flank occupies on the left of the closed
-    /// notch, present in both idle and active states.
-    static let logoFlankWidth: CGFloat = logoLeadingPad + notchLogoWidth + logoTrailingGap
-
     /// Leading inset for the status text so it clears the shape's rounded corner.
-    static let statusLeadingPad: CGFloat = 8
+    static let statusLeadingPad: CGFloat = 10
     /// Gap between the status text and the cutout bridge.
     static let statusTrailingGap: CGFloat = 8
     /// Inset to the right of the waveform on the active bar's right flank.
     static let waveformTrailingPad: CGFloat = 8
-    /// Max width the status text may occupy before it truncates with "…".
-    static let maxStatusTextWidth: CGFloat = 220
+    /// FIXED width of the status-text slot on the active bar. The active notch is a
+    /// constant footprint across every state (Listening / Thinking / Speaking /
+    /// executing) — the text truncates with "…" inside this slot instead of resizing
+    /// the notch. Sized to comfortably fit the standard state words.
+    static let activeStatusTextWidth: CGFloat = 96
     static let waveformBoxSize: CGFloat = 26
 
     // MARK: - Open/close morph timing
@@ -112,22 +104,6 @@ final class NotchUIModel: ObservableObject {
 
     // MARK: - Active bar geometry
 
-    /// The font the status bar renders the status text in, resolved for AppKit so
-    /// `measureStatusWidth` matches SwiftUI's
-    /// `.system(size: 11, weight: .semibold, design: .rounded)` to sub-pixel.
-    private static let statusFont: NSFont = {
-        let base = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        if let descriptor = base.fontDescriptor.withDesign(.rounded),
-           let rounded = NSFont(descriptor: descriptor, size: 11) {
-            return rounded
-        }
-        return base
-    }()
-
-    static func measureStatusWidth(_ text: String) -> CGFloat {
-        (text as NSString).size(withAttributes: [.font: statusFont]).width
-    }
-
     /// The idle closed-bar geometry: just the centered cutout bridge (no logo, no
     /// status text, no waveform). Used when the assistant is at rest so the notch
     /// footprint is exactly the hardware cutout and clicks pass through everywhere
@@ -143,29 +119,18 @@ final class NotchUIModel: ObservableObject {
         )
     }
 
-    /// Computes the active closed-bar geometry for `text`. The left flank always
-    /// carries the Macky logo, then the (capped) status text; the right flank holds
-    /// the waveform; the bridge spans the full cutout.
+    /// The active closed-bar geometry. It is a CONSTANT footprint for every active
+    /// state — no logo, a fixed-width status-text slot on the left, the cutout bridge
+    /// centered, and the fixed waveform slot on the right. The status text truncates
+    /// inside its slot rather than resizing the notch, so the bar never changes size
+    /// or re-centers while listening / thinking / speaking / executing. `text` is
+    /// accepted only to keep a single call site; the geometry does not depend on it.
     func activeBarMetrics(for text: String) -> ActiveBarMetrics {
+        _ = text
         let rightFlank = NotchConstants.waveformBoxSize + NotchConstants.waveformTrailingPad
         let bridge = max(0, closedNotchSize.width)
-        let logoFlank = NotchConstants.logoFlankWidth
-
-        guard !text.isEmpty else {
-            return ActiveBarMetrics(
-                totalWidth: logoFlank + bridge + rightFlank,
-                leftFlankWidth: logoFlank,
-                textWidth: 0,
-                bridgeWidth: bridge,
-                rightFlankWidth: rightFlank
-            )
-        }
-
-        // +1 absorbs rounding so SwiftUI never truncates a string the window was
-        // sized to fit; the cap then truncates anything genuinely too long.
-        let measured = ceil(Self.measureStatusWidth(text)) + 1
-        let textW = min(measured, NotchConstants.maxStatusTextWidth)
-        let leftFlank = logoFlank + NotchConstants.statusLeadingPad + textW + NotchConstants.statusTrailingGap
+        let textW = NotchConstants.activeStatusTextWidth
+        let leftFlank = NotchConstants.statusLeadingPad + textW + NotchConstants.statusTrailingGap
         return ActiveBarMetrics(
             totalWidth: leftFlank + bridge + rightFlank,
             leftFlankWidth: leftFlank,

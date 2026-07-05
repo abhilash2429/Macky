@@ -32,4 +32,7 @@ new_sqlite_classes = ["MackySessionObject"]
 MAGIC_LINK_FROM = "onboarding@resend.dev"
 # Public origin of this Worker, used to build the clickable link in the email.
 PUBLIC_BASE_URL = "https://realtime-proxy.speedmac.workers.dev"
+# Azure deployment name for the canvas vision model (visual-guidance coordinates).
+# Runs on the same Azure resource / AZURE_OPENAI_API_KEY as the realtime endpoint.
+CANVAS_VISION_MODEL = "gpt-5.5"
 

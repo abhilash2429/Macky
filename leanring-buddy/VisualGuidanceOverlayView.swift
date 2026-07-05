@@ -90,6 +90,11 @@ struct VisualGuidanceOverlayView: View {
         return point(x: x, y: y, in: targetSize)
     }
 
+    // SwiftUI's coordinate space here is already top-left origin (`.position` measures y
+    // downward from the top), so no Y flip is needed. Since the screenshot is now captured at
+    // the display's logical point dimensions, `sourceSize` equals the fullscreen overlay's
+    // `targetSize`, so scaleX/scaleY are 1.0 and this is effectively a direct passthrough:
+    // overlayX == screenshotX, overlayY == screenshotY.
     private func point(x: Double, y: Double, in targetSize: CGSize) -> CGPoint {
         CGPoint(x: CGFloat(x) * scaleX(targetSize), y: CGFloat(y) * scaleY(targetSize))
     }

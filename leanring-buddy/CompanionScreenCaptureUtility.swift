@@ -98,15 +98,16 @@ enum CompanionScreenCaptureUtility {
             let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
 
             let configuration = SCStreamConfiguration()
-            let maxDimension = 1280
-            let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
-            if display.width >= display.height {
-                configuration.width = maxDimension
-                configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
-            } else {
-                configuration.height = maxDimension
-                configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
-            }
+            // Capture at the display's logical point dimensions, not a fixed 1280 cap.
+            // SCStreamConfiguration.width/height are in POINTS; ScreenCaptureKit scales the
+            // output image to exactly those point dimensions. On Retina the native capture
+            // is physical (2x), but setting the config to logical points yields a JPEG whose
+            // pixel dimensions equal the display's logical point space. That makes overlay and
+            // cursor coordinates map 1:1 to the screen with no further scaling. (This is
+            // numerically the same as dividing physical pixels by backingScaleFactor, but this
+            // is the correct mechanism — do NOT multiply by any scale factor.)
+            configuration.width = Int(displayFrame.width)
+            configuration.height = Int(displayFrame.height)
 
             let cgImage = try await SCScreenshotManager.captureImage(
                 contentFilter: filter,
