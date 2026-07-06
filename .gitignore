@@ -7,3 +7,5 @@ releases/
 .claude/
 coding-plans/
 boring.notch/
+.wrangler
+.playwright-mcp

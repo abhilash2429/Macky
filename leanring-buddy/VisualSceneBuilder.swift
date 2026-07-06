@@ -1,0 +1,237 @@
+//
+//  VisualSceneBuilder.swift
+//  leanring-buddy
+//
+//  Builds a conservative main-display target map for visual guidance.
+//
+
+import AppKit
+import ApplicationServices
+import CoreGraphics
+
+@MainActor
+enum VisualSceneBuilder {
+    private static let coordinateSpace = "top_left_logical_screen_points_main_display"
+    private static let maxAccessibilityTargets = 50
+    private static let maxTraversalDepth = 4
+
+    static func buildMainDisplayScene() -> VisualScene? {
+        guard let screen = NSScreen.main else { return nil }
+        var targets = mackyTargets(on: screen)
+        targets.append(contentsOf: accessibilityTargets(on: screen, remaining: maxAccessibilityTargets))
+
+        return VisualScene(
+            screenWidth: Double(screen.frame.width),
+            screenHeight: Double(screen.frame.height),
+            coordinateSpace: coordinateSpace,
+            targets: targets
+        )
+    }
+
+    private static func mackyTargets(on screen: NSScreen) -> [VisualTarget] {
+        let size = screen.frame.size
+        let screenWidth = Double(size.width)
+        let screenHeight = Double(size.height)
+        let notchWidth = Double(NotchConstants.fallbackNotchWidth)
+        let notchHeight = Double(NSStatusBar.system.thickness)
+        let openWidth = Double(NotchConstants.windowSize.width)
+        let openHeight = Double(NotchConstants.windowSize.height)
+        let openX = (screenWidth - openWidth) / 2
+        let openY = 0.0
+        let dropZoneInset = 24.0
+        let askCardHeight = 54.0
+        let attachedChipsAllowance = 34.0
+        let dropZoneBox = VisualTargetBox(
+            x: openX + dropZoneInset,
+            y: openY + dropZoneInset,
+            width: max(1, openWidth - dropZoneInset * 2),
+            height: max(1, openHeight - dropZoneInset * 2 - askCardHeight - attachedChipsAllowance)
+        )
+
+        return [
+            VisualTarget(
+                id: "macky_notch",
+                kind: .mackyUI,
+                role: "assistant_notch",
+                label: "Macky notch",
+                marker: "M1",
+                box: VisualTargetBox(
+                    x: (screenWidth - notchWidth) / 2,
+                    y: 0,
+                    width: notchWidth,
+                    height: notchHeight
+                ),
+                confidence: 0.78
+            ),
+            VisualTarget(
+                id: "macky_open_panel_estimate",
+                kind: .mackyUI,
+                role: "assistant_panel",
+                label: "Macky open panel",
+                marker: "M2",
+                box: VisualTargetBox(x: openX, y: openY, width: openWidth, height: openHeight),
+                confidence: 0.75
+            ),
+            VisualTarget(
+                id: "macky_file_drop_zone",
+                kind: .mackyUI,
+                role: "file_drop_zone",
+                label: "Drop files here",
+                marker: "M3",
+                box: dropZoneBox,
+                confidence: 0.7
+            )
+        ]
+    }
+
+    private static func accessibilityTargets(on screen: NSScreen, remaining: Int) -> [VisualTarget] {
+        guard AXIsProcessTrusted(), remaining > 0 else { return [] }
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.bundleIdentifier != Bundle.main.bundleIdentifier else { return [] }
+
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var targets: [VisualTarget] = []
+        var markerIndex = 1
+        var windowsValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+           let windows = windowsValue as? [AXUIElement] {
+            for (windowIndex, window) in windows.prefix(3).enumerated() {
+                guard targets.count < remaining else { break }
+                if let target = target(from: window, id: "app_window_\(windowIndex + 1)", marker: "\(markerIndex)", kind: .appWindow, fallbackRole: "window", screen: screen, confidence: 0.86) {
+                    targets.append(target)
+                    markerIndex += 1
+                }
+                collectTargets(from: window, prefix: "ax_\(windowIndex + 1)", depth: 0, screen: screen, into: &targets, markerIndex: &markerIndex, limit: remaining)
+            }
+        }
+        return targets
+    }
+
+    private static func collectTargets(
+        from element: AXUIElement,
+        prefix: String,
+        depth: Int,
+        screen: NSScreen,
+        into targets: inout [VisualTarget],
+        markerIndex: inout Int,
+        limit: Int
+    ) {
+        guard depth <= maxTraversalDepth, targets.count < limit else { return }
+
+        if let target = target(
+            from: element,
+            id: "\(prefix)_\(targets.count + 1)",
+            marker: "\(markerIndex)",
+            kind: .accessibilityElement,
+            fallbackRole: "control",
+            screen: screen,
+            confidence: 0.72
+        ), shouldKeepAccessibilityTarget(target) {
+            targets.append(target)
+            markerIndex += 1
+        }
+
+        guard targets.count < limit else { return }
+        var childrenValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+              let children = childrenValue as? [AXUIElement] else { return }
+
+        for child in children.prefix(30) {
+            guard targets.count < limit else { break }
+            collectTargets(from: child, prefix: prefix, depth: depth + 1, screen: screen, into: &targets, markerIndex: &markerIndex, limit: limit)
+        }
+    }
+
+    private static func target(
+        from element: AXUIElement,
+        id: String,
+        marker: String?,
+        kind: VisualTargetKind,
+        fallbackRole: String,
+        screen: NSScreen,
+        confidence: Double
+    ) -> VisualTarget? {
+        guard let box = topLeftBox(for: element, on: screen) else { return nil }
+        let role = stringAttribute(kAXRoleAttribute, from: element) ?? fallbackRole
+        let label = [
+            stringAttribute(kAXTitleAttribute, from: element),
+            stringAttribute(kAXDescriptionAttribute, from: element),
+            stringAttribute(kAXValueAttribute, from: element)
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first { !$0.isEmpty }
+
+        return VisualTarget(
+            id: id,
+            kind: kind,
+            role: role,
+            label: label,
+            marker: marker,
+            box: box,
+            confidence: confidence
+        )
+    }
+
+    private static func shouldKeepAccessibilityTarget(_ target: VisualTarget) -> Bool {
+        guard target.box.width >= 8, target.box.height >= 8 else { return false }
+        let usefulRoles = [
+            kAXButtonRole as String,
+            kAXCheckBoxRole as String,
+            kAXRadioButtonRole as String,
+            kAXTextFieldRole as String,
+            kAXTextAreaRole as String,
+            kAXPopUpButtonRole as String,
+            kAXMenuButtonRole as String,
+            kAXMenuItemRole as String,
+            kAXTabGroupRole as String,
+            kAXLinkRole as String,
+            kAXWindowRole as String
+        ]
+        if usefulRoles.contains(target.role) { return true }
+        return target.label?.isEmpty == false && target.box.width >= 24 && target.box.height >= 16
+    }
+
+    private static func topLeftBox(for element: AXUIElement, on screen: NSScreen) -> VisualTargetBox? {
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let positionAXValue = positionValue as? AXValue,
+              let sizeAXValue = sizeValue as? AXValue else { return nil }
+
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionAXValue, .cgPoint, &position),
+              AXValueGetValue(sizeAXValue, .cgSize, &size),
+              size.width > 0,
+              size.height > 0 else { return nil }
+
+        let frame = screen.frame
+        let screenRect = CGRect(origin: .zero, size: frame.size)
+        let candidateRects = [
+            CGRect(origin: CGPoint(x: position.x - frame.minX, y: position.y - frame.minY), size: size),
+            CGRect(origin: CGPoint(x: position.x - frame.minX, y: position.y), size: size)
+        ]
+
+        guard let intersection = candidateRects
+            .map({ $0.intersection(screenRect) })
+            .filter({ !$0.isNull && $0.width > 0 && $0.height > 0 })
+            .max(by: { $0.width * $0.height < $1.width * $1.height }) else { return nil }
+
+        let topLeftBox = VisualTargetBox(
+            x: Double(intersection.minX),
+            y: Double(intersection.minY),
+            width: Double(intersection.width),
+            height: Double(intersection.height)
+        )
+        return topLeftBox.clamped(to: frame.size)
+    }
+
+    private static func stringAttribute(_ attribute: CFString, from element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
+        if let string = value as? String { return string }
+        if let number = value as? NSNumber { return number.stringValue }
+        return nil
+    }
+}

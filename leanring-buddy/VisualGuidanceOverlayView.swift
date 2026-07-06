@@ -5,6 +5,7 @@
 //  SwiftUI renderer for Macky's full-screen teaching overlay.
 //
 
+import AppKit
 import SwiftUI
 
 struct VisualGuidanceOverlayView: View {
@@ -15,13 +16,52 @@ struct VisualGuidanceOverlayView: View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
                 ForEach(Array(step.canvas.enumerated()), id: \.offset) { _, command in
-                    commandView(command, in: geometry.size)
+                    AnimatedCanvasCommandView(command: command, targetSize: geometry.size, sourceSize: sourceSize)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .animation(.easeInOut(duration: 0.18), value: step.canvas.count)
         }
         .allowsHitTesting(false)
+    }
+}
+
+private struct AnimatedCanvasCommandView: View {
+    let command: CanvasCommand
+    let targetSize: CGSize
+    let sourceSize: CGSize
+
+    @State private var visible = false
+    @State private var progress: CGFloat = 0
+    @State private var pulse = false
+    @State private var dashPhase: CGFloat = 0
+
+    private var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    private var animationType: CanvasAnimationType {
+        if command.animation?.type == .none { return .none }
+        return reduceMotion ? .fadeIn : (command.animation?.type ?? .fadeIn)
+    }
+
+    private var duration: Double {
+        reduceMotion ? 0.18 : (command.animation?.duration ?? 0.45)
+    }
+
+    private var delay: Double {
+        reduceMotion ? 0 : (command.animation?.delay ?? 0)
+    }
+
+    private var repetitions: Int {
+        reduceMotion ? 1 : (command.animation?.repetitions ?? 1)
+    }
+
+    var body: some View {
+        commandView(command, in: targetSize)
+            .opacity(opacity)
+            .scaleEffect(scale)
+            .onAppear(perform: startAnimation)
     }
 
     @ViewBuilder
@@ -39,12 +79,50 @@ struct VisualGuidanceOverlayView: View {
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
             }
+        case .circle:
+            if let rect = rect(for: command, in: targetSize) {
+                Ellipse()
+                    .fill(Color.blue.opacity(0.14))
+                    .overlay(Ellipse().stroke(Color.blue.opacity(0.95), lineWidth: 3))
+                    .shadow(color: Color.blue.opacity(0.45), radius: 14)
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+        case .ring:
+            if let rect = rect(for: command, in: targetSize) {
+                Ellipse()
+                    .stroke(Color.blue.opacity(0.95), lineWidth: 4)
+                    .shadow(color: Color.blue.opacity(0.5), radius: 12)
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+        case .spotlight:
+            if let rect = rect(for: command, in: targetSize) {
+                ZStack(alignment: .topLeading) {
+                    Color.black.opacity(0.34)
+                        .frame(width: targetSize.width, height: targetSize.height)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.blue.opacity(0.12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.blue.opacity(0.95), lineWidth: 3)
+                        )
+                        .shadow(color: Color.blue.opacity(0.65), radius: 22)
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+                }
+            }
         case .arrow:
             if let start = point(x: command.x, y: command.y, in: targetSize),
                let end = point(x: command.toX, y: command.toY, in: targetSize) {
-                ArrowShape(start: start, end: end)
-                    .stroke(Color.blue, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                arrowShape(start: start, end: end)
                     .shadow(color: Color.blue.opacity(0.45), radius: 10)
+            }
+        case .line:
+            if let start = point(x: command.x, y: command.y, in: targetSize),
+               let end = point(x: command.toX, y: command.toY, in: targetSize) {
+                lineShape(start: start, end: end)
+                    .shadow(color: Color.blue.opacity(0.35), radius: 8)
             }
         case .label:
             if let label = command.text,
@@ -74,6 +152,12 @@ struct VisualGuidanceOverlayView: View {
                             .stroke(Color.blue.opacity(0.95), lineWidth: 3)
                     )
                     .shadow(color: Color.blue.opacity(0.4), radius: 12)
+            }
+        case .brace:
+            if let rect = rect(for: command, in: targetSize) {
+                BraceShape(rect: rect)
+                    .stroke(Color.blue.opacity(0.95), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                    .shadow(color: Color.blue.opacity(0.35), radius: 10)
             }
         }
     }
@@ -106,6 +190,113 @@ struct VisualGuidanceOverlayView: View {
     private func scaleY(_ targetSize: CGSize) -> CGFloat {
         targetSize.height / max(1, sourceSize.height)
     }
+
+    @ViewBuilder
+    private func arrowShape(start: CGPoint, end: CGPoint) -> some View {
+        strokedPath(ArrowShape(start: start, end: end))
+    }
+
+    @ViewBuilder
+    private func lineShape(start: CGPoint, end: CGPoint) -> some View {
+        strokedPath(LineShape(start: start, end: end))
+    }
+
+    @ViewBuilder
+    private func strokedPath<S: Shape>(_ shape: S) -> some View {
+        let dash: [CGFloat] = animationType == .dashFlow ? [10, 8] : []
+        let style = StrokeStyle(
+            lineWidth: 4,
+            lineCap: .round,
+            lineJoin: .round,
+            dash: dash,
+            dashPhase: dashPhase
+        )
+        if animationType == .draw || animationType == .travel {
+            shape
+                .trim(from: 0, to: progress)
+                .stroke(Color.blue, style: style)
+        } else {
+            shape.stroke(Color.blue, style: style)
+        }
+    }
+
+    private var opacity: Double {
+        switch animationType {
+        case .none:
+            return 1
+        default:
+            return visible ? 1 : 0
+        }
+    }
+
+    private var scale: CGFloat {
+        switch animationType {
+        case .scaleIn:
+            return visible ? 1 : 0.88
+        case .pulse:
+            return pulse ? 1.04 : 1
+        default:
+            return 1
+        }
+    }
+
+    private func startAnimation() {
+        guard animationType != .none else {
+            visible = true
+            progress = 1
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            let base = swiftUIAnimation()
+            switch animationType {
+            case .draw, .travel:
+                visible = true
+                withAnimation(base) { progress = 1 }
+            case .pulse:
+                visible = true
+                progress = 1
+                guard repetitions > 0 else { return }
+                withAnimation(base.repeatCount(repetitions, autoreverses: true)) { pulse = true }
+            case .dashFlow:
+                visible = true
+                progress = 1
+                guard repetitions > 0 else { return }
+                withAnimation(.linear(duration: duration).repeatCount(repetitions, autoreverses: false)) { dashPhase = -72 }
+            case .fadeIn, .scaleIn:
+                progress = 1
+                withAnimation(base) { visible = true }
+            case .none:
+                visible = true
+                progress = 1
+            }
+        }
+    }
+
+    private func swiftUIAnimation() -> Animation {
+        switch command.animation?.easing ?? .easeInOut {
+        case .linear:
+            return .linear(duration: duration)
+        case .easeIn:
+            return .easeIn(duration: duration)
+        case .easeOut:
+            return .easeOut(duration: duration)
+        case .easeInOut:
+            return .easeInOut(duration: duration)
+        }
+    }
+}
+
+private struct LineShape: Shape {
+    let start: CGPoint
+    let end: CGPoint
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: start)
+        path.addLine(to: end)
+        return path
+    }
 }
 
 private struct ArrowShape: Shape {
@@ -132,6 +323,45 @@ private struct ArrowShape: Shape {
         path.addLine(to: pointA)
         path.move(to: end)
         path.addLine(to: pointB)
+        return path
+    }
+}
+
+private struct BraceShape: Shape {
+    let rect: CGRect
+
+    func path(in bounds: CGRect) -> Path {
+        var path = Path()
+        let x = rect.minX
+        let top = rect.minY
+        let bottom = rect.maxY
+        let midY = rect.midY
+        let width = min(max(rect.width * 0.12, 14), 34)
+        let curve = min(max(rect.height * 0.12, 10), 28)
+
+        path.move(to: CGPoint(x: x + width, y: top))
+        path.addCurve(
+            to: CGPoint(x: x, y: top + curve),
+            control1: CGPoint(x: x + width * 0.35, y: top),
+            control2: CGPoint(x: x, y: top + curve * 0.35)
+        )
+        path.addLine(to: CGPoint(x: x, y: midY - curve))
+        path.addCurve(
+            to: CGPoint(x: x + width, y: midY),
+            control1: CGPoint(x: x, y: midY - curve * 0.35),
+            control2: CGPoint(x: x + width * 0.35, y: midY)
+        )
+        path.addCurve(
+            to: CGPoint(x: x, y: midY + curve),
+            control1: CGPoint(x: x + width * 0.35, y: midY),
+            control2: CGPoint(x: x, y: midY + curve * 0.35)
+        )
+        path.addLine(to: CGPoint(x: x, y: bottom - curve))
+        path.addCurve(
+            to: CGPoint(x: x + width, y: bottom),
+            control1: CGPoint(x: x, y: bottom - curve * 0.35),
+            control2: CGPoint(x: x + width * 0.35, y: bottom)
+        )
         return path
     }
 }
