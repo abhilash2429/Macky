@@ -2,8 +2,8 @@
 //  CompanionScreenAnnotationUtility.swift
 //  leanring-buddy
 //
-//  Draws lightweight visual-scene markers onto screenshots before they are sent
-//  to GPT-Realtime. The annotated image keeps the original pixel dimensions.
+//  Legacy/debug helper for drawing visual-scene markers onto a screenshot.
+//  The normal realtime path sends raw screenshots instead.
 //
 
 import AppKit

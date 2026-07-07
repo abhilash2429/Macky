@@ -35,9 +35,6 @@ struct VisualScene: Codable {
                 "box": target.box.asArray,
                 "confidence": target.confidence
             ] as [String: Any]
-            if let marker = target.marker {
-                object["marker"] = marker
-            }
             if let label = target.label {
                 object["label"] = label
             }
@@ -47,7 +44,7 @@ struct VisualScene: Codable {
             "screen_width": screenWidth,
             "screen_height": screenHeight,
             "coordinate_space": coordinateSpace,
-            "marker_policy": "Markers shown in the screenshot map to real visible app/window targets. Use target IDs in show_visual_guidance; do not mention markers to the user.",
+            "usage_policy": "Optional Accessibility-derived targets. Reason from the raw screenshot first; use target IDs only when they clearly match visible UI. Do not mention target IDs to the user.",
             "targets": targetObjects
         ]
     }

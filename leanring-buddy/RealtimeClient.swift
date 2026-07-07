@@ -91,11 +91,11 @@ final class RealtimeClient: ObservableObject {
     private var pendingModelTranscript = ""
 
     /// Most recent screen capture from get_screen_context. The realtime model sees
-    /// these images directly and should build normal visual guidance from this
+    /// the raw image directly and should build normal visual guidance from this
     /// screenshot coordinate space; the canvas helper is fallback-only.
     private var latestScreenCaptures: [CompanionScreenCapture] = []
-    /// Main-display target map returned with get_screen_context. Visual guidance resolves
-    /// target IDs against this map before rendering so Macky stays the coordinate authority.
+    /// Optional target map returned with get_screen_context. It can help resolve target IDs,
+    /// but raw screenshot coordinates remain valid even when this is unavailable.
     private var latestVisualScene: VisualScene?
 
     /// The model's most recent spoken narration, captured from
@@ -259,27 +259,31 @@ final class RealtimeClient: ObservableObject {
     private func registerBuiltInTools() {
         registerTool(
             name: "get_screen_context",
-            description: "Capture a fresh screenshot when the user asks for help with what is on screen. The screenshot is attached to the realtime conversation so you can inspect it directly. Default captures the main display and returns main-display visual target IDs; visual overlays in this phase must use this default main-display capture. Set all_screens to true only for verbal comparison/context across displays, not for show_visual_guidance overlays.",
+            description: "Capture a fresh raw screenshot when the user asks for help with what is on screen. The screenshot is attached to the realtime conversation so you can inspect it directly. Default captures the display containing the cursor/current focus. Set all_screens to true only when the user explicitly asks about multiple displays.",
             schema: [
                 "type": "object",
                 "properties": [
                     "all_screens": [
                         "type": "boolean",
-                        "description": "Capture every connected display instead of just the main display. Default false. Do not set this for visual overlays; show_visual_guidance is main-display-only in this phase."
+                        "description": "Capture every connected display instead of just the cursor/current display. Default false."
                     ]
                 ]
             ]
         ) { [weak self] arguments in
             guard let self else { return "{\"error\": \"client unavailable\"}" }
             let allScreens = arguments["all_screens"] as? Bool ?? false
-            let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(cursorScreenOnly: false, mainScreenOnly: !allScreens)
-            let visualScene = allScreens ? nil : VisualSceneBuilder.buildMainDisplayScene()
+            let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(cursorScreenOnly: !allScreens, mainScreenOnly: false)
+            let visualScene = (!allScreens && captures.first.map(Self.isMainDisplayCapture) == true)
+                ? VisualSceneBuilder.buildMainDisplayScene()
+                : nil
             if let visualScene {
-                print("🧭 RealtimeClient: visual scene built — \(visualScene.targets.count) targets, annotated=true")
+                print("🧭 RealtimeClient: visual scene built — \(visualScene.targets.count) optional targets")
             } else if allScreens {
-                print("🧭 RealtimeClient: visual scene skipped — all_screens is verbal/context-only")
+                print("🧭 RealtimeClient: visual scene skipped — all_screens requested")
+            } else if captures.first.map(Self.isMainDisplayCapture) != true {
+                print("🧭 RealtimeClient: visual scene skipped — cursor display is not main display")
             } else {
-                print("⚠️ RealtimeClient: visual scene unavailable")
+                print("⚠️ RealtimeClient: visual scene unavailable; raw coordinates still allowed")
             }
             self.latestScreenCaptures = captures
             self.latestVisualScene = visualScene
@@ -366,8 +370,8 @@ final class RealtimeClient: ObservableObject {
             "type": "object",
             "properties": [
                 "title": ["type": "string"],
-                "source_width": ["type": "number", "description": "Width of the main-display screenshot coordinate space from get_screen_context."],
-                "source_height": ["type": "number", "description": "Height of the main-display screenshot coordinate space from get_screen_context."],
+                "source_width": ["type": "number", "description": "Width of the latest screenshot coordinate space from get_screen_context."],
+                "source_height": ["type": "number", "description": "Height of the latest screenshot coordinate space from get_screen_context."],
                 "steps": [
                     "type": "array",
                     "description": "Timed visual steps. Each step clears before the next by default.",
@@ -420,7 +424,7 @@ final class RealtimeClient: ObservableObject {
 
         registerTool(
             name: "show_visual_guidance",
-            description: "Show a timed full-screen teaching overlay on the main display with highlights, arrows, labels, polygons, circles, rings, spotlights, lines, braces, optional subtle animations, and optional safe cursor movement. Prefer target_id/from_target_id/to_target_id from get_screen_context visual_scene targets over raw coordinates. Use spotlight for focus, ring/circle for small targets, line when direction is not important, brace for grouping, and animation only when it improves understanding. Coordinates must use the latest main-display screenshot's top-left logical screen-point space: source_width and source_height must match the get_screen_context screenshot_width and screenshot_height. Do not use this for secondary-screen overlays in this phase.",
+            description: "Show a timed full-screen teaching overlay on the display captured by the latest get_screen_context call with highlights, arrows, labels, polygons, circles, rings, spotlights, lines, braces, optional subtle animations, and optional safe cursor movement. Reason from the raw screenshot first. You may use target_id/from_target_id/to_target_id from visual_scene when they clearly match visible UI, but raw coordinates are always valid. Coordinates must use the latest screenshot's top-left logical screen-point space: source_width and source_height must match the get_screen_context screenshot_width and screenshot_height.",
             schema: visualGuidanceSequenceSchema
         ) { [weak self] arguments in
             guard let self else { return "{\"error\": \"client unavailable\"}" }
@@ -447,19 +451,19 @@ final class RealtimeClient: ObservableObject {
     }
 
     private func resolvedVisualGuidanceSequence(_ sequence: VisualGuidanceSequence) throws -> VisualGuidanceSequence {
-        guard let visualScene = latestVisualScene else {
-            print("⚠️ RealtimeClient: visual guidance rejected — no main-display visual scene")
-            throw VisualGuidanceValidationError.visualSceneUnavailable
-        }
-        guard let sourceWidth = sequence.sourceWidth,
-              let sourceHeight = sequence.sourceHeight,
-              abs(sourceWidth - visualScene.screenWidth) <= 1,
-              abs(sourceHeight - visualScene.screenHeight) <= 1 else {
+        guard let capture = captureMatching(sequence: sequence),
+              let sourceWidth = sequence.sourceWidth,
+              let sourceHeight = sequence.sourceHeight else {
             print("⚠️ RealtimeClient: visual guidance rejected — source dimensions mismatch")
             throw VisualGuidanceValidationError.sourceDimensionMismatch
         }
 
-        let targets = visualScene.targetByID
+        let targets = latestVisualScene?.targetByID
+        if targets == nil && sequence.usesTargetReferences {
+            print("⚠️ RealtimeClient: visual guidance rejected — target IDs require visual_scene; use raw screenshot coordinates")
+            throw VisualGuidanceValidationError.visualSceneUnavailable
+        }
+
         let resolvedSteps = try sequence.steps.map { step in
             VisualGuidanceStep(
                 narrationCue: step.narrationCue,
@@ -472,16 +476,18 @@ final class RealtimeClient: ObservableObject {
 
         return try VisualGuidanceSequence(
             title: sequence.title,
-            sourceWidth: sequence.sourceWidth,
-            sourceHeight: sequence.sourceHeight,
+            sourceWidth: sourceWidth,
+            sourceHeight: sourceHeight,
+            displayFrame: sequence.displayFrame ?? capture.visualGuidanceDisplayFrame,
             steps: resolvedSteps
         ).validated()
     }
 
-    private func resolvedCanvasCommand(_ command: CanvasCommand, targets: [String: VisualTarget]) throws -> CanvasCommand {
+    private func resolvedCanvasCommand(_ command: CanvasCommand, targets: [String: VisualTarget]?) throws -> CanvasCommand {
         switch command.type {
         case .highlight, .circle, .ring, .spotlight, .brace:
             guard let targetId = command.targetId else { return command }
+            guard let targets else { throw VisualGuidanceValidationError.visualSceneUnavailable }
             guard let box = targets[targetId]?.box.insetBy(dx: 4, dy: 4) else {
                 print("⚠️ RealtimeClient: visual guidance target not found: \(targetId)")
                 throw VisualGuidanceValidationError.missingVisualTarget(targetId)
@@ -503,6 +509,7 @@ final class RealtimeClient: ObservableObject {
             )
         case .label:
             guard let targetId = command.targetId else { return command }
+            guard let targets else { throw VisualGuidanceValidationError.visualSceneUnavailable }
             guard let box = targets[targetId]?.box else {
                 print("⚠️ RealtimeClient: visual guidance target not found: \(targetId)")
                 throw VisualGuidanceValidationError.missingVisualTarget(targetId)
@@ -524,6 +531,7 @@ final class RealtimeClient: ObservableObject {
             )
         case .arrow, .line:
             guard let fromTargetId = command.fromTargetId, let toTargetId = command.toTargetId else { return command }
+            guard let targets else { throw VisualGuidanceValidationError.visualSceneUnavailable }
             guard let from = targets[fromTargetId]?.center else {
                 print("⚠️ RealtimeClient: visual guidance target not found: \(fromTargetId)")
                 throw VisualGuidanceValidationError.missingVisualTarget(fromTargetId)
@@ -550,6 +558,22 @@ final class RealtimeClient: ObservableObject {
         case .polygon:
             return command
         }
+    }
+
+    private func captureMatching(sequence: VisualGuidanceSequence) -> CompanionScreenCapture? {
+        guard let sourceWidth = sequence.sourceWidth,
+              let sourceHeight = sequence.sourceHeight else { return nil }
+        return latestScreenCaptures.first {
+            abs(Double($0.screenshotWidthInPixels) - sourceWidth) <= 1
+                && abs(Double($0.screenshotHeightInPixels) - sourceHeight) <= 1
+        }
+    }
+
+    private static func isMainDisplayCapture(_ capture: CompanionScreenCapture) -> Bool {
+        guard let mainDisplayID = NSScreen.main?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+            return false
+        }
+        return capture.displayID == mainDisplayID
     }
 
     private func visualSceneWidth() -> Double {
@@ -1299,24 +1323,22 @@ final class RealtimeClient: ObservableObject {
 
         Visual help mode:
         - When the user is stuck in an app, asks for help with "this", asks what to click, or asks to be \
-        taught/walked through something visible, immediately call get_screen_context for a fresh main-display screenshot. \
-        Do not set all_screens for visual overlays; secondary screens are verbal/context-only in this phase.
-        - You are the brain for visual help. First reason from the screenshot yourself. Do not pretend you can see \
+        taught/walked through something visible, immediately call get_screen_context for a fresh raw screenshot. \
+        Use all_screens only when the user explicitly asks about multiple displays.
+        - You are the brain for visual help. First reason from the raw screenshot yourself. Do not pretend you can see \
         the screen until get_screen_context has returned and the screenshot has been attached.
         - If the user only needs an explanation, answer from the screenshot in clear spoken language.
         - If the user needs visual teaching, build a short show_visual_guidance sequence yourself from the latest \
-        main-display screenshot. The screenshot may include small marker badges that correspond to visual_scene targets; \
-        use those markers only to choose target_id/from_target_id/to_target_id values, never as user-facing words. Prefer \
-        visual_scene target IDs over raw coordinates. Use the screenshot_width and screenshot_height returned by \
-        get_screen_context as source_width and source_height, and use top-left logical screen-point coordinates.
+        screenshot. Use the screenshot_width and screenshot_height returned by get_screen_context as source_width and \
+        source_height, and use top-left logical screen-point coordinates. Optional visual_scene targets may help when \
+        they clearly match visible UI, but raw coordinates from the screenshot are valid and often better.
         - Keep overlays simple and high-confidence: highlight obvious controls, draw arrows between clear points, \
         add short labels, outline irregular regions with polygons, use spotlight for focus, ring/circle for small \
         targets, line when direction is not important, and brace for grouping. Add subtle animation only when it \
         improves understanding, such as pulsing a drop zone or drawing/travelling an arrow. Do not over-animate. \
         If you are uncertain about exact coordinates, explain verbally instead of drawing a misleading overlay.
         - Do not make up coordinates beyond what you can reasonably infer from the attached screenshot and returned \
-        coordinate metadata. If visual_scene targets are present, choose their IDs instead of estimating boxes. Never speak \
-        raw coordinates, marker labels, or target IDs to the user.
+        coordinate metadata. Never speak raw coordinates or target IDs to the user.
         - generate_visual_guidance is slow fallback only. Use it only after get_screen_context when direct realtime \
         guidance is insufficient; if it returns visual_guidance_unavailable, describe the steps verbally instead.
         - Only allow cursor clicks for safe, low-risk clicks the user clearly asked for. Never click delete, \
@@ -1642,7 +1664,11 @@ final class RealtimeClient: ObservableObject {
                     "height": capture.displayFrame.height
                 ]
             ] as [String: Any]
-            if let visualScene, capture.displayWidthInPoints == Int(visualScene.screenWidth), capture.displayHeightInPoints == Int(visualScene.screenHeight) {
+            screen["display_id"] = capture.displayID
+            if let visualScene,
+               isMainDisplayCapture(capture),
+               capture.displayWidthInPoints == Int(visualScene.screenWidth),
+               capture.displayHeightInPoints == Int(visualScene.screenHeight) {
                 screen["visual_scene"] = visualScene.jsonObject
             }
             return screen
@@ -1651,7 +1677,7 @@ final class RealtimeClient: ObservableObject {
             "status": "captured",
             "screen_count": captures.count,
             "coordinate_space": "top_left_logical_screen_points",
-            "visual_guidance_display": "main_display_only",
+            "visual_guidance_display": "captured_display",
             "screens": screens
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
@@ -1671,12 +1697,11 @@ final class RealtimeClient: ObservableObject {
         var content: [[String: Any]] = []
         for capture in captures {
             if visualScene != nil {
-                content.append(["type": "input_text", "text": "\(capture.label) — annotated with visual_scene markers; use target IDs from the tool result, not marker text, when drawing overlays."])
+                content.append(["type": "input_text", "text": "\(capture.label) — raw screenshot. Optional visual_scene metadata is in the tool result; use it only if it clearly matches visible UI."])
             } else {
                 content.append(["type": "input_text", "text": capture.label])
             }
-            let imageData = CompanionScreenAnnotationUtility.annotatedJPEGData(from: capture.imageData, visualScene: visualScene)
-            let base64Image = imageData.base64EncodedString()
+            let base64Image = capture.imageData.base64EncodedString()
             content.append([
                 "type": "input_image",
                 "image_url": "data:image/jpeg;base64,\(base64Image)"

@@ -9,6 +9,12 @@ import AppKit
 import Combine
 import SwiftUI
 
+private extension CGRect {
+    var area: CGFloat {
+        isNull ? 0 : width * height
+    }
+}
+
 final class VisualGuidanceOverlayPanel: NSPanel {
     init(contentRect: NSRect) {
         super.init(
@@ -49,7 +55,7 @@ final class VisualGuidanceOverlayController: ObservableObject {
     func run(sequence: VisualGuidanceSequence) {
         do {
             let validated = try sequence.validated()
-            guard let screen = NSScreen.main else { return }
+            guard let screen = screen(for: validated) ?? NSScreen.main else { return }
             sourceSize = validated.coordinateSpace?.cgSize ?? screen.frame.size
             ensurePanel(on: screen)
             guardedBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
@@ -91,6 +97,21 @@ final class VisualGuidanceOverlayController: ObservableObject {
         panel?.orderOut(nil)
         stopObservingAppSwitches()
         guardedBundleIdentifier = nil
+    }
+
+    private func screen(for sequence: VisualGuidanceSequence) -> NSScreen? {
+        guard let displayFrame = sequence.displayFrame else { return nil }
+        if let displayID = displayFrame.displayID,
+           let screen = NSScreen.screens.first(where: { screen in
+               (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
+           }) {
+            return screen
+        }
+
+        let targetFrame = displayFrame.cgRect
+        return NSScreen.screens.max { lhs, rhs in
+            lhs.frame.intersection(targetFrame).area < rhs.frame.intersection(targetFrame).area
+        }
     }
 
     private func ensurePanel(on screen: NSScreen) {

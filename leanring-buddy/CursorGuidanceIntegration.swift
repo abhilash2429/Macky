@@ -33,8 +33,14 @@ enum CursorGuidanceIntegration {
     }
 
     static func appKitPoint(x: Double, y: Double, coordinateSpace: VisualGuidanceCoordinateSpace?) throws -> CGPoint {
-        guard let screen = NSScreen.main else { throw CursorGuidanceError.noMainScreen }
-        let frame = screen.frame
+        let frame: CGRect
+        if let displayFrame = coordinateSpace?.displayFrame?.cgRect {
+            frame = displayFrame
+        } else if let screen = NSScreen.main {
+            frame = screen.frame
+        } else {
+            throw CursorGuidanceError.noMainScreen
+        }
         let source = coordinateSpace?.cgSize ?? frame.size
         let normalizedX = CGFloat(x) / max(1, source.width)
         let normalizedY = CGFloat(y) / max(1, source.height)
@@ -67,10 +73,10 @@ enum CursorGuidanceIntegration {
     }
 
     // `NSEvent.mouseLocation` and AppKit screen frames use a bottom-left origin; CGEvent /
-    // CGWarpMouseCursorPosition expect a top-left origin on the primary display. This performs
-    // the single, correct flip. All AppKit points fed to CGEvent must go through here — do NOT
-    // add a second flip anywhere upstream, and do NOT multiply by a display scale factor (the
-    // screenshot is captured in logical points, so coordinates are already in logical space).
+    // CGWarpMouseCursorPosition expect a global top-left origin anchored to the primary display.
+    // This performs the single, correct flip. All AppKit points fed to CGEvent must go through
+    // here — do NOT add a second flip anywhere upstream, and do NOT multiply by a display scale
+    // factor (the screenshot is captured in logical points, so coordinates are already in logical space).
     private static func quartzPoint(fromAppKitPoint point: CGPoint) -> CGPoint {
         let mainBounds = CGDisplayBounds(CGMainDisplayID())
         return CGPoint(x: point.x, y: mainBounds.height - point.y)

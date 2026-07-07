@@ -14,11 +14,22 @@ struct CompanionScreenCapture {
     let imageData: Data
     let label: String
     let isCursorScreen: Bool
+    let displayID: CGDirectDisplayID
     let displayWidthInPoints: Int
     let displayHeightInPoints: Int
     let displayFrame: CGRect
     let screenshotWidthInPixels: Int
     let screenshotHeightInPixels: Int
+
+    var visualGuidanceDisplayFrame: VisualGuidanceDisplayFrame {
+        VisualGuidanceDisplayFrame(
+            x: Double(displayFrame.origin.x),
+            y: Double(displayFrame.origin.y),
+            width: Double(displayFrame.width),
+            height: Double(displayFrame.height),
+            displayID: displayID
+        )
+    }
 }
 
 @MainActor
@@ -27,11 +38,11 @@ enum CompanionScreenCaptureUtility {
     /// Captures connected displays as JPEG data, labeling each with whether the user's
     /// cursor is on that screen.
     ///
-    /// `mainScreenOnly` captures **only the main display**, which keeps visual-guidance
-    /// coordinates aligned with Macky's main-display overlay. `cursorScreenOnly` remains
-    /// available for older call sites, but visual teaching should prefer the main display.
-    /// Pass both flags as false only when the request is genuinely about more than one
-    /// screen. On a single-display Mac all paths are identical.
+    /// `cursorScreenOnly` captures the display the user is actively pointing at, which is
+    /// the default screen-context path. `mainScreenOnly` remains available for rare callers
+    /// that explicitly need the primary display. Pass both flags as false only when the
+    /// request is genuinely about more than one screen. On a single-display Mac all paths
+    /// are identical.
     static func captureAllScreensAsJPEG(cursorScreenOnly: Bool = true, mainScreenOnly: Bool = false) async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
@@ -132,6 +143,7 @@ enum CompanionScreenCaptureUtility {
                 imageData: jpegData,
                 label: screenLabel,
                 isCursorScreen: isCursorScreen,
+                displayID: display.displayID,
                 displayWidthInPoints: Int(displayFrame.width),
                 displayHeightInPoints: Int(displayFrame.height),
                 displayFrame: displayFrame,

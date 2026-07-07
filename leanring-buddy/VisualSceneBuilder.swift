@@ -2,7 +2,7 @@
 //  VisualSceneBuilder.swift
 //  leanring-buddy
 //
-//  Builds a conservative main-display target map for visual guidance.
+//  Builds a conservative main-display Accessibility target map for visual guidance.
 //
 
 import AppKit

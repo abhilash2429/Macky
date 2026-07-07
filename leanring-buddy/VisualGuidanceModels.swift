@@ -10,9 +10,30 @@
 import CoreGraphics
 import Foundation
 
+struct VisualGuidanceDisplayFrame: Codable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+    let displayID: UInt32?
+
+    enum CodingKeys: String, CodingKey {
+        case x
+        case y
+        case width
+        case height
+        case displayID = "display_id"
+    }
+
+    var cgRect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
 struct VisualGuidanceCoordinateSpace: Codable {
     let width: Double
     let height: Double
+    let displayFrame: VisualGuidanceDisplayFrame?
 
     var cgSize: CGSize {
         CGSize(width: max(1, width), height: max(1, height))
@@ -23,12 +44,14 @@ struct VisualGuidanceSequence: Codable {
     let title: String?
     let sourceWidth: Double?
     let sourceHeight: Double?
+    let displayFrame: VisualGuidanceDisplayFrame?
     let steps: [VisualGuidanceStep]
 
     enum CodingKeys: String, CodingKey {
         case title
         case sourceWidth = "source_width"
         case sourceHeight = "source_height"
+        case displayFrame = "display_frame"
         case steps
     }
 
@@ -36,7 +59,13 @@ struct VisualGuidanceSequence: Codable {
         guard let sourceWidth, let sourceHeight, sourceWidth > 0, sourceHeight > 0 else {
             return nil
         }
-        return VisualGuidanceCoordinateSpace(width: sourceWidth, height: sourceHeight)
+        return VisualGuidanceCoordinateSpace(width: sourceWidth, height: sourceHeight, displayFrame: displayFrame)
+    }
+
+    var usesTargetReferences: Bool {
+        steps.contains { step in
+            step.canvas.contains { $0.usesTargetReferences }
+        }
     }
 
     func validated(maxSteps: Int = 12) throws -> VisualGuidanceSequence {
@@ -46,6 +75,7 @@ struct VisualGuidanceSequence: Codable {
             title: title,
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
+            displayFrame: displayFrame,
             steps: try steps.map { try $0.validated() }
         )
     }
@@ -100,6 +130,10 @@ struct CanvasCommand: Codable {
     let fromTargetId: String?
     let toTargetId: String?
     let animation: CanvasAnimation?
+
+    var usesTargetReferences: Bool {
+        targetId?.isEmpty == false || fromTargetId?.isEmpty == false || toTargetId?.isEmpty == false
+    }
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -275,9 +309,9 @@ enum VisualGuidanceValidationError: LocalizedError {
         case .invalidAnimation:
             return "visual guidance animation is invalid"
         case .sourceDimensionMismatch:
-            return "visual guidance source dimensions do not match the latest main-display screenshot"
+            return "visual guidance source dimensions do not match the latest screenshot"
         case .visualSceneUnavailable:
-            return "call get_screen_context without all_screens before drawing visual overlays"
+            return "target IDs need visual_scene metadata; use raw screenshot coordinates instead"
         case .missingVisualTarget(let targetId):
             return "visual guidance target not found: \(targetId)"
         }
