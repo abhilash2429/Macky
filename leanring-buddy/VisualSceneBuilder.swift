@@ -17,8 +17,7 @@ enum VisualSceneBuilder {
 
     static func buildMainDisplayScene() -> VisualScene? {
         guard let screen = NSScreen.main else { return nil }
-        var targets = mackyTargets(on: screen)
-        targets.append(contentsOf: accessibilityTargets(on: screen, remaining: maxAccessibilityTargets))
+        let targets = accessibilityTargets(on: screen, remaining: maxAccessibilityTargets)
 
         return VisualScene(
             screenWidth: Double(screen.frame.width),
@@ -26,62 +25,6 @@ enum VisualSceneBuilder {
             coordinateSpace: coordinateSpace,
             targets: targets
         )
-    }
-
-    private static func mackyTargets(on screen: NSScreen) -> [VisualTarget] {
-        let size = screen.frame.size
-        let screenWidth = Double(size.width)
-        let screenHeight = Double(size.height)
-        let notchWidth = Double(NotchConstants.fallbackNotchWidth)
-        let notchHeight = Double(NSStatusBar.system.thickness)
-        let openWidth = Double(NotchConstants.windowSize.width)
-        let openHeight = Double(NotchConstants.windowSize.height)
-        let openX = (screenWidth - openWidth) / 2
-        let openY = 0.0
-        let dropZoneInset = 24.0
-        let askCardHeight = 54.0
-        let attachedChipsAllowance = 34.0
-        let dropZoneBox = VisualTargetBox(
-            x: openX + dropZoneInset,
-            y: openY + dropZoneInset,
-            width: max(1, openWidth - dropZoneInset * 2),
-            height: max(1, openHeight - dropZoneInset * 2 - askCardHeight - attachedChipsAllowance)
-        )
-
-        return [
-            VisualTarget(
-                id: "macky_notch",
-                kind: .mackyUI,
-                role: "assistant_notch",
-                label: "Macky notch",
-                marker: "M1",
-                box: VisualTargetBox(
-                    x: (screenWidth - notchWidth) / 2,
-                    y: 0,
-                    width: notchWidth,
-                    height: notchHeight
-                ),
-                confidence: 0.78
-            ),
-            VisualTarget(
-                id: "macky_open_panel_estimate",
-                kind: .mackyUI,
-                role: "assistant_panel",
-                label: "Macky open panel",
-                marker: "M2",
-                box: VisualTargetBox(x: openX, y: openY, width: openWidth, height: openHeight),
-                confidence: 0.75
-            ),
-            VisualTarget(
-                id: "macky_file_drop_zone",
-                kind: .mackyUI,
-                role: "file_drop_zone",
-                label: "Drop files here",
-                marker: "M3",
-                box: dropZoneBox,
-                confidence: 0.7
-            )
-        ]
     }
 
     private static func accessibilityTargets(on screen: NSScreen, remaining: Int) -> [VisualTarget] {

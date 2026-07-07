@@ -47,7 +47,7 @@ struct VisualScene: Codable {
             "screen_width": screenWidth,
             "screen_height": screenHeight,
             "coordinate_space": coordinateSpace,
-            "marker_policy": "Markers shown in the screenshot map to target IDs. Use target IDs in show_visual_guidance; do not mention markers to the user.",
+            "marker_policy": "Markers shown in the screenshot map to real visible app/window targets. Use target IDs in show_visual_guidance; do not mention markers to the user.",
             "targets": targetObjects
         ]
     }
@@ -68,7 +68,6 @@ struct VisualTarget: Codable {
 }
 
 enum VisualTargetKind: String, Codable {
-    case mackyUI = "macky_ui"
     case appWindow = "app_window"
     case accessibilityElement = "accessibility_element"
 }

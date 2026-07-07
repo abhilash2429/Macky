@@ -75,15 +75,13 @@ enum CompanionScreenAnnotationUtility {
         )
         guard rect.width >= 6, rect.height >= 6 else { return }
 
-        let color = target.kind == .mackyUI
-            ? NSColor.systemPurple
-            : (target.kind == .appWindow ? NSColor.systemOrange : NSColor.systemBlue)
+        let color = target.kind == .appWindow ? NSColor.systemOrange : NSColor.systemBlue
         let border = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
         color.withAlphaComponent(0.9).setStroke()
         border.lineWidth = 2
         border.stroke()
 
-        let fontSize = marker.hasPrefix("M") ? 11.0 : 10.0
+        let fontSize = 10.0
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
             .foregroundColor: NSColor.white
