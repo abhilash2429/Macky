@@ -289,6 +289,7 @@ enum VisualGuidanceValidationError: LocalizedError {
     case invalidCursorCommand
     case invalidAnimation
     case sourceDimensionMismatch
+    case coordinateOutOfBounds(String)
     case visualSceneUnavailable
     case missingVisualTarget(String)
 
@@ -310,6 +311,8 @@ enum VisualGuidanceValidationError: LocalizedError {
             return "visual guidance animation is invalid"
         case .sourceDimensionMismatch:
             return "visual guidance source dimensions do not match the latest screenshot"
+        case .coordinateOutOfBounds(let detail):
+            return "visual guidance coordinates are outside the latest screenshot coordinate space: \(detail). Retry using coordinates within the latest screenshot bounds."
         case .visualSceneUnavailable:
             return "target IDs need visual_scene metadata; use raw screenshot coordinates instead"
         case .missingVisualTarget(let targetId):

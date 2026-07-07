@@ -109,14 +109,10 @@ enum CompanionScreenCaptureUtility {
             let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
 
             let configuration = SCStreamConfiguration()
-            // Capture at the display's logical point dimensions, not a fixed 1280 cap.
-            // SCStreamConfiguration.width/height are in POINTS; ScreenCaptureKit scales the
-            // output image to exactly those point dimensions. On Retina the native capture
-            // is physical (2x), but setting the config to logical points yields a JPEG whose
-            // pixel dimensions equal the display's logical point space. That makes overlay and
-            // cursor coordinates map 1:1 to the screen with no further scaling. (This is
-            // numerically the same as dividing physical pixels by backingScaleFactor, but this
-            // is the correct mechanism — do NOT multiply by any scale factor.)
+            // Request the display's logical point dimensions, not a fixed 1280 cap.
+            // ScreenCaptureKit usually returns that requested size, but the actual CGImage
+            // dimensions remain the authoritative screenshot coordinate space for visual
+            // guidance. Do NOT multiply by a display scale factor here.
             configuration.width = Int(displayFrame.width)
             configuration.height = Int(displayFrame.height)
 
@@ -124,6 +120,11 @@ enum CompanionScreenCaptureUtility {
                 contentFilter: filter,
                 configuration: configuration
             )
+            let actualScreenshotWidth = cgImage.width
+            let actualScreenshotHeight = cgImage.height
+            if actualScreenshotWidth != configuration.width || actualScreenshotHeight != configuration.height {
+                print("⚠️ CompanionScreenCapture: requested \(configuration.width)x\(configuration.height), got \(actualScreenshotWidth)x\(actualScreenshotHeight), display points \(Int(displayFrame.width))x\(Int(displayFrame.height))")
+            }
 
             guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
                     .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
@@ -147,8 +148,8 @@ enum CompanionScreenCaptureUtility {
                 displayWidthInPoints: Int(displayFrame.width),
                 displayHeightInPoints: Int(displayFrame.height),
                 displayFrame: displayFrame,
-                screenshotWidthInPixels: configuration.width,
-                screenshotHeightInPixels: configuration.height
+                screenshotWidthInPixels: actualScreenshotWidth,
+                screenshotHeightInPixels: actualScreenshotHeight
             ))
         }
 

@@ -591,6 +591,7 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
           },
         ],
         text: { format: { type: "json_object" } },
+        reasoning: { effort: "medium" },
         max_output_tokens: 2000,
       }),
     });
@@ -646,12 +647,76 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
     return jsonResponse({ canvas_payload: null, error: "vision returned invalid JSON" });
   }
 
-  const steps = (sequence as { steps?: unknown } | null)?.steps;
-  if (!Array.isArray(steps) || steps.length === 0) {
-    return jsonResponse({ canvas_payload: null, error: "vision returned no steps" });
+  const validationError = validateCanvasVisionSequence(sequence, logicalWidth, logicalHeight);
+  if (validationError) {
+    return jsonResponse({ canvas_payload: null, error: validationError });
   }
 
   return jsonResponse({ canvas_payload: JSON.stringify(sequence), error: null });
+}
+
+function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, logicalHeight: number): string | null {
+  if (!sequence || typeof sequence !== "object") return "vision returned invalid sequence";
+  const candidate = sequence as { source_width?: unknown; source_height?: unknown; steps?: unknown };
+  if (candidate.source_width !== logicalWidth || candidate.source_height !== logicalHeight) {
+    return "vision returned mismatched source dimensions";
+  }
+  if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) {
+    return "vision returned no steps";
+  }
+  for (const [stepIndex, rawStep] of candidate.steps.entries()) {
+    if (!rawStep || typeof rawStep !== "object") return `vision returned invalid step ${stepIndex + 1}`;
+    const step = rawStep as { canvas?: unknown; cursor?: unknown };
+    if (!Array.isArray(step.canvas)) return `vision returned invalid canvas in step ${stepIndex + 1}`;
+    for (const [commandIndex, rawCommand] of step.canvas.entries()) {
+      const error = validateCanvasVisionCommand(rawCommand, logicalWidth, logicalHeight, `step ${stepIndex + 1} command ${commandIndex + 1}`);
+      if (error) return error;
+    }
+    if (step.cursor !== undefined) {
+      const cursor = step.cursor as { x?: unknown; y?: unknown };
+      if (!inBounds(cursor.x, cursor.y, logicalWidth, logicalHeight)) return `vision returned cursor out of bounds in step ${stepIndex + 1}`;
+    }
+  }
+  return null;
+}
+
+function validateCanvasVisionCommand(command: unknown, logicalWidth: number, logicalHeight: number, label: string): string | null {
+  if (!command || typeof command !== "object") return `vision returned invalid ${label}`;
+  const item = command as { type?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown; to_x?: unknown; to_y?: unknown; points?: unknown };
+  switch (item.type) {
+    case "highlight":
+    case "circle":
+    case "ring":
+    case "spotlight":
+    case "brace":
+      if (!rectInBounds(item.x, item.y, item.width, item.height, logicalWidth, logicalHeight)) return `vision returned out-of-bounds ${label}`;
+      break;
+    case "arrow":
+    case "line":
+      if (!inBounds(item.x, item.y, logicalWidth, logicalHeight) || !inBounds(item.to_x, item.to_y, logicalWidth, logicalHeight)) return `vision returned out-of-bounds ${label}`;
+      break;
+    case "label":
+      if (!inBounds(item.x, item.y, logicalWidth, logicalHeight)) return `vision returned out-of-bounds ${label}`;
+      break;
+    case "polygon":
+      if (!Array.isArray(item.points) || item.points.length < 3 || item.points.length > 16) return `vision returned invalid polygon ${label}`;
+      for (const point of item.points) {
+        const p = point as { x?: unknown; y?: unknown };
+        if (!inBounds(p.x, p.y, logicalWidth, logicalHeight)) return `vision returned out-of-bounds polygon ${label}`;
+      }
+      break;
+    default:
+      return `vision returned unsupported ${label}`;
+  }
+  return null;
+}
+
+function inBounds(x: unknown, y: unknown, logicalWidth: number, logicalHeight: number): boolean {
+  return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y) && x >= 0 && y >= 0 && x <= logicalWidth && y <= logicalHeight;
+}
+
+function rectInBounds(x: unknown, y: unknown, width: unknown, height: unknown, logicalWidth: number, logicalHeight: number): boolean {
+  return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y) && typeof width === "number" && Number.isFinite(width) && typeof height === "number" && Number.isFinite(height) && width > 0 && height > 0 && x >= 0 && y >= 0 && x + width <= logicalWidth && y + height <= logicalHeight;
 }
 
 /// The system prompt for the canvas vision model. Inlines the VisualGuidanceSequence schema
@@ -670,7 +735,7 @@ function canvasVisionSystemPrompt(logicalWidth: number, logicalHeight: number): 
     '    "duration_ms": integer (optional),',
     '    "clear_before_next": boolean (optional, default true),',
     '    "canvas": [ {',
-    '      "type": "highlight" | "arrow" | "label" | "polygon",',
+    '      "type": "highlight" | "arrow" | "label" | "polygon" | "circle" | "ring" | "spotlight" | "line" | "brace",',
     '      "x": number, "y": number,',
     '      "width": number, "height": number,   // highlight rect size',
     '      "to_x": number, "to_y": number,       // arrow head/tip',
