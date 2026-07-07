@@ -127,7 +127,7 @@ enum VisualSceneBuilder {
             kAXMenuButtonRole as String,
             kAXMenuItemRole as String,
             kAXTabGroupRole as String,
-            kAXLinkRole as String,
+            "AXLink",
             kAXWindowRole as String
         ]
         if usefulRoles.contains(target.role) { return true }
@@ -137,17 +137,16 @@ enum VisualSceneBuilder {
     private static func topLeftBox(for element: AXUIElement, on screen: NSScreen) -> VisualTargetBox? {
         var positionValue: CFTypeRef?
         var sizeValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
-              let positionAXValue = positionValue as? AXValue,
-              let sizeAXValue = sizeValue as? AXValue else { return nil }
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success else { return nil }
+        guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success else { return nil }
+        guard let positionAXValue = positionValue as! AXValue?,
+              let sizeAXValue = sizeValue as! AXValue? else { return nil }
 
         var position = CGPoint.zero
         var size = CGSize.zero
-        guard AXValueGetValue(positionAXValue, .cgPoint, &position),
-              AXValueGetValue(sizeAXValue, .cgSize, &size),
-              size.width > 0,
-              size.height > 0 else { return nil }
+        guard AXValueGetValue(positionAXValue, .cgPoint, &position) else { return nil }
+        guard AXValueGetValue(sizeAXValue, .cgSize, &size) else { return nil }
+        guard size.width > 0, size.height > 0 else { return nil }
 
         let frame = screen.frame
         let screenRect = CGRect(origin: .zero, size: frame.size)
@@ -156,10 +155,21 @@ enum VisualSceneBuilder {
             CGRect(origin: CGPoint(x: position.x - frame.minX, y: position.y), size: size)
         ]
 
-        guard let intersection = candidateRects
-            .map({ $0.intersection(screenRect) })
-            .filter({ !$0.isNull && $0.width > 0 && $0.height > 0 })
-            .max(by: { $0.width * $0.height < $1.width * $1.height }) else { return nil }
+        let intersections = candidateRects.map { $0.intersection(screenRect) }
+        var intersection: CGRect?
+        for candidate in intersections where !candidate.isNull && candidate.width > 0 && candidate.height > 0 {
+            if let current = intersection {
+                let currentArea = current.width * current.height
+                let candidateArea = candidate.width * candidate.height
+                if candidateArea > currentArea {
+                    intersection = candidate
+                }
+            } else {
+                intersection = candidate
+            }
+        }
+
+        guard let intersection else { return nil }
 
         let topLeftBox = VisualTargetBox(
             x: Double(intersection.minX),
@@ -170,9 +180,9 @@ enum VisualSceneBuilder {
         return topLeftBox.clamped(to: frame.size)
     }
 
-    private static func stringAttribute(_ attribute: CFString, from element: AXUIElement) -> String? {
+    private static func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         if let string = value as? String { return string }
         if let number = value as? NSNumber { return number.stringValue }
         return nil
