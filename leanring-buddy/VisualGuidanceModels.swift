@@ -296,7 +296,6 @@ enum CursorLabelPlacement: String, Codable {
 
 enum CursorCommandType: String, Codable {
     case move
-    case click
 }
 
 enum VisualGuidanceValidationError: LocalizedError {

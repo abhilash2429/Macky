@@ -3,7 +3,7 @@
 //  leanring-buddy
 //
 //  Local cursor guidance for visual teaching. Macky uses this only for pointing
-//  and low-risk clicks during an explicit help flow; no dragging or typing lives here.
+//  during an explicit help flow; no clicking, dragging, or typing lives here.
 //
 
 import AppKit
@@ -16,20 +16,6 @@ enum CursorGuidanceIntegration {
         let target = try appKitPoint(x: command.x, y: command.y, coordinateSpace: coordinateSpace)
         try await moveSmoothly(to: target, duration: command.duration)
         return "{\"status\": \"cursor moved\"}"
-    }
-
-    static func click(at command: CursorCommand, coordinateSpace: VisualGuidanceCoordinateSpace?) async throws -> String {
-        let target = try appKitPoint(x: command.x, y: command.y, coordinateSpace: coordinateSpace)
-        try await moveSmoothly(to: target, duration: command.duration)
-        let cgPoint = quartzPoint(fromAppKitPoint: target)
-        guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: cgPoint, mouseButton: .left),
-              let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: cgPoint, mouseButton: .left) else {
-            throw CursorGuidanceError.couldNotCreateEvent
-        }
-        down.post(tap: .cghidEventTap)
-        try? await Task.sleep(nanoseconds: 60_000_000)
-        up.post(tap: .cghidEventTap)
-        return "{\"status\": \"clicked\"}"
     }
 
     static func appKitPoint(x: Double, y: Double, coordinateSpace: VisualGuidanceCoordinateSpace?) throws -> CGPoint {
@@ -85,14 +71,11 @@ enum CursorGuidanceIntegration {
 
 enum CursorGuidanceError: LocalizedError {
     case noMainScreen
-    case couldNotCreateEvent
 
     var errorDescription: String? {
         switch self {
         case .noMainScreen:
             return "no main screen available"
-        case .couldNotCreateEvent:
-            return "could not create cursor event"
         }
     }
 }

@@ -15,8 +15,13 @@ struct VisualGuidanceOverlayView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
-                ForEach(Array(step.canvas.enumerated()), id: \.offset) { _, command in
-                    AnimatedCanvasCommandView(command: command, targetSize: geometry.size, sourceSize: sourceSize)
+                ForEach(spotlightCommands, id: \.id) { item in
+                    AnimatedCanvasCommandView(command: item.command, targetSize: geometry.size, sourceSize: sourceSize)
+                        .id(item.id)
+                }
+                ForEach(foregroundCommands, id: \.id) { item in
+                    AnimatedCanvasCommandView(command: item.command, targetSize: geometry.size, sourceSize: sourceSize)
+                        .id(item.id)
                 }
                 if let cursor = step.cursor,
                    let label = cursor.label?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -32,6 +37,25 @@ struct VisualGuidanceOverlayView: View {
         }
         .allowsHitTesting(false)
     }
+
+    private var spotlightCommands: [CanvasCommandRenderItem] {
+        renderItems.filter { $0.command.type == .spotlight }
+    }
+
+    private var foregroundCommands: [CanvasCommandRenderItem] {
+        renderItems.filter { $0.command.type != .spotlight }
+    }
+
+    private var renderItems: [CanvasCommandRenderItem] {
+        step.canvas.enumerated().map { index, command in
+            CanvasCommandRenderItem(id: "\(index)-\(command.renderIdentity)", command: command)
+        }
+    }
+}
+
+private struct CanvasCommandRenderItem {
+    let id: String
+    let command: CanvasCommand
 }
 
 private struct CursorCalloutLabel: View {
@@ -48,8 +72,11 @@ private struct CursorCalloutLabel: View {
         Text(text)
             .font(.system(size: 15, weight: .semibold, design: .rounded))
             .foregroundStyle(.white)
+            .lineLimit(3)
+            .multilineTextAlignment(.leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+            .frame(maxWidth: maxLabelWidth, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color.blue.opacity(0.92))
@@ -59,9 +86,12 @@ private struct CursorCalloutLabel: View {
                     .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
             )
             .shadow(color: Color.blue.opacity(0.42), radius: 12)
-            .fixedSize()
             .position(anchor)
             .transition(.opacity.combined(with: .scale(scale: 0.96)))
+    }
+
+    private var maxLabelWidth: CGFloat {
+        max(140, min(320, targetSize.width - 32))
     }
 
     private var anchor: CGPoint {
@@ -70,8 +100,9 @@ private struct CursorCalloutLabel: View {
             y: CGFloat(cursor.y) * targetSize.height / max(1, sourceSize.height)
         )
         let offset = offsetForPlacement
+        let halfWidth = maxLabelWidth / 2
         return CGPoint(
-            x: min(max(cursorPoint.x + offset.x, 80), max(80, targetSize.width - 80)),
+            x: min(max(cursorPoint.x + offset.x, halfWidth + 16), max(halfWidth + 16, targetSize.width - halfWidth - 16)),
             y: min(max(cursorPoint.y + offset.y, 24), max(24, targetSize.height - 24))
         )
     }
@@ -170,19 +201,14 @@ private struct AnimatedCanvasCommandView: View {
             }
         case .spotlight:
             if let rect = rect(for: command, in: targetSize) {
-                ZStack(alignment: .topLeading) {
-                    Color.black.opacity(0.34)
-                        .frame(width: targetSize.width, height: targetSize.height)
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.blue.opacity(0.12))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.blue.opacity(0.95), lineWidth: 3)
-                        )
-                        .shadow(color: Color.blue.opacity(0.65), radius: 22)
-                        .frame(width: rect.width, height: rect.height)
-                        .position(x: rect.midX, y: rect.midY)
-                }
+                SpotlightShape(cutout: rect, cornerRadius: 12)
+                    .fill(Color.black.opacity(0.34), style: FillStyle(eoFill: true))
+                    .frame(width: targetSize.width, height: targetSize.height)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.blue.opacity(0.95), lineWidth: 3)
+                    .shadow(color: Color.blue.opacity(0.65), radius: 22)
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
             }
         case .arrow:
             if let start = point(x: command.x, y: command.y, in: targetSize),
@@ -202,8 +228,11 @@ private struct AnimatedCanvasCommandView: View {
                 Text(label)
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
+                    .frame(maxWidth: labelMaxWidth(in: targetSize), alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .fill(Color.black.opacity(0.76))
@@ -213,7 +242,7 @@ private struct AnimatedCanvasCommandView: View {
                             .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
                     )
                     .shadow(color: .black.opacity(0.5), radius: 10)
-                    .position(anchor)
+                    .position(clampedLabelPosition(anchor, in: targetSize))
             }
         case .polygon:
             if let points = command.points, points.count >= 3 {
@@ -261,6 +290,18 @@ private struct AnimatedCanvasCommandView: View {
 
     private func scaleY(_ targetSize: CGSize) -> CGFloat {
         targetSize.height / max(1, sourceSize.height)
+    }
+
+    private func labelMaxWidth(in targetSize: CGSize) -> CGFloat {
+        max(140, min(360, targetSize.width - 32))
+    }
+
+    private func clampedLabelPosition(_ point: CGPoint, in targetSize: CGSize) -> CGPoint {
+        let halfWidth = labelMaxWidth(in: targetSize) / 2
+        return CGPoint(
+            x: min(max(point.x, halfWidth + 16), max(halfWidth + 16, targetSize.width - halfWidth - 16)),
+            y: min(max(point.y, 24), max(24, targetSize.height - 24))
+        )
     }
 
     @ViewBuilder
@@ -399,6 +440,18 @@ private struct ArrowShape: Shape {
     }
 }
 
+private struct SpotlightShape: Shape {
+    let cutout: CGRect
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addRect(rect)
+        path.addRoundedRect(in: cutout, cornerSize: CGSize(width: cornerRadius, height: cornerRadius))
+        return path
+    }
+}
+
 private struct BraceShape: Shape {
     let rect: CGRect
 
@@ -435,6 +488,51 @@ private struct BraceShape: Shape {
             control2: CGPoint(x: x + width * 0.35, y: bottom)
         )
         return path
+    }
+}
+
+private extension CanvasCommand {
+    var renderIdentity: String {
+        [
+            type.rawValue,
+            x.stableDescription,
+            y.stableDescription,
+            width.stableDescription,
+            height.stableDescription,
+            toX.stableDescription,
+            toY.stableDescription,
+            text ?? "",
+            targetId ?? "",
+            fromTargetId ?? "",
+            toTargetId ?? "",
+            points?.map { "\($0.x.stableDescription),\($0.y.stableDescription)" }.joined(separator: ";") ?? "",
+            animation?.renderIdentity ?? ""
+        ].joined(separator: "|")
+    }
+}
+
+private extension CanvasAnimation {
+    var renderIdentity: String {
+        [
+            type.rawValue,
+            durationMs?.description ?? "",
+            delayMs?.description ?? "",
+            repeatCount?.description ?? "",
+            easing?.rawValue ?? ""
+        ].joined(separator: "|")
+    }
+}
+
+private extension Optional where Wrapped == Double {
+    var stableDescription: String {
+        guard let self else { return "" }
+        return String(format: "%.3f", self)
+    }
+}
+
+private extension Double {
+    var stableDescription: String {
+        String(format: "%.3f", self)
     }
 }
 

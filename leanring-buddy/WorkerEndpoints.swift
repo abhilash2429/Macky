@@ -36,9 +36,9 @@ enum WorkerEndpoints {
 
     /// Visual-guidance vision route (`/canvas-vision`). When the realtime model asks for
     /// precise visual guidance, the app POSTs the latest screenshot JPEG + instruction +
-    /// logical dimensions; the Worker runs a vision model and returns a `canvas_payload`
+    /// logical dimensions; the Worker runs GPT-5.5 and returns a `canvas_payload`
     /// (VisualGuidanceSequence JSON). Keeps coordinate generation off the pure-proxy
-    /// `/realtime` socket without taking screen reasoning away from realtime.
+    /// `/realtime` socket.
     static let canvasVisionURL = URL(string: "\(httpsBase)/canvas-vision")!
 
     /// Versioned session side-channel foundation. The realtime socket remains a pure

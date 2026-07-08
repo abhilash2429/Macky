@@ -90,9 +90,9 @@ final class RealtimeClient: ObservableObject {
     /// assistant audio-transcript done event.
     private var pendingModelTranscript = ""
 
-    /// Most recent screen capture from get_screen_context. The realtime model sees
-    /// the raw image directly and should build normal visual guidance from this
-    /// screenshot coordinate space; the canvas helper is fallback-only.
+    /// Most recent screen capture from get_screen_context. The realtime model may
+    /// inspect the raw image for verbal answers, but precise overlay coordinates are
+    /// delegated to the slower GPT-5.5 canvas helper.
     private var latestScreenCaptures: [CompanionScreenCapture] = []
     /// Optional target map returned with get_screen_context. It can help resolve target IDs,
     /// but raw screenshot coordinates remain valid even when this is unavailable.
@@ -268,7 +268,7 @@ final class RealtimeClient: ObservableObject {
     private func registerBuiltInTools() {
         registerTool(
             name: "get_screen_context",
-            description: "Capture a fresh raw screenshot whenever the user asks for help with what is on screen, asks follow-up visual questions after time has passed, or the visible app/page may have changed. The screenshot is attached to the realtime conversation so you can inspect it directly. You can call this tool again at any time; do not claim you cannot request a new screenshot. Default captures the display containing the cursor/current focus. Set all_screens to true only when the user explicitly asks about multiple displays.",
+            description: "Capture a fresh raw screenshot whenever the user asks about what is on screen, needs app/page context, asks what something visible means, asks what to do next, asks follow-up visual questions after time has passed, or the visible app/page may have changed. The screenshot is attached to the realtime conversation so you can inspect it directly and answer verbally. You can call this tool again at any time; do not claim you cannot request a new screenshot. Default captures the display containing the cursor/current focus. Set all_screens to true only when the user explicitly asks about multiple displays. For precise overlay coordinates, call generate_visual_guidance after this instead of inventing canvas coordinates yourself.",
             schema: [
                 "type": "object",
                 "properties": [
@@ -301,9 +301,9 @@ final class RealtimeClient: ObservableObject {
                 print("🧪 ScreenContextDiagnostics displayID=\(capture.displayID) cursor=\(capture.isCursorScreen) displayPoints=\(capture.displayWidthInPoints)x\(capture.displayHeightInPoints) screenshot=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) displayFrame=\(capture.displayFrame.debugDescription) visualScene=\(visualScene?.screenWidth ?? -1)x\(visualScene?.screenHeight ?? -1) targets=\(visualScene?.targets.count ?? 0)")
             }
             // Images cannot live in a function_call_output, so attach them as a separate
-            // user message before the function result is sent. The realtime model remains
-            // the visual director: it sees the screen, decides what to say, and can call
-            // show_visual_guidance directly in this coordinate space.
+            // user message before the function result is sent. Realtime can still answer
+            // verbal screen questions from the raw image; coordinate-heavy overlay work
+            // is delegated to generate_visual_guidance.
             self.sendScreenContext(captures, visualScene: visualScene)
             return Self.screenCaptureResultJSON(captures, visualScene: visualScene)
         }
@@ -320,7 +320,7 @@ final class RealtimeClient: ObservableObject {
         var request = URLRequest(url: WorkerEndpoints.canvasVisionURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 15
+        request.timeoutInterval = 45
         let body: [String: Any] = [
             "jpegBase64": jpegBase64,
             "transcript": transcript,
@@ -336,91 +336,9 @@ final class RealtimeClient: ObservableObject {
     /// Registers the visual teaching tools used when Macky guides the user through
     /// visible app UI with a full-screen overlay and optional cursor movement.
     private func registerVisualGuidanceTools() {
-        let canvasAnimationSchema: [String: Any] = [
-            "type": "object",
-            "description": "Optional subtle animation. Use only when motion helps the user understand the action.",
-            "properties": [
-                "type": ["type": "string", "enum": ["none", "fade_in", "scale_in", "pulse", "draw", "travel", "dash_flow"]],
-                "duration_ms": ["type": "integer", "description": "100–2500 ms."],
-                "delay_ms": ["type": "integer", "description": "0–1500 ms."],
-                "repeat": ["type": "integer", "description": "0–5. Keep repeats low; avoid distracting loops."],
-                "easing": ["type": "string", "enum": ["linear", "ease_in", "ease_out", "ease_in_out"]]
-            ],
-            "required": ["type"]
-        ]
-
-        let canvasCommandSchema: [String: Any] = [
-            "type": "object",
-            "properties": [
-                "type": ["type": "string", "enum": ["highlight", "arrow", "label", "polygon", "circle", "ring", "spotlight", "line", "brace"]],
-                "x": ["type": "number"],
-                "y": ["type": "number"],
-                "width": ["type": "number"],
-                "height": ["type": "number"],
-                "to_x": ["type": "number"],
-                "to_y": ["type": "number"],
-                "text": ["type": "string"],
-                "target_id": ["type": "string", "description": "Preferred when a matching visual_scene target clearly exists: target ID to highlight or label."],
-                "from_target_id": ["type": "string", "description": "Preferred for arrows when matching visual_scene targets clearly exist: target ID where the arrow starts."],
-                "to_target_id": ["type": "string", "description": "Preferred for arrows when matching visual_scene targets clearly exist: target ID where the arrow ends."],
-                "animation": canvasAnimationSchema,
-                "points": [
-                    "type": "array",
-                    "items": [
-                        "type": "object",
-                        "properties": [
-                            "x": ["type": "number"],
-                            "y": ["type": "number"]
-                        ],
-                        "required": ["x", "y"]
-                    ]
-                ]
-            ],
-            "required": ["type"]
-        ]
-
-        let visualGuidanceSequenceSchema: [String: Any] = [
-            "type": "object",
-            "properties": [
-                "title": ["type": "string"],
-                "source_width": ["type": "number", "description": "Width of the latest screenshot coordinate space from get_screen_context."],
-                "source_height": ["type": "number", "description": "Height of the latest screenshot coordinate space from get_screen_context."],
-                "steps": [
-                    "type": "array",
-                    "description": "Timed visual steps. Each step clears before the next by default.",
-                    "items": [
-                        "type": "object",
-                        "properties": [
-                            "narration_cue": ["type": "string"],
-                            "duration_ms": ["type": "integer"],
-                            "clear_before_next": ["type": "boolean"],
-                            "canvas": [
-                                "type": "array",
-                                "items": canvasCommandSchema
-                            ],
-                            "cursor": [
-                                "type": "object",
-                                "properties": [
-                                    "type": ["type": "string", "enum": ["move", "click"]],
-                                    "x": ["type": "number"],
-                                    "y": ["type": "number"],
-                                    "duration_ms": ["type": "integer"],
-                                    "label": ["type": "string", "description": "Short callout text to show beside the cursor while it points at this UI element."],
-                                    "label_placement": ["type": "string", "enum": ["above", "below", "left", "right", "above_right", "below_right", "above_left", "below_left"], "description": "Where to place the cursor label relative to the cursor point. Default above_right."]
-                                ],
-                                "required": ["type", "x", "y"]
-                            ]
-                        ],
-                        "required": ["canvas"]
-                    ]
-                ]
-            ],
-            "required": ["source_width", "source_height", "steps"]
-        ]
-
         registerTool(
             name: "generate_visual_guidance",
-            description: "Fallback-only slow helper for visual guidance when you cannot confidently build a simple overlay yourself from the latest screenshot. Prefer calling show_visual_guidance directly using the latest screenshot's top-left logical coordinate space. If no screenshot is cached, this helper captures the cursor display itself. Use only when direct realtime guidance is insufficient.",
+            description: "Primary visual-guidance path. Call this after get_screen_context when the user wants screen teaching, what-to-click help, diagrams, coordinates, or an overlay. This sends the current screenshot to a slower GPT-5.5 vision model with higher spatial accuracy, validates the returned coordinates, and queues the overlay automatically. If no current-turn screenshot is cached, it captures the cursor display itself. Do not invent overlay coordinates in realtime.",
             schema: [
                 "type": "object",
                 "properties": [
@@ -435,21 +353,6 @@ final class RealtimeClient: ObservableObject {
             guard let self else { return "{\"error\": \"client unavailable\"}" }
             let guidanceRequest = (arguments["guidance_request"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             return await self.generateVisualGuidancePayload(guidanceRequest: guidanceRequest)
-        }
-
-        registerTool(
-            name: "show_visual_guidance",
-            description: "Show a timed full-screen teaching overlay on the display captured by the current turn's get_screen_context call with highlights, arrows, labels, polygons, circles, rings, spotlights, lines, braces, optional subtle animations, and optional safe cursor movement with cursor labels. Call get_screen_context first in the same user turn. Prefer target_id/from_target_id/to_target_id from visual_scene when they clearly match visible UI. For small buttons, icons, menu items, tabs, and other compact controls, prefer cursor.move with label/label_placement over a large highlight. Use raw coordinates only for simple high-confidence targets. For coordinate-heavy guidance, use generate_visual_guidance instead. Coordinates must use the latest screenshot's top-left logical screen-point space, stay within screenshot bounds, and source_width/source_height must match get_screen_context screenshot_width/screenshot_height.",
-            schema: visualGuidanceSequenceSchema
-        ) { [weak self] arguments in
-            guard let self else { return "{\"error\": \"client unavailable\"}" }
-            guard let callback = self.onVisualGuidanceSequenceRequested else {
-                return "{\"error\": \"visual guidance unavailable\"}"
-            }
-            let data = try JSONSerialization.data(withJSONObject: arguments)
-            let sequence = try JSONDecoder().decode(VisualGuidanceSequence.self, from: data)
-            let resolvedSequence = try self.resolvedVisualGuidanceSequence(sequence)
-            return await callback(resolvedSequence)
         }
 
         registerTool(
@@ -735,11 +638,11 @@ final class RealtimeClient: ObservableObject {
         return json
     }
 
-    /// Fallback path that sends the latest realtime-visible screen capture to the
-    /// canvas helper, then returns the generated sequence as JSON for the realtime
-    /// model to review and pass to `show_visual_guidance` when direct guidance is insufficient.
+    /// Sends the latest screen capture to GPT-5.5, validates the generated sequence,
+    /// and queues it for the app-level overlay. The realtime model narrates the
+    /// result but no longer authors coordinate-heavy canvas JSON itself.
     private func generateVisualGuidancePayload(guidanceRequest: String?) async -> String {
-        if latestScreenCaptures.isEmpty {
+        if latestScreenCaptures.isEmpty || latestScreenCaptureTurnGeneration != userTurnGeneration {
             do {
                 let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(cursorScreenOnly: true, mainScreenOnly: false)
                 let visualScene = captures.first.map(Self.isMainDisplayCapture) == true
@@ -747,6 +650,7 @@ final class RealtimeClient: ObservableObject {
                     : nil
                 latestScreenCaptures = captures
                 latestVisualScene = visualScene
+                latestScreenCaptureTurnGeneration = userTurnGeneration
                 for capture in captures {
                     print("🧪 VisualGuidanceSelfCaptureDiagnostics displayID=\(capture.displayID) cursor=\(capture.isCursorScreen) displayPoints=\(capture.displayWidthInPoints)x\(capture.displayHeightInPoints) screenshot=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) displayFrame=\(capture.displayFrame.debugDescription) visualScene=\(visualScene?.screenWidth ?? -1)x\(visualScene?.screenHeight ?? -1) targets=\(visualScene?.targets.count ?? 0)")
                 }
@@ -796,12 +700,65 @@ final class RealtimeClient: ObservableObject {
         }
 
         do {
-            _ = try sequence.validated()
-            return "{\"status\": \"visual_guidance_generated\", \"sequence\": \(canvasPayload)}"
+            let resolvedSequence = try resolvedVisualGuidanceSequence(sequence)
+            guard let callback = onVisualGuidanceSequenceRequested else {
+                return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"overlay unavailable\"}"
+            }
+            let callbackResult = await callback(resolvedSequence)
+            let summary = (payload["guidance_summary"] as? String) ?? (sequence.title ?? "Visual guide ready.")
+            let timeline = Self.visualGuidanceNarrationTimeline(from: resolvedSequence)
+            let response: [String: Any] = [
+                "status": "visual_guidance_queued",
+                "summary": summary,
+                "speech_owner": "realtime",
+                "diagram_owner": "queued_overlay_renderer",
+                "overlay_start": "with_next_realtime_audio",
+                "timeline": timeline,
+                "overlay_result": callbackResult
+            ]
+            return Self.compactJSON(response)
         } catch {
             print("⚠️ RealtimeClient: canvas-vision sequence was invalid: \(error.localizedDescription)")
             return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"visual guidance was invalid\"}"
         }
+    }
+
+    private static func visualGuidanceNarrationTimeline(from sequence: VisualGuidanceSequence) -> [[String: Any]] {
+        var elapsedMs = 0
+        return sequence.steps.enumerated().map { index, step in
+            let durationMs = Int(step.displayDurationNanoseconds / 1_000_000)
+            let startMs = elapsedMs
+            elapsedMs += durationMs
+
+            var item: [String: Any] = [
+                "step": index + 1,
+                "start_ms": startMs,
+                "end_ms": elapsedMs,
+                "explanation": Self.visualGuidanceNarrationCue(for: step),
+                "diagram_elements": step.canvas.map { $0.type.rawValue }
+            ]
+            if let cursorLabel = step.cursor?.label?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !cursorLabel.isEmpty {
+                item["cursor_label"] = cursorLabel
+            }
+            return item
+        }
+    }
+
+    private static func visualGuidanceNarrationCue(for step: VisualGuidanceStep) -> String {
+        if let narrationCue = step.narrationCue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !narrationCue.isEmpty {
+            return narrationCue
+        }
+        if let cursorLabel = step.cursor?.label?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cursorLabel.isEmpty {
+            return cursorLabel
+        }
+        if let label = step.canvas.compactMap({ $0.text?.trimmingCharacters(in: .whitespacesAndNewlines) }).first(where: { !$0.isEmpty }) {
+            return label
+        }
+        let elementNames = Array(Set(step.canvas.map { $0.type.rawValue })).sorted()
+        return elementNames.isEmpty ? "Explain this step." : "Explain the \(elementNames.joined(separator: " and "))."
     }
 
     /// Registers the Milestone 8 system-control tools (volume, Do Not Disturb,
@@ -1511,27 +1468,18 @@ final class RealtimeClient: ObservableObject {
         time has passed, or the visible app/page may have changed, immediately call get_screen_context for a fresh \
         raw screenshot in the same turn before drawing. You can request a new screenshot at any time; never claim you \
         cannot. Use all_screens only when the user explicitly asks about multiple displays.
-        - You are the brain for visual help. First reason from the raw screenshot yourself. Do not pretend you can see \
+        - You are the voice brain for screen understanding. First reason from the raw screenshot yourself. Do not pretend you can see \
         the screen until get_screen_context has returned and the screenshot has been attached.
-        - If the user only needs an explanation, answer from the screenshot in clear spoken language.
-        - If the user needs visual teaching, build a short show_visual_guidance sequence yourself from the latest \
-        screenshot. Use the screenshot_width and screenshot_height returned by get_screen_context as source_width and \
-        source_height, and use top-left logical screen-point coordinates inside those bounds. Prefer visual_scene target IDs \
-        when they clearly match visible UI. For small buttons, icons, menu items, tabs, and other compact controls, prefer \
-        cursor.move with a short cursor label/label_placement over a large highlight. Use raw coordinates only for simple \
-        high-confidence targets. For coordinate-heavy guidance, use generate_visual_guidance.
-        - Keep overlays simple and high-confidence: highlight obvious controls, draw arrows between clear points, \
-        add short labels, outline irregular regions with polygons, use spotlight for focus, ring/circle for small \
-        targets, line when direction is not important, and brace for grouping. Add subtle animation only when it \
-        improves understanding, such as pulsing a drop zone or drawing/travelling an arrow. Do not over-animate. \
-        If you are uncertain about exact coordinates, explain verbally instead of drawing a misleading overlay.
-        - Do not make up coordinates beyond what you can reasonably infer from the attached screenshot and returned \
-        coordinate metadata. Never speak raw coordinates or target IDs to the user.
-        - generate_visual_guidance is slow fallback only. Use it when direct realtime guidance is insufficient; if no \
-        screenshot is cached it can capture the cursor display itself. If it returns visual_guidance_unavailable, \
-        describe the steps verbally instead.
-        - Only allow cursor clicks for safe, low-risk clicks the user clearly asked for. Never click delete, \
-        publish, share, overwrite, invite, purchase, payment, submit, or other risky/destructive controls.
+        - Use get_screen_context broadly for screen-aware answers, visible app/page context, UI explanations, and verbal \
+        what-to-do-next help. If the user only needs an explanation, answer from the screenshot in clear spoken language.
+        - If the user needs visual teaching, diagrams, coordinate-specific help, or "show me where" guidance, call \
+        generate_visual_guidance. It uses GPT-5.5 vision for precise coordinates, validates the result, and queues the \
+        overlay automatically. Do not call another tool to draw it, and do not author overlay coordinates yourself.
+        - Never make up or speak raw coordinates, target IDs, JSON, or canvas commands. Use the generator's summary and \
+        timeline only to produce plain spoken guidance while the overlay appears. After generate_visual_guidance returns, \
+        you own the spoken explanation; the queued overlay starts with your next audio, so speak through the timeline in order.
+        - Visual guidance may move the cursor to point with a label, but it must not click for the user.
+        - If generate_visual_guidance returns visual_guidance_unavailable, describe the steps verbally instead.
         - Keep teaching clear and short. One idea per step. Time your narration to the visible overlay: say what you are highlighting while it is visible, do not say "drawing complete", and do not continue explaining after the overlay has moved on.
         - If the user says stop, cancel, clear the overlay, or never mind, call clear_visual_guidance and stop.
 

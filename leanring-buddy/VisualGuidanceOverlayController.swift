@@ -77,12 +77,7 @@ final class VisualGuidanceOverlayController: ObservableObject {
                     guard !Task.isCancelled else { return }
                     self.currentStep = step
                     if let cursor = step.cursor {
-                        switch cursor.type {
-                        case .move:
-                            _ = try? await CursorGuidanceIntegration.move(to: cursor, coordinateSpace: validated.coordinateSpace)
-                        case .click:
-                            _ = try? await CursorGuidanceIntegration.click(at: cursor, coordinateSpace: validated.coordinateSpace)
-                        }
+                        _ = try? await CursorGuidanceIntegration.move(to: cursor, coordinateSpace: validated.coordinateSpace)
                     }
                     try? await Task.sleep(nanoseconds: step.displayDurationNanoseconds)
                     if step.clearBeforeNext ?? true {

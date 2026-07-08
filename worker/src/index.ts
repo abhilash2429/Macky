@@ -16,7 +16,7 @@ export interface Env {
   // Public origin of this Worker, used to build the clickable https link in the
   // email (e.g. https://realtime-proxy.speedmac.workers.dev).
   PUBLIC_BASE_URL: string;
-  // Azure deployment name for the canvas vision model that generates visual-guidance
+  // Azure deployment name for the primary visual-guidance model that generates
   // coordinates from a screenshot. Defaults to "gpt-5.5" when unset. Runs on the same
   // Azure resource / api-key as the realtime endpoint.
   CANVAS_VISION_MODEL: string;
@@ -526,8 +526,7 @@ async function startPlayback(
 /// deeper coordinate help; we run a vision Responses API call on the same Azure resource as
 /// the realtime endpoint and return a VisualGuidanceSequence as `canvas_payload`. Keeping
 /// this off the realtime path preserves the pure-byte-proxy invariant for `/realtime`, while
-/// the realtime model remains the brain that sees the screenshot, decides whether this helper
-/// is needed, and chooses when to show the returned guide.
+/// the realtime model remains the voice brain that decides when visual guidance is needed.
 ///
 /// Success: { canvas_payload: "<sequence JSON string>", error: null }
 /// Failure: { canvas_payload: null, error: "<reason>" } (HTTP 200 so the app reads the
@@ -572,38 +571,55 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
     (transcript || "Help the user with what's currently on screen.") +
     `\n\nReturn the visual guide as JSON. Display logical dimensions: ${logicalWidth}x${logicalHeight}`;
 
-  let azureResponse: Response;
-  try {
-    azureResponse = await fetch(azureUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-key": env.AZURE_OPENAI_API_KEY,
-      },
-      body: JSON.stringify({
-        model: deployment,
-        instructions: systemPrompt,
-        input: [
+  const buildVisionRequestBody = (imageDetail: "original" | "high") => JSON.stringify({
+    model: deployment,
+    instructions: systemPrompt,
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: userText },
           {
-            role: "user",
-            content: [
-              { type: "input_text", text: userText },
-              {
-                type: "input_image",
-                image_url: `data:image/jpeg;base64,${jpegBase64}`,
-                detail: "high",
-              },
-            ],
+            type: "input_image",
+            image_url: `data:image/jpeg;base64,${jpegBase64}`,
+            detail: imageDetail,
           },
         ],
-        text: { format: { type: "json_object" } },
-        reasoning: { effort: "medium" },
-        max_output_tokens: 2000,
-      }),
-    });
+      },
+    ],
+    text: { format: { type: "json_object" } },
+    reasoning: { effort: "medium" },
+    max_output_tokens: 2600,
+  });
+
+  const fetchVisionResponse = (imageDetail: "original" | "high") => fetch(azureUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": env.AZURE_OPENAI_API_KEY,
+    },
+    body: buildVisionRequestBody(imageDetail),
+  });
+
+  let azureResponse: Response;
+  let usedImageDetail: "original" | "high" = "original";
+  try {
+    azureResponse = await fetchVisionResponse(usedImageDetail);
   } catch (err) {
     console.error("Canvas vision fetch failed", err);
     return jsonResponse({ canvas_payload: null, error: "vision request failed" });
+  }
+
+  if (!azureResponse.ok && azureResponse.status === 400) {
+    const originalDetailError = await azureResponse.text().catch(() => "");
+    console.warn("Canvas vision original detail rejected; retrying with high", originalDetailError);
+    usedImageDetail = "high";
+    try {
+      azureResponse = await fetchVisionResponse(usedImageDetail);
+    } catch (err) {
+      console.error("Canvas vision fallback fetch failed", err);
+      return jsonResponse({ canvas_payload: null, error: "vision request failed" });
+    }
   }
 
   if (!azureResponse.ok) {
@@ -657,6 +673,7 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   console.log("CanvasVisionDiagnostics response", {
     logicalWidth,
     logicalHeight,
+    imageDetail: usedImageDetail,
     sourceWidth: (sequence as { source_width?: unknown } | null)?.source_width,
     sourceHeight: (sequence as { source_height?: unknown } | null)?.source_height,
     steps: Array.isArray((sequence as { steps?: unknown } | null)?.steps) ? ((sequence as { steps?: unknown[] }).steps?.length ?? 0) : -1,
@@ -666,7 +683,19 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
     return jsonResponse({ canvas_payload: null, error: validationError });
   }
 
-  return jsonResponse({ canvas_payload: JSON.stringify(sequence), error: null });
+  const guidanceSummary = typeof (sequence as { summary?: unknown }).summary === "string"
+    ? (sequence as { summary: string }).summary
+    : null;
+  const timeline = Array.isArray((sequence as { timeline?: unknown }).timeline)
+    ? (sequence as { timeline: unknown[] }).timeline
+    : [];
+  return jsonResponse({
+    canvas_payload: JSON.stringify(sequence),
+    guidance_summary: guidanceSummary,
+    timeline,
+    image_detail: usedImageDetail,
+    error: null,
+  });
 }
 
 function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, logicalHeight: number): string | null {
@@ -678,17 +707,29 @@ function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, l
   if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) {
     return "vision returned no steps";
   }
+  if (candidate.steps.length > 12) {
+    return "vision returned too many steps";
+  }
   for (const [stepIndex, rawStep] of candidate.steps.entries()) {
     if (!rawStep || typeof rawStep !== "object") return `vision returned invalid step ${stepIndex + 1}`;
-    const step = rawStep as { canvas?: unknown; cursor?: unknown };
+    const step = rawStep as { canvas?: unknown; cursor?: unknown; duration_ms?: unknown };
     if (!Array.isArray(step.canvas)) return `vision returned invalid canvas in step ${stepIndex + 1}`;
+    if (step.canvas.length > 8) return `vision returned too many canvas commands in step ${stepIndex + 1}`;
+    if (step.duration_ms !== undefined && !integerInRange(step.duration_ms, 4000, 20000)) return `vision returned invalid duration in step ${stepIndex + 1}`;
     for (const [commandIndex, rawCommand] of step.canvas.entries()) {
       const error = validateCanvasVisionCommand(rawCommand, logicalWidth, logicalHeight, `step ${stepIndex + 1} command ${commandIndex + 1}`);
       if (error) return error;
     }
     if (step.cursor !== undefined) {
-      const cursor = step.cursor as { x?: unknown; y?: unknown };
+      const cursor = step.cursor as { type?: unknown; x?: unknown; y?: unknown; duration_ms?: unknown; label?: unknown; label_placement?: unknown };
+      if (cursor.type !== "move") return `vision returned unsupported cursor action in step ${stepIndex + 1}`;
       if (!inBounds(cursor.x, cursor.y, logicalWidth, logicalHeight)) return `vision returned cursor out of bounds in step ${stepIndex + 1}`;
+      if (cursor.duration_ms !== undefined && !integerInRange(cursor.duration_ms, 100, 2000)) return `vision returned invalid cursor duration in step ${stepIndex + 1}`;
+      if (cursor.label !== undefined && (typeof cursor.label !== "string" || cursor.label.trim() === "")) return `vision returned invalid cursor label in step ${stepIndex + 1}`;
+      if (cursor.label_placement !== undefined) {
+        const allowedPlacements = new Set(["above", "below", "left", "right", "above_right", "below_right", "above_left", "below_left"]);
+        if (typeof cursor.label_placement !== "string" || !allowedPlacements.has(cursor.label_placement)) return `vision returned invalid cursor label placement in step ${stepIndex + 1}`;
+      }
     }
   }
   return null;
@@ -696,7 +737,7 @@ function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, l
 
 function validateCanvasVisionCommand(command: unknown, logicalWidth: number, logicalHeight: number, label: string): string | null {
   if (!command || typeof command !== "object") return `vision returned invalid ${label}`;
-  const item = command as { type?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown; to_x?: unknown; to_y?: unknown; points?: unknown };
+  const item = command as { type?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown; to_x?: unknown; to_y?: unknown; points?: unknown; animation?: unknown };
   switch (item.type) {
     case "highlight":
     case "circle":
@@ -722,7 +763,29 @@ function validateCanvasVisionCommand(command: unknown, logicalWidth: number, log
     default:
       return `vision returned unsupported ${label}`;
   }
+  const animationError = validateCanvasVisionAnimation(item.animation, label);
+  if (animationError) return animationError;
   return null;
+}
+
+function validateCanvasVisionAnimation(animation: unknown, label: string): string | null {
+  if (animation === undefined) return null;
+  if (!animation || typeof animation !== "object") return `vision returned invalid animation for ${label}`;
+  const item = animation as { type?: unknown; duration_ms?: unknown; delay_ms?: unknown; repeat?: unknown; easing?: unknown };
+  const allowedTypes = new Set(["none", "fade_in", "scale_in", "pulse", "draw", "travel", "dash_flow"]);
+  if (typeof item.type !== "string" || !allowedTypes.has(item.type)) return `vision returned unsupported animation for ${label}`;
+  if (item.duration_ms !== undefined && !integerInRange(item.duration_ms, 100, 2500)) return `vision returned invalid animation duration for ${label}`;
+  if (item.delay_ms !== undefined && !integerInRange(item.delay_ms, 0, 1500)) return `vision returned invalid animation delay for ${label}`;
+  if (item.repeat !== undefined && !integerInRange(item.repeat, 0, 5)) return `vision returned invalid animation repeat for ${label}`;
+  if (item.easing !== undefined) {
+    const allowedEasing = new Set(["linear", "ease_in", "ease_out", "ease_in_out"]);
+    if (typeof item.easing !== "string" || !allowedEasing.has(item.easing)) return `vision returned unsupported animation easing for ${label}`;
+  }
+  return null;
+}
+
+function integerInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 }
 
 function inBounds(x: unknown, y: unknown, logicalWidth: number, logicalHeight: number): boolean {
@@ -741,12 +804,16 @@ function canvasVisionSystemPrompt(logicalWidth: number, logicalHeight: number): 
     "You generate a visual teaching overlay for a macOS screenshot.",
     "Return ONLY a valid JSON object matching this schema — no markdown fencing, no prose:",
     "{",
+    '  "summary": string,',
     '  "title": string (optional),',
     `  "source_width": number (set to ${logicalWidth}),`,
     `  "source_height": number (set to ${logicalHeight}),`,
+    '  "timeline": [ { "start_ms": integer, "end_ms": integer, "explanation": string } ],',
     '  "steps": [ {',
     '    "narration_cue": string (optional),',
-    '    "duration_ms": integer (optional),',
+    '    "duration_ms": integer (optional, 4000-20000),',
+    '    "start_ms": integer (optional),',
+    '    "end_ms": integer (optional),',
     '    "clear_before_next": boolean (optional, default true),',
     '    "canvas": [ {',
     '      "type": "highlight" | "arrow" | "label" | "polygon" | "circle" | "ring" | "spotlight" | "line" | "brace",',
@@ -754,16 +821,22 @@ function canvasVisionSystemPrompt(logicalWidth: number, logicalHeight: number): 
     '      "width": number, "height": number,   // highlight rect size',
     '      "to_x": number, "to_y": number,       // arrow head/tip',
     '      "text": string,                        // label text',
-    '      "points": [ { "x": number, "y": number } ]  // polygon (3-16 points)',
+    '      "points": [ { "x": number, "y": number } ], // polygon (3-16 points)',
+    '      "animation": { "type": "none" | "fade_in" | "scale_in" | "pulse" | "draw" | "travel" | "dash_flow", "duration_ms": integer, "delay_ms": integer, "repeat": integer, "easing": "linear" | "ease_in" | "ease_out" | "ease_in_out" }',
     "    } ],",
-    '    "cursor": { "type": "move" | "click", "x": number, "y": number, "duration_ms": integer, "label": string, "label_placement": "above" | "below" | "left" | "right" | "above_right" | "below_right" | "above_left" | "below_left" } (optional)',
+    '    "cursor": { "type": "move", "x": number, "y": number, "duration_ms": integer (100-2000), "label": string, "label_placement": "above" | "below" | "left" | "right" | "above_right" | "below_right" | "above_left" | "below_left" } (optional)',
     "  } ]",
     "}",
     "",
     `Coordinates are in LOGICAL SCREEN POINTS with a TOP-LEFT origin: x in 0..${logicalWidth}, y in 0..${logicalHeight}.`,
     "For an arrow, (x,y) is the TAIL where the arrow starts, and (to_x,to_y) is the HEAD/TIP pointing at the target UI element.",
     "For a highlight, (x,y) is the top-left corner and width/height size the box around the target.",
+    "Use spotlight only as a background focus layer; the renderer will keep labels and arrows above it.",
     "For small buttons or controls, prefer a cursor move with a short cursor label instead of a large highlight.",
+    "Use short labels. Prefer 1-5 words so labels fit on screen.",
+    "Use subtle animations only when they clarify the guide: draw/travel for arrows, pulse for a target, fade_in or scale_in for simple emphasis.",
+    "Never output cursor clicks. Use cursor.type=\"move\" only.",
+    "Include a short summary and timeline so the realtime voice model can narrate the guide without reading raw coordinates.",
     `Always set source_width=${logicalWidth} and source_height=${logicalHeight}.`,
     "Keep the sequence short and clear. Point precisely at the real on-screen UI elements.",
   ].join("\n");
