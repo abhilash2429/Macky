@@ -35,12 +35,12 @@ struct HotkeySettingsView: View {
             HStack {
                 HStack(spacing: 8) {
                     Image(systemName: "keyboard")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
                         .foregroundColor(DS.Colors.textTertiary)
                         .frame(width: 16)
 
                     Text("Push-to-talk")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: DS.PanelTypography.size(13), weight: .medium))
                         .foregroundColor(DS.Colors.textSecondary)
                 }
 
@@ -67,10 +67,10 @@ struct HotkeySettingsView: View {
         Button(action: startRecording) {
             HStack(spacing: 6) {
                 Text(displayConfig.displayText)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
                 Image(systemName: "pencil")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(9), weight: .semibold))
                     .foregroundColor(DS.Colors.textTertiary)
             }
             .padding(.horizontal, 10)
@@ -93,12 +93,12 @@ struct HotkeySettingsView: View {
     private var recordingIndicator: some View {
         HStack(spacing: 8) {
             Text(capturedModifiers.isEmpty ? "Press your shortcut…" : previewText)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
                 .foregroundColor(capturedModifiers.isEmpty ? DS.Colors.textTertiary : DS.Colors.accentText)
 
             Button(action: cancelRecording) {
                 Text("Cancel")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
             }
             .buttonStyle(.plain)
@@ -108,7 +108,7 @@ struct HotkeySettingsView: View {
 
     private var recordingHint: some View {
         Text("Hold a modifier combo (e.g. ctrl + option), then release to save.")
-            .font(.system(size: 10))
+            .font(.system(size: DS.PanelTypography.size(10)))
             .foregroundColor(DS.Colors.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
     }

@@ -42,17 +42,17 @@ struct AuthView: View {
 
             VStack(spacing: 6) {
                 Text("Welcome to Macky")
-                    .font(.system(size: 21, weight: .bold, design: .rounded))
+                    .font(.system(size: DS.PanelTypography.size(21), weight: .bold, design: .rounded))
                     .foregroundColor(DS.Colors.textPrimary)
                 Text("Sign in with your email to get started.")
-                    .font(.system(size: 12))
+                    .font(.system(size: DS.PanelTypography.size(12)))
                     .foregroundColor(DS.Colors.textSecondary)
             }
             .multilineTextAlignment(.center)
 
             TextField("you@example.com", text: $email)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(.system(size: DS.PanelTypography.size(13)))
                 .foregroundColor(DS.Colors.textPrimary)
                 .focused($emailFocused)
                 .padding(.horizontal, 13)
@@ -74,7 +74,7 @@ struct AuthView: View {
 
             if case let .error(message) = authManager.phase {
                 Text(message)
-                    .font(.system(size: 12))
+                    .font(.system(size: DS.PanelTypography.size(12)))
                     .foregroundColor(DS.Colors.destructiveText)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -88,7 +88,7 @@ struct AuthView: View {
                             .tint(DS.Colors.textOnAccent)
                     }
                     Text(authManager.phase == .sending ? "Sending…" : "Send magic link")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: DS.PanelTypography.size(13), weight: .semibold))
                         .foregroundColor(DS.Colors.textOnAccent)
                 }
                 .frame(maxWidth: .infinity)
@@ -105,9 +105,9 @@ struct AuthView: View {
             // Footer privacy reassurance.
             HStack(spacing: 6) {
                 Image(systemName: "lock")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(10), weight: .semibold))
                 Text("Your mic is on only while you hold the key.")
-                    .font(.system(size: 10))
+                    .font(.system(size: DS.PanelTypography.size(10)))
             }
             .foregroundColor(DS.Colors.textTertiary)
             .padding(.top, 2)
@@ -116,7 +116,7 @@ struct AuthView: View {
                 authManager.skipAuthenticationForNow()
             }
             .buttonStyle(.plain)
-            .font(.system(size: 12, weight: .medium))
+            .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
             .foregroundColor(DS.Colors.textTertiary)
             .frame(maxWidth: .infinity)
             .padding(.top, 2)
@@ -124,7 +124,7 @@ struct AuthView: View {
             .disabled(authManager.phase == .sending)
 
             Text("You can sign in later when magic-link auth is ready.")
-                .font(.system(size: 11))
+                .font(.system(size: DS.PanelTypography.size(11)))
                 .foregroundColor(DS.Colors.textTertiary)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
@@ -135,15 +135,15 @@ struct AuthView: View {
     private var checkEmailState: some View {
         VStack(spacing: 14) {
             Image(systemName: "envelope.badge")
-                .font(.system(size: 30, weight: .light))
+                .font(.system(size: DS.PanelTypography.size(30), weight: .light))
                 .foregroundColor(DS.Colors.accentText)
 
             Text("Check your email")
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: DS.PanelTypography.size(18), weight: .bold))
                 .foregroundColor(DS.Colors.textPrimary)
 
             Text("We sent a magic link to \(authManager.pendingEmail ?? "your inbox"). Open it to finish signing in.")
-                .font(.system(size: 13))
+                .font(.system(size: DS.PanelTypography.size(13)))
                 .foregroundColor(DS.Colors.textSecondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -155,7 +155,7 @@ struct AuthView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
                 .foregroundColor(DS.Colors.accentText)
                 .pointerCursor()
 
@@ -163,7 +163,7 @@ struct AuthView: View {
                     authManager.resetToInput()
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
                 .pointerCursor()
             }
@@ -179,7 +179,7 @@ struct AuthView: View {
             ProgressView()
                 .controlSize(.large)
             Text("Signing you in…")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(14), weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
         }
         .frame(maxWidth: .infinity)

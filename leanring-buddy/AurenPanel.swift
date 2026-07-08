@@ -107,7 +107,7 @@ private struct AssistantActivityCard: View {
                     .aspectRatio(contentMode: .fit)
                     .padding(3)
                     .frame(width: 26, height: 18)
-                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.white))
+                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(DS.Colors.surface3))
                     .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             } else {
                 VoiceActivityView(companionManager: companionManager, realtimeClient: companionManager.realtimeClient)
@@ -119,10 +119,10 @@ private struct AssistantActivityCard: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(companionManager.activeStatusText.isEmpty ? "Ready" : companionManager.activeStatusText)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold, design: .rounded))
                     .foregroundStyle(DS.Colors.textPrimary)
                 Text("Macky is working in the notch.")
-                    .font(.system(size: 9))
+                    .font(.system(size: DS.PanelTypography.size(9)))
                     .foregroundStyle(DS.Colors.textTertiary)
             }
             Spacer()
@@ -154,7 +154,7 @@ private struct BoringStyleMusicCard: View {
                     music.openActiveMusicApp()
                 } label: {
                     Label(music.activeAppName, systemImage: "arrow.up.forward.app")
-                        .font(.system(size: 8, weight: .medium))
+                        .font(.system(size: DS.PanelTypography.size(8), weight: .medium))
                         .foregroundStyle(.white.opacity(0.48))
                 }
                 .buttonStyle(.plain)
@@ -202,15 +202,15 @@ private struct BoringStyleMusicCard: View {
     private var songInfo: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(music.title)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .font(.system(size: DS.PanelTypography.size(13), weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
                 .lineLimit(1)
             Text(music.artist)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
                 .foregroundStyle(.white.opacity(0.58))
                 .lineLimit(1)
             Text(music.album)
-                .font(.system(size: 9))
+                .font(.system(size: DS.PanelTypography.size(9)))
                 .foregroundStyle(.white.opacity(0.36))
                 .lineLimit(1)
         }
@@ -239,7 +239,7 @@ private struct BoringStyleMusicCard: View {
                 Spacer()
                 Text(music.timeString(from: music.duration))
             }
-            .font(.system(size: 8, weight: .medium))
+            .font(.system(size: DS.PanelTypography.size(8), weight: .medium))
             .foregroundStyle(.white.opacity(0.42))
         }
     }
@@ -264,10 +264,10 @@ private struct MusicButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: isPrimary ? 12 : 10, weight: .semibold))
-                .foregroundStyle(isPrimary ? .black : (isActive ? .red : .white))
+                .font(.system(size: DS.PanelTypography.size(isPrimary ? 12 : 10), weight: .semibold))
+                .foregroundStyle(isPrimary ? DS.Colors.textOnAccent : (isActive ? DS.Colors.textPrimary : .white))
                 .frame(width: isPrimary ? 26 : 20, height: isPrimary ? 26 : 20)
-                .background(Circle().fill(isPrimary ? Color.white : Color.white.opacity(0.12)))
+                .background(Circle().fill(isPrimary ? DS.Colors.accent : Color.white.opacity(0.12)))
         }
         .buttonStyle(.plain)
     }
@@ -281,7 +281,7 @@ private struct CalendarCard: View {
         VStack(alignment: .leading, spacing: 9) {
             // Full month + year, matching the screenshot's "July 2026" heading.
             Text("\(selectedDate.formatted(.dateTime.month(.wide))) \(selectedDate.formatted(.dateTime.year()))")
-                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .font(.system(size: DS.PanelTypography.size(15), weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -302,11 +302,11 @@ private struct CalendarCard: View {
                             .frame(width: 3, height: 26)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(event.title)
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
                                 .foregroundStyle(DS.Colors.textPrimary)
                                 .lineLimit(1)
                             Text(event.timeString)
-                                .font(.system(size: 9))
+                                .font(.system(size: DS.PanelTypography.size(9)))
                                 .foregroundStyle(DS.Colors.textTertiary)
                         }
                         Spacer(minLength: 0)
@@ -346,10 +346,10 @@ private struct MackyWeekStrip: View {
                 } label: {
                     VStack(spacing: 6) {
                         Text(day.formatted(.dateTime.weekday(.narrow)))
-                            .font(.system(size: 9, weight: .medium))
+                            .font(.system(size: DS.PanelTypography.size(9), weight: .medium))
                             .foregroundStyle(DS.Colors.textTertiary)
                         Text(day.formatted(.dateTime.day()))
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: DS.PanelTypography.size(13), weight: .semibold))
                             .foregroundStyle(isSelected ? .white : DS.Colors.textPrimary.opacity(0.9))
                     }
                     .frame(maxWidth: .infinity)
@@ -372,7 +372,7 @@ private struct RemindersCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("Reminders")
-                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .font(.system(size: DS.PanelTypography.size(10), weight: .bold, design: .rounded))
                 .foregroundStyle(DS.Colors.textTertiary)
                 .textCase(.uppercase)
                 .tracking(1.2)
@@ -388,10 +388,10 @@ private struct RemindersCard: View {
                     } label: {
                         HStack(spacing: 9) {
                             Image(systemName: "circle")
-                                .font(.system(size: 12, weight: .light))
+                                .font(.system(size: DS.PanelTypography.size(12), weight: .light))
                                 .foregroundStyle(DS.Colors.textTertiary)
                             Text(reminder.title)
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
                                 .foregroundStyle(DS.Colors.textPrimary.opacity(0.9))
                                 .lineLimit(1)
                             Spacer()
@@ -414,10 +414,10 @@ private struct EmptyPanelLine: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
-                .font(.system(size: 10))
+                .font(.system(size: DS.PanelTypography.size(10)))
                 .foregroundStyle(.white.opacity(0.42))
             Text(title)
-                .font(.system(size: 9))
+                .font(.system(size: DS.PanelTypography.size(9)))
                 .foregroundStyle(.white.opacity(0.52))
             Spacer()
         }
@@ -469,11 +469,11 @@ private struct ConnectorsPanel: View {
     private var searchBar: some View {
         HStack(spacing: 9) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
                 .foregroundStyle(DS.Colors.textTertiary)
             TextField("Search 250+ connectors…", text: $searchText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(.system(size: DS.PanelTypography.size(12)))
                 .foregroundStyle(DS.Colors.textPrimary)
         }
         .padding(.horizontal, 14)
@@ -538,7 +538,7 @@ private enum MackyConnectorCatalog {
             icon: "envelope.fill",
             category: "Communication",
             description: "Draft, send, search, and summarize email from voice requests.",
-            accent: Color(hex: "#EA4335"),
+            accent: DS.Colors.accentText,
             badge: .popular(2),
             examples: ["Write a follow-up to John", "Find the latest client email", "Summarize unread mail"]
         ),
@@ -547,7 +547,7 @@ private enum MackyConnectorCatalog {
             icon: "number",
             category: "Communication",
             description: "Send messages, look up channels, and turn threads into next actions.",
-            accent: Color(hex: "#36C5F0"),
+            accent: DS.Colors.accentText,
             badge: .popular(9),
             examples: ["Send the standup update", "Catch me up on design", "Post a reminder"]
         ),
@@ -556,7 +556,7 @@ private enum MackyConnectorCatalog {
             icon: "calendar",
             category: "Planning",
             description: "Create meetings and inspect availability through Composio.",
-            accent: Color(hex: "#34A853"),
+            accent: DS.Colors.accentText,
             badge: .popular(3),
             examples: ["Schedule a call tomorrow", "Move my 3 PM meeting", "Find open time Friday"]
         ),
@@ -565,7 +565,7 @@ private enum MackyConnectorCatalog {
             icon: "doc.text.fill",
             category: "Knowledge",
             description: "Create pages, update notes, and pull workspace context into Macky.",
-            accent: Color.white.opacity(0.92),
+            accent: DS.Colors.accentText,
             badge: .popular(6),
             examples: ["Add this to product notes", "Find the launch checklist", "Create a meeting page"]
         ),
@@ -574,7 +574,7 @@ private enum MackyConnectorCatalog {
             icon: "chevron.left.forwardslash.chevron.right",
             category: "Developer",
             description: "Read issues, create pull requests, and work with repositories.",
-            accent: Color(hex: "#A78BFA"),
+            accent: DS.Colors.accentText,
             badge: .new,
             examples: ["Open a bug issue", "Summarize recent PRs", "Find failing checks"]
         ),
@@ -583,7 +583,7 @@ private enum MackyConnectorCatalog {
             icon: "line.3.horizontal.decrease.circle.fill",
             category: "Planning",
             description: "Create issues, inspect cycles, and keep project status moving.",
-            accent: Color(hex: "#5E6AD2"),
+            accent: DS.Colors.accentText,
             badge: .new,
             examples: ["Create a task for this", "Move it to in progress", "List urgent bugs"]
         ),
@@ -592,7 +592,7 @@ private enum MackyConnectorCatalog {
             icon: "music.note",
             category: "Media",
             description: "Control playback and use music context without leaving the notch.",
-            accent: Color(hex: "#1DB954"),
+            accent: DS.Colors.accentText,
             badge: .popular(4),
             examples: ["Play focus music", "Pause Spotify", "Skip this track"]
         )
@@ -632,7 +632,7 @@ private struct ConnectorGridCard: View {
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(connector.name)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: DS.PanelTypography.size(13), weight: .semibold))
                         .foregroundStyle(DS.Colors.textPrimary)
                         .lineLimit(1)
                     statusBadge
@@ -645,7 +645,7 @@ private struct ConnectorGridCard: View {
             }
 
             Text(connector.description)
-                .font(.system(size: 11))
+                .font(.system(size: DS.PanelTypography.size(11)))
                 .foregroundStyle(DS.Colors.textSecondary)
                 .lineSpacing(2)
                 .lineLimit(2)
@@ -677,7 +677,7 @@ private struct ConnectorGridCard: View {
         if isConnected {
             // Live, end-to-end connection: show a tick, no action needed.
             Image(systemName: "checkmark")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
                 .foregroundStyle(DS.Colors.success)
                 .frame(width: 30, height: 30)
                 .background(Circle().fill(DS.Colors.success.opacity(0.16)))
@@ -691,7 +691,7 @@ private struct ConnectorGridCard: View {
                 }
             } label: {
                 Image(systemName: pendingConnection != nil ? "arrow.triangle.2.circlepath" : "plus")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
                     .foregroundStyle(DS.Colors.textOnAccent)
                     .frame(width: 30, height: 30)
                     .background(Circle().fill(DS.Colors.accent))
@@ -719,7 +719,7 @@ private struct Badge: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(size: DS.PanelTypography.size(10), weight: .semibold))
             .foregroundStyle(foreground)
             .padding(.horizontal, 9)
             .padding(.vertical, 3)
@@ -741,8 +741,8 @@ private struct ConnectorIcon: View {
         let corner = min(11, size * 0.28)
         Group {
             if let logoImage {
-                // Official logo on a white tile so dark logos (Notion, GitHub) and
-                // multicolor logos alike stay crisp and legible on the dark panel.
+                // Official logo on a near-black tile so connector rows stay inside
+                // the panel's flat black palette.
                 Image(nsImage: logoImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -750,36 +750,23 @@ private struct ConnectorIcon: View {
                     .frame(width: size, height: size)
                     .background(
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .fill(Color.white)
+                            .fill(DS.Colors.surface3)
                     )
             } else {
-                // Fallback: the brand mark/letter in the brand color on a white tile,
-                // matching the official-logo treatment for toolkits without a bundled
-                // logo asset.
+                // Fallback: the brand mark/letter on the same near-black tile.
                 Image(systemName: connector.icon)
-                    .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(brandMarkColor)
+                    .font(.system(size: DS.PanelTypography.size(iconSize), weight: .semibold))
+                    .foregroundStyle(DS.Colors.textPrimary)
                     .frame(width: size, height: size)
                     .background(
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .fill(Color.white)
+                            .fill(DS.Colors.surface3)
                     )
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     }
 
-    /// The connector's brand accent, but never near-white — a white-ish mark on the
-    /// white tile would vanish, so those fall back to a legible dark ink.
-    private var brandMarkColor: Color {
-        guard let components = NSColor(connector.accent).usingColorSpace(.sRGB) else {
-            return connector.accent
-        }
-        let luminance = 0.299 * components.redComponent
-            + 0.587 * components.greenComponent
-            + 0.114 * components.blueComponent
-        return luminance > 0.82 ? DS.Colors.background : connector.accent
-    }
 }
 
 private struct SettingsPanel: View {
@@ -825,10 +812,10 @@ private struct SettingsPanel: View {
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: tab.icon)
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
                                 .frame(width: 14)
                             Text(tab.rawValue)
-                                .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                                .font(.system(size: DS.PanelTypography.size(11), weight: isSelected ? .semibold : .medium))
                             Spacer()
                         }
                         .foregroundStyle(isSelected ? DS.Colors.textPrimary : DS.Colors.textSecondary)
@@ -923,11 +910,11 @@ private struct SettingsPanel: View {
                     NSApp.terminate(nil)
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.red.opacity(0.85))
+                .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
+                .foregroundStyle(DS.Colors.destructiveText)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(DS.Colors.destructive))
             }
         }
     }
@@ -941,15 +928,15 @@ private struct SettingsInfoRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
                 .foregroundStyle(.white.opacity(0.58))
                 .frame(width: 16)
             Text(title)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
                 .foregroundStyle(.white.opacity(0.88))
             Spacer()
             Text(value)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(10), weight: .medium))
                 .foregroundStyle(.white.opacity(0.5))
         }
         .padding(.horizontal, 12)
@@ -963,7 +950,7 @@ private extension View {
     func mackySettingsButton() -> some View {
         self
             .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .semibold))
+            .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
             .foregroundStyle(.white.opacity(0.78))
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -979,15 +966,15 @@ private struct SettingsPermissionRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: granted ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 15, weight: granted ? .medium : .light))
+                .font(.system(size: DS.PanelTypography.size(15), weight: granted ? .medium : .light))
                 .foregroundStyle(granted ? DS.Colors.success : DS.Colors.textTertiary)
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
                 .foregroundStyle(DS.Colors.textPrimary)
             Spacer()
             if granted {
                 Text("Granted")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(10), weight: .semibold))
                     .foregroundStyle(DS.Colors.success)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
@@ -995,7 +982,7 @@ private struct SettingsPermissionRow: View {
             } else {
                 Button("Allow") { action() }
                     .buttonStyle(.plain)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(10), weight: .semibold))
                     .foregroundStyle(DS.Colors.textOnAccent)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
@@ -1021,10 +1008,10 @@ private struct PanelTitle: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .font(.system(size: DS.PanelTypography.size(19), weight: .bold, design: .rounded))
                 .foregroundStyle(DS.Colors.textPrimary)
             Text(subtitle)
-                .font(.system(size: 11))
+                .font(.system(size: DS.PanelTypography.size(11)))
                 .foregroundStyle(DS.Colors.textTertiary)
         }
         .padding(.bottom, 4)
@@ -1043,7 +1030,7 @@ private struct PanelSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .font(.system(size: DS.PanelTypography.size(10), weight: .bold, design: .rounded))
                 .foregroundStyle(DS.Colors.textTertiary)
                 .textCase(.uppercase)
                 .tracking(1.2)
@@ -1060,19 +1047,19 @@ private struct PendingConnectionRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(connection.toolkit.capitalized)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
                 .foregroundStyle(.white.opacity(0.9))
             Spacer()
             Button("Open link", action: onConnect)
                 .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.black)
+                .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
+                .foregroundStyle(DS.Colors.textOnAccent)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(Capsule().fill(Color.white))
+                .background(Capsule().fill(DS.Colors.accent))
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: DS.PanelTypography.size(9), weight: .bold))
                     .foregroundStyle(.white.opacity(0.45))
             }
             .buttonStyle(.plain)
@@ -1106,17 +1093,17 @@ struct ActivityRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(title)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
                         .foregroundStyle(DS.Colors.textPrimary)
                         .lineLimit(1)
                     Spacer()
                     Text(timeString)
-                        .font(.system(size: 10))
+                        .font(.system(size: DS.PanelTypography.size(10)))
                         .foregroundStyle(DS.Colors.textTertiary)
                 }
                 if isExpanded, let detail {
                     Text(detail)
-                        .font(.system(size: 10))
+                        .font(.system(size: DS.PanelTypography.size(10)))
                         .foregroundStyle(DS.Colors.textSecondary)
                 }
             }
@@ -1519,12 +1506,11 @@ final class AurenSidebarData: ObservableObject {
         let events = store.events(matching: predicate)
             .sorted { $0.startDate < $1.startDate }
             .map { event in
-                let nsColor = event.calendar.cgColor.flatMap { NSColor(cgColor: $0) } ?? .systemBlue
                 return CalEvent(
                     id: event.eventIdentifier ?? UUID().uuidString,
                     title: event.title ?? "(untitled)",
                     timeString: event.isAllDay ? "All day" : timeFormatter.string(from: event.startDate),
-                    color: Color(nsColor: nsColor)
+                    color: DS.Colors.accentText
                 )
             }
         selectedEvents = events

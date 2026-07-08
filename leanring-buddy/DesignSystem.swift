@@ -2,9 +2,9 @@
 //  DesignSystem.swift
 //  leanring-buddy
 //
-//  Centralized design system using a blue accent palette on dark surfaces,
-//  with a unified button style system. All colors, button styles, and
-//  interaction states are defined here as the single source of truth.
+//  Centralized design system using flat near-black surfaces with a unified
+//  button style system. All colors, button styles, and interaction states are
+//  defined here as the single source of truth.
 //
 
 import SwiftUI
@@ -25,143 +25,103 @@ enum DS {
         // Higher surfaces are lighter, creating a sense of depth.
 
         /// The deepest background — used for the main app window fill.
-        static let background = Color(hex: "#101211")
+        static let background = Color(hex: "#000000")
 
         /// First elevation layer — used for cards, sidebar, top bar backgrounds.
-        static let surface1 = Color(hex: "#171918")
+        static let surface1 = Color(hex: "#030303")
 
         /// Second elevation layer — used for input fields, elevated cards, chat bubbles.
-        static let surface2 = Color(hex: "#202221")
+        static let surface2 = Color(hex: "#060606")
 
         /// Third elevation layer — used for hover backgrounds on interactive elements.
-        static let surface3 = Color(hex: "#272A29")
+        static let surface3 = Color(hex: "#0A0A0A")
 
         /// Fourth elevation layer — used for active/pressed states on interactive elements.
-        static let surface4 = Color(hex: "#2E3130")
+        static let surface4 = Color(hex: "#0E0E0E")
 
         // ── Borders ──────────────────────────────────────────────────
 
         /// Subtle border — used for card outlines, dividers, input field borders.
-        static let borderSubtle = Color(hex: "#373B39")
+        static let borderSubtle = Color(hex: "#171717")
 
         /// Strong border — used for focused inputs, hovered card outlines.
-        static let borderStrong = Color(hex: "#444947")
+        static let borderStrong = Color(hex: "#252525")
 
         // ── Text ─────────────────────────────────────────────────────
 
         /// Primary text — main body text, titles, headings.
-        static let textPrimary = Color(hex: "#ECEEED")
+        static let textPrimary = Color(hex: "#F2F2F2")
 
         /// Secondary text — descriptions, hints, muted labels.
-        static let textSecondary = Color(hex: "#ADB5B2")
+        static let textSecondary = Color(hex: "#A3A3A3")
 
         /// Tertiary text — very muted, used for section labels, timestamps, disabled text.
-        static let textTertiary = Color(hex: "#6B736F")
+        static let textTertiary = Color(hex: "#5F5F5F")
 
-        /// Text used on top of the accent fill (#2563eb blue), like the primary button label.
-        /// White on #2563eb achieves ~5.1:1 contrast — WCAG AA compliant.
-        /// White on #1d4ed8 hover achieves ~6.5:1 — also WCAG AA compliant.
+        /// Text used on top of the near-black accent fill.
         static let textOnAccent: Color = .white
 
-        // ── Tailwind Blue Scale ─────────────────────────────────────
-        // Full Tailwind CSS v4 blue palette for consistent blue usage.
-        //
-        // Usage guide:
-        //   50–100  → Very subtle tinted backgrounds (selected rows, hover fills on dark surfaces)
-        //   200–300 → Light text/icons on dark backgrounds, disabled states
-        //   400     → Bright accent text, links, icons, chat user bubbles
-        //   500     → Mid-tone fills, badges, secondary buttons
-        //   600     → Primary action fills (buttons, toggles) — main accent
-        //   700     → Hover/pressed state for primary actions
-        //   800–900 → Deep backgrounds, dark overlays, header bars
-        //   950     → Deepest blue — near-black tinted backgrounds
-
-        static let blue50  = Color(hex: "#eff6ff")
-        static let blue100 = Color(hex: "#dbeafe")
-        static let blue200 = Color(hex: "#bfdbfe")
-        static let blue300 = Color(hex: "#93c5fd")
-        static let blue400 = Color(hex: "#60a5fa")
-        static let blue500 = Color(hex: "#3b82f6")
-        static let blue600 = Color(hex: "#2563eb")
-        static let blue700 = Color(hex: "#1d4ed8")
-        static let blue800 = Color(hex: "#1e40af")
-        static let blue900 = Color(hex: "#1e3a8a")
-        static let blue950 = Color(hex: "#172554")
-
-        // ── Accent (derived from blue scale) ───────────────────────
-        // The primary fill is Blue 600; hover darkens to Blue 700.
+        // ── Accent ─────────────────────────────────────────────────
 
         /// Accent fill — used for solid button backgrounds.
-        /// #2563eb → ~5.1:1 contrast with white text (WCAG AA).
-        static let accent = blue600
+        static let accent = Color(hex: "#101010")
 
-        /// Accent hover — slightly darker blue for hover state.
-        /// #1d4ed8 → ~6.5:1 contrast with white text (WCAG AA+).
-        static let accentHover = blue700
+        /// Accent hover — slightly lighter near-black for hover state.
+        static let accentHover = Color(hex: "#181818")
 
-        /// Accent text — bright blue used for accent-colored text and icons
-        /// on dark backgrounds (links, active nav items, highlighted labels).
-        static let accentText = blue400
+        /// Accent text — neutral light ink used for active text and icons.
+        static let accentText = Color(hex: "#D9D9D9")
 
         /// Very subtle accent tint — used for selected item backgrounds (e.g. current step
         /// in the sidebar). Low opacity so it doesn't overpower.
-        static let accentSubtle = blue500.opacity(0.10)
+        static let accentSubtle = Color.white.opacity(0.06)
 
         // ── Semantic Colors ──────────────────────────────────────────
 
-        /// Destructive/error actions — delete buttons, error messages, close button hover.
-        static let destructive = Color(hex: "#E5484D")        // Radix Red 9
+        /// Destructive/error actions — kept neutral for the flat black palette.
+        static let destructive = Color(hex: "#2A2A2A")
 
         /// Destructive hover state.
-        static let destructiveHover = Color(hex: "#F2555A")   // Radix Red 10
+        static let destructiveHover = Color(hex: "#343434")
 
-        /// Destructive used for text on dark backgrounds (brighter for readability).
-        static let destructiveText = Color(hex: "#FF6369")    // Radix Red 11
+        /// Destructive used for text on dark backgrounds.
+        static let destructiveText = Color(hex: "#D0D0D0")
 
         /// Success — checkmarks, granted status, completion indicators.
-        /// Independent green so success states are visually distinct from the blue accent.
-        static let success = Color(hex: "#34D399")      // Tailwind Emerald 400
+        static let success = Color(hex: "#D9D9D9")
 
         /// Warning — caution messages, manual verification failure explanations.
-        static let warning = Color(hex: "#FFB224")            // Radix Amber 9
+        static let warning = Color(hex: "#B8B8B8")
 
         /// Warning text — brighter variant for text on dark backgrounds.
-        static let warningText = Color(hex: "#F1A10D")        // Radix Amber 11
+        static let warningText = Color(hex: "#D0D0D0")
 
-        /// Info/feature highlight — used for prompt card headers, code highlights.
-        /// Lighter than accentText so informational elements are visually distinct
-        /// from interactive accent-colored elements.
-        static let info = Color(hex: "#70B8FF")               // Radix Blue 9
+        /// Info/feature highlight — kept neutral for the flat black palette.
+        static let info = Color(hex: "#CFCFCF")
 
-        /// Inline code text color — slightly brighter blue for monospace code snippets.
-        static let codeText = Color(hex: "#9DC2FF")           // Radix Blue 11 variant
+        /// Inline code text color.
+        static let codeText = Color(hex: "#D6D6D6")
 
         // ── Overlay Cursor ───────────────────────────────────────────
 
-        /// Legacy overlay blue retained for any future screen annotation surface.
-        /// Kept distinct from the accent since it serves a different purpose
-        /// (screen overlay vs in-app UI).
-        static let overlayCursorBlue = Color(hex: "#3380FF")
+        /// Neutral overlay color retained for any future screen annotation surface.
+        static let overlayCursorBlue = Color(hex: "#D9D9D9")
 
-        // ── Floating Button Gradient ─────────────────────────────────
+        // ── Legacy Floating Button Stops ─────────────────────────────
 
-        /// The floating session button gradient colors (unchanged from original —
-        /// this gradient is intentionally distinct from the rest of the palette
-        /// to make the floating button stand out as a "jewel" on the desktop).
-        static let floatingGradientPurple = Color(hex: "#8F46EB")
-        static let floatingGradientPink = Color(hex: "#E84D9E")
-        static let floatingGradientOrange = Color(hex: "#FF8C33")
+        /// Retained for older call sites; each stop is now near-black.
+        static let floatingGradientPurple = surface4
+        static let floatingGradientPink = surface3
+        static let floatingGradientOrange = surface2
 
         // ── Vocal Cord Waveform ──────────────────────────────────────
         // The four left-to-right bar colors for the voice waveform that lives
-        // in the notch flank. A cool-to-warm sweep (blue → violet → magenta →
-        // rose). Each has a matching glow variant at ~25% opacity for the soft
-        // halo behind its bar.
+        // in the notch flank, reduced to neutral grayscale.
 
-        static let vocalCordBlue = Color(hex: "#4F9CFF")
-        static let vocalCordViolet = Color(hex: "#8B7CFF")
-        static let vocalCordMagenta = Color(hex: "#C77DFF")
-        static let vocalCordRose = Color(hex: "#FF7DC4")
+        static let vocalCordBlue = Color(hex: "#F5F5F5")
+        static let vocalCordViolet = Color(hex: "#D6D6D6")
+        static let vocalCordMagenta = Color(hex: "#B8B8B8")
+        static let vocalCordRose = Color(hex: "#999999")
 
         static let vocalCordBlueGlow = vocalCordBlue.opacity(0.25)
         static let vocalCordVioletGlow = vocalCordViolet.opacity(0.25)
@@ -171,17 +131,15 @@ enum DS {
         // ── Help Chat ──────────────────────────────────────────────
 
         /// User message bubble background in the help chat.
-        /// Blue 800 — deep blue that's clearly distinct from the dark surface
-        /// while keeping white text highly readable (~9:1 contrast).
-        static let helpChatUserBubble = blue800
+        static let helpChatUserBubble = surface4
 
         /// Slightly lighter variant for hover/pressed states on user bubbles.
-        static let helpChatUserBubbleHover = blue700
+        static let helpChatUserBubbleHover = borderStrong
 
         /// Footer/backdrop behind the floating help chat.
         /// Slightly lighter than the main window background so the chat zone reads
         /// as a distinct docked surface even before the pill input is visible.
-        static let helpChatBackdrop = Color(hex: "#212121")
+        static let helpChatBackdrop = surface2
 
         // ── Disabled State ───────────────────────────────────────────
         // Following Material Design 3's disabled pattern:
@@ -196,6 +154,16 @@ enum DS {
         /// Disabled text/icon color.
         static var disabledText: Color {
             textPrimary.opacity(0.38)
+        }
+    }
+
+    // MARK: - Panel Typography
+
+    enum PanelTypography {
+        static let scale: CGFloat = 0.70
+
+        static func size(_ pointSize: CGFloat) -> CGFloat {
+            pointSize * scale
         }
     }
 
@@ -255,19 +223,8 @@ enum DS {
     // MARK: - Gradients
 
     enum Gradients {
-        /// A barely-there cool depth wash (blue → violet → clear) drawn over flat
-        /// black panel surfaces so they read with a hint of dimension instead of
-        /// dull black. Reuses the vocal-cord palette so it matches the notch theme.
-        /// Kept ≤0.10 opacity — a suggestion of color, not a tinted panel.
-        static let panelSubtle = LinearGradient(
-            colors: [
-                Colors.vocalCordBlue.opacity(0.10),
-                Colors.vocalCordViolet.opacity(0.06),
-                .clear
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        /// Flat panel fill. Kept in this namespace so existing call sites stay simple.
+        static let panelSubtle = Color.black
     }
 }
 
@@ -296,7 +253,7 @@ struct DSPrimaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 16, weight: .medium))
+            .font(.system(size: DS.PanelTypography.size(16), weight: .medium))
             .foregroundColor(DS.Colors.textOnAccent)
             .frame(maxWidth: isFullWidth ? .infinity : nil)
             .padding(.vertical, 14)
@@ -375,7 +332,7 @@ struct DSSecondaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 16, weight: .medium))
+            .font(.system(size: DS.PanelTypography.size(16), weight: .medium))
             .foregroundColor(DS.Colors.textPrimary)
             .frame(maxWidth: isFullWidth ? .infinity : nil)
             .padding(.vertical, 12)
@@ -412,7 +369,7 @@ struct DSTertiaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 16, weight: .medium))
+            .font(.system(size: DS.PanelTypography.size(16), weight: .medium))
             .foregroundColor(
                 configuration.isPressed
                     ? DS.Colors.accentHover
@@ -451,7 +408,7 @@ struct DSTertiaryButtonStyle: ButtonStyle {
 /// "skip", "cancel", and other truly minimal inline actions where a
 /// background would add too much visual weight.
 struct DSTextButtonStyle: ButtonStyle {
-    var fontSize: CGFloat = 14
+    var fontSize: CGFloat = DS.PanelTypography.size(14)
 
     @State private var isHovered = false
 
@@ -483,7 +440,7 @@ struct DSOutlinedButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 16, weight: .medium))
+            .font(.system(size: DS.PanelTypography.size(16), weight: .medium))
             .foregroundColor(DS.Colors.textPrimary)
             .frame(maxWidth: isFullWidth ? .infinity : nil)
             .padding(.vertical, 12)
@@ -534,7 +491,7 @@ struct DSDestructiveButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 16, weight: .medium))
+            .font(.system(size: DS.PanelTypography.size(16), weight: .medium))
             .foregroundColor(
                 isHovered || configuration.isPressed
                     ? .white
@@ -646,7 +603,7 @@ struct DSIconButtonStyle: ButtonStyle {
                 Group {
                     if isTooltipVisible, let text = tooltipText, !text.isEmpty {
                         Text(text)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
                             .foregroundColor(DS.Colors.textSecondary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
@@ -655,24 +612,8 @@ struct DSIconButtonStyle: ButtonStyle {
                                     .fill(DS.Colors.surface3.opacity(0.85))
                             )
                             .overlay(
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .stroke(Color.white.opacity(0.20), lineWidth: 0.8)
-
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .trim(from: 0, to: 0.5)
-                                        .stroke(
-                                            LinearGradient(
-                                                colors: [
-                                                    Color.white.opacity(0.10),
-                                                    Color.white.opacity(0.02)
-                                                ],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            ),
-                                            lineWidth: 0.8
-                                        )
-                                }
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
                             )
                             .shadow(color: Color.black.opacity(0.42), radius: 14, x: 0, y: 8)
                             .shadow(color: Color.black.opacity(0.26), radius: 4, x: 0, y: 2)
@@ -749,7 +690,7 @@ extension View {
     }
 
     /// Applies the text-only button style (no background ever, just color change).
-    func dsTextButtonStyle(fontSize: CGFloat = 14) -> some View {
+    func dsTextButtonStyle(fontSize: CGFloat = DS.PanelTypography.size(14)) -> some View {
         self.buttonStyle(DSTextButtonStyle(fontSize: fontSize))
     }
 
@@ -784,9 +725,9 @@ extension View {
 // MARK: - Buddy Composer Visual Style
 
 enum BuddyComposerVisualStyle {
-    static let waveformLeadingColor = Color(hex: "#F3FBFF")
-    static let waveformTrailingColor = Color(hex: "#8FD2FF")
-    static let waveformGlowColor = Color(hex: "#AEE3FF")
+    static let waveformLeadingColor = Color(hex: "#F5F5F5")
+    static let waveformTrailingColor = Color(hex: "#9C9C9C")
+    static let waveformGlowColor = Color(hex: "#D0D0D0")
 }
 
 // MARK: - Pointer Cursor (AppKit Bridge)

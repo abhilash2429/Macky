@@ -287,7 +287,7 @@ private struct MackyPanelHeader: View {
             MackyGlyphLogo(size: 15, glow: false)
 
             Text("Macky")
-                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .font(.system(size: DS.PanelTypography.size(12), weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
 
             Spacer()
@@ -310,7 +310,7 @@ private struct HeaderIcon: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
                 .foregroundStyle(isSelected ? .white : .white.opacity(0.6))
                 .frame(width: 27, height: 27)
                 .background(
@@ -516,27 +516,25 @@ private struct MackyOnboardingWelcomeView: View {
 
     var body: some View {
         ZStack {
-            MackyOnboardingGlow()
-
             VStack(spacing: 11) {
                 MackyGlyphLogo(size: 46, glow: true)
 
                 VStack(spacing: 3) {
                     Text("Macky")
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .font(.system(size: DS.PanelTypography.size(26), weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                     Text("Welcome")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: DS.PanelTypography.size(14), weight: .medium))
                         .foregroundStyle(.white.opacity(0.56))
                 }
 
                 Button(action: onContinue) {
                     Text("Get started")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.black)
+                        .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
+                        .foregroundStyle(DS.Colors.textOnAccent)
                         .padding(.horizontal, 18)
                         .padding(.vertical, 7)
-                        .background(Capsule().fill(.white))
+                        .background(Capsule().fill(DS.Colors.accent))
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 9)
@@ -556,7 +554,7 @@ private struct MackyOnboardingPermissionView: View {
         VStack(spacing: 15) {
             // 54px rounded icon tile with a soft accent wash.
             Image(systemName: isGranted ? "checkmark.circle.fill" : step.icon)
-                .font(.system(size: 22, weight: .semibold))
+                .font(.system(size: DS.PanelTypography.size(22), weight: .semibold))
                 .foregroundStyle(isGranted ? DS.Colors.success : DS.Colors.accentText)
                 .frame(width: 54, height: 54)
                 .background(
@@ -571,11 +569,11 @@ private struct MackyOnboardingPermissionView: View {
 
             VStack(spacing: 7) {
                 Text(step.title)
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .font(.system(size: DS.PanelTypography.size(22), weight: .bold, design: .rounded))
                     .foregroundStyle(DS.Colors.textPrimary)
 
                 Text(step.description)
-                    .font(.system(size: 12))
+                    .font(.system(size: DS.PanelTypography.size(12)))
                     .foregroundStyle(DS.Colors.textSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -585,10 +583,10 @@ private struct MackyOnboardingPermissionView: View {
             if !step.privacyNote.isEmpty {
                 HStack(alignment: .center, spacing: 8) {
                     Image(systemName: "lock.shield")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
                         .foregroundStyle(DS.Colors.textTertiary)
                     Text(step.privacyNote)
-                        .font(.system(size: 10))
+                        .font(.system(size: DS.PanelTypography.size(10)))
                         .foregroundStyle(DS.Colors.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -601,12 +599,12 @@ private struct MackyOnboardingPermissionView: View {
             HStack(spacing: 11) {
                 Button("Not now", action: onSkip)
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
                     .foregroundStyle(DS.Colors.textSecondary)
 
                 Button(action: onAllow) {
                     Text(isGranted ? "Continue" : "Allow access")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 9)
@@ -618,7 +616,7 @@ private struct MackyOnboardingPermissionView: View {
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(MackyOnboardingGlow().opacity(0.58))
+        .background(Color.black)
     }
 }
 
@@ -630,7 +628,7 @@ private struct MackyOnboardingHotkeyView: View {
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "keyboard")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: DS.PanelTypography.size(20), weight: .semibold))
                 .foregroundStyle(DS.Colors.accentText)
                 .frame(width: 46, height: 46)
                 .background(
@@ -644,10 +642,10 @@ private struct MackyOnboardingHotkeyView: View {
 
             VStack(spacing: 5) {
                 Text("Set push-to-talk")
-                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .font(.system(size: DS.PanelTypography.size(17), weight: .bold, design: .rounded))
                     .foregroundStyle(DS.Colors.textPrimary)
                 Text("This shortcut is the only trigger you need; setup stays in the panel.")
-                    .font(.system(size: 10))
+                    .font(.system(size: DS.PanelTypography.size(10)))
                     .foregroundStyle(DS.Colors.textSecondary)
                     .multilineTextAlignment(.center)
             }
@@ -664,24 +662,24 @@ private struct MackyOnboardingHotkeyView: View {
             HStack(spacing: 9) {
                 Button("Skip", action: onSkip)
                     .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
                     .foregroundStyle(.white.opacity(0.62))
                     .padding(.horizontal, 13)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.white.opacity(0.08)))
+                    .background(Capsule().fill(DS.Colors.surface3))
 
                 Button("Continue", action: onContinue)
                     .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.black)
+                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
+                    .foregroundStyle(DS.Colors.textOnAccent)
                     .padding(.horizontal, 15)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(.white))
+                    .background(Capsule().fill(DS.Colors.accent))
             }
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(MackyOnboardingGlow().opacity(0.58))
+        .background(Color.black)
     }
 }
 
@@ -692,7 +690,7 @@ private struct MackyOnboardingFinishedView: View {
     var body: some View {
         VStack(spacing: 11) {
             Image(systemName: "sparkles")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: DS.PanelTypography.size(20), weight: .semibold))
                 .foregroundStyle(DS.Colors.accentText)
                 .frame(width: 46, height: 46)
                 .background(
@@ -705,46 +703,28 @@ private struct MackyOnboardingFinishedView: View {
                 )
 
             Text("You're all set")
-                .font(.system(size: 21, weight: .bold, design: .rounded))
+                .font(.system(size: DS.PanelTypography.size(21), weight: .bold, design: .rounded))
                 .foregroundStyle(DS.Colors.textPrimary)
 
             Text(hasAllPermissions ? "Macky is ready in the notch." : "You can finish now and grant remaining access later in panel settings.")
-                .font(.system(size: 10))
+                .font(.system(size: DS.PanelTypography.size(10)))
                 .foregroundStyle(DS.Colors.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 340)
 
             Button(action: onFinish) {
                 Text("Start using Macky")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.black)
+                    .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
+                    .foregroundStyle(DS.Colors.textOnAccent)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 8)
-                    .background(Capsule().fill(.white))
+                    .background(Capsule().fill(DS.Colors.accent))
             }
             .buttonStyle(.plain)
             .padding(.top, 6)
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(MackyOnboardingGlow())
-    }
-}
-
-private struct MackyOnboardingGlow: View {
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(DS.Colors.accentText.opacity(0.20))
-                .frame(width: 220, height: 220)
-                .blur(radius: 38)
-                .offset(y: -34)
-            Circle()
-                .fill(Color.white.opacity(0.08))
-                .frame(width: 130, height: 130)
-                .blur(radius: 28)
-                .offset(x: -82, y: 70)
-        }
-        .allowsHitTesting(false)
+        .background(Color.black)
     }
 }

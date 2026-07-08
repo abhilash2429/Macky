@@ -69,7 +69,7 @@ struct AurenStatusBar: View {
         ZStack {
             if !text.isEmpty {
                 Text(text)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.9))
                     .lineLimit(1)
                     .truncationMode(.tail)

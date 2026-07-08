@@ -56,16 +56,16 @@ struct SubAgentProgressView: View {
                 MackyGlyphLogo(size: 22, glow: true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(state.taskTitle)
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .font(.system(size: DS.PanelTypography.size(13), weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                     Text(state.agentName)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: DS.PanelTypography.size(10), weight: .medium))
                         .foregroundStyle(.white.opacity(0.56))
                 }
                 Spacer()
                 Button(action: onToggleExpanded) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: DS.PanelTypography.size(11), weight: .bold))
                         .foregroundStyle(.white.opacity(0.7))
                 }
                 .buttonStyle(.plain)
@@ -75,10 +75,10 @@ struct SubAgentProgressView: View {
                 ForEach(state.completedSteps, id: \.self) { step in
                     HStack(spacing: 7) {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: DS.PanelTypography.size(10), weight: .semibold))
                             .foregroundStyle(DS.Colors.success)
                         Text(step)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
                             .foregroundStyle(.white.opacity(0.74))
                     }
                 }
@@ -86,14 +86,14 @@ struct SubAgentProgressView: View {
                     DotMatrixLoaderView()
                         .frame(width: 24, height: 10)
                     Text(state.currentStep)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
                         .foregroundStyle(.white)
                 }
             }
 
             Button(action: onCancel) {
                 Text("Cancel")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
                     .foregroundStyle(.white.opacity(0.88))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)

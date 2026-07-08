@@ -41,13 +41,13 @@ struct AurenFileDropPanel: View {
     private var dropZone: some View {
         VStack(spacing: 9) {
             Image(systemName: "arrow.up.to.line")
-                .font(.system(size: 26, weight: .light))
+                .font(.system(size: DS.PanelTypography.size(26), weight: .light))
                 .foregroundStyle(DS.Colors.textSecondary)
             Text("Drop files here")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: DS.PanelTypography.size(14), weight: .semibold))
                 .foregroundStyle(DS.Colors.textSecondary)
             Text("or drag straight onto the notch to attach")
-                .font(.system(size: 10))
+                .font(.system(size: DS.PanelTypography.size(10)))
                 .foregroundStyle(DS.Colors.textTertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -86,13 +86,13 @@ struct AurenFileDropPanel: View {
         HStack(spacing: 10) {
             TextField("Ask something about these files…", text: $promptText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(.system(size: DS.PanelTypography.size(12)))
                 .foregroundStyle(DS.Colors.textPrimary)
                 .onSubmit { sendIfReady() }
 
             Button { sendIfReady() } label: {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: DS.PanelTypography.size(13), weight: .semibold))
                     .foregroundStyle(DS.Colors.textOnAccent)
                     .frame(width: 29, height: 29)
                     // Full bright accent to match the reference; only softens when
@@ -149,17 +149,17 @@ struct FileChip: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: iconName)
-                .font(.system(size: 11))
+                .font(.system(size: DS.PanelTypography.size(11)))
                 .foregroundStyle(iconTint)
             Text(url.lastPathComponent)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
                 .foregroundStyle(DS.Colors.textPrimary.opacity(0.92))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: 120)
             Button { onRemove() } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: DS.PanelTypography.size(9), weight: .bold))
                     .foregroundStyle(DS.Colors.textTertiary)
             }
             .buttonStyle(.plain)
