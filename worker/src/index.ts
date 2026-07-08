@@ -557,6 +557,12 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   if (logicalWidth <= 0 || logicalHeight <= 0) {
     return jsonResponse({ error: "missing or invalid logical dimensions" }, 400);
   }
+  console.log("CanvasVisionDiagnostics request", {
+    logicalWidth,
+    logicalHeight,
+    jpegBase64Length: jpegBase64.length,
+    transcriptLength: transcript.length,
+  });
 
   const deployment = env.CANVAS_VISION_MODEL || "gpt-5.5";
   const azureUrl = "https://auren-resource.services.ai.azure.com/openai/v1/responses";
@@ -648,6 +654,14 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   }
 
   const validationError = validateCanvasVisionSequence(sequence, logicalWidth, logicalHeight);
+  console.log("CanvasVisionDiagnostics response", {
+    logicalWidth,
+    logicalHeight,
+    sourceWidth: (sequence as { source_width?: unknown } | null)?.source_width,
+    sourceHeight: (sequence as { source_height?: unknown } | null)?.source_height,
+    steps: Array.isArray((sequence as { steps?: unknown } | null)?.steps) ? ((sequence as { steps?: unknown[] }).steps?.length ?? 0) : -1,
+    validationError,
+  });
   if (validationError) {
     return jsonResponse({ canvas_payload: null, error: validationError });
   }

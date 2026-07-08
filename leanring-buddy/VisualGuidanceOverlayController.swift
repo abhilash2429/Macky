@@ -57,6 +57,7 @@ final class VisualGuidanceOverlayController: ObservableObject {
             let validated = try sequence.validated()
             guard let screen = screen(for: validated) ?? NSScreen.main else { return }
             sourceSize = validated.coordinateSpace?.cgSize ?? screen.frame.size
+            print("🧪 VisualGuidanceOverlayDiagnostics screenFrame=\(screen.frame.debugDescription) backingScale=\(screen.backingScaleFactor) sourceSize=\(sourceSize.debugDescription) displayFrame=\(validated.displayFrame?.cgRect.debugDescription ?? \"nil\") steps=\(validated.steps.count)")
             ensurePanel(on: screen)
             guardedBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             observeAppSwitches()

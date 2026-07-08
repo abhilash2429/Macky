@@ -101,7 +101,8 @@ enum CompanionScreenCaptureUtility {
             // Use NSScreen.frame (AppKit coordinates, bottom-left origin) so
             // displayFrame is in the same coordinate system as NSEvent.mouseLocation
             // and the notch panel's screen frame.
-            let displayFrame = nsScreenByDisplayID[display.displayID]?.frame
+            let nsScreen = nsScreenByDisplayID[display.displayID]
+            let displayFrame = nsScreen?.frame
                 ?? CGRect(x: display.frame.origin.x, y: display.frame.origin.y,
                           width: CGFloat(display.width), height: CGFloat(display.height))
             let isCursorScreen = displayFrame.contains(mouseLocation)
@@ -122,13 +123,15 @@ enum CompanionScreenCaptureUtility {
             )
             let actualScreenshotWidth = cgImage.width
             let actualScreenshotHeight = cgImage.height
-            if actualScreenshotWidth != configuration.width || actualScreenshotHeight != configuration.height {
-                print("⚠️ CompanionScreenCapture: requested \(configuration.width)x\(configuration.height), got \(actualScreenshotWidth)x\(actualScreenshotHeight), display points \(Int(displayFrame.width))x\(Int(displayFrame.height))")
-            }
 
             guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
                     .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
                 continue
+            }
+            let jpegRep = NSBitmapImageRep(data: jpegData)
+            print("🧪 ScreenCaptureDiagnostics displayID=\(display.displayID) cursor=\(isCursorScreen) nsFrame=\(displayFrame.debugDescription) backingScale=\(nsScreen?.backingScaleFactor ?? 0) scFrame=\(display.frame.debugDescription) scSize=\(display.width)x\(display.height) requested=\(configuration.width)x\(configuration.height) cgImage=\(actualScreenshotWidth)x\(actualScreenshotHeight) jpeg=\(jpegRep?.pixelsWide ?? -1)x\(jpegRep?.pixelsHigh ?? -1) mouse=\(mouseLocation.debugDescription)")
+            if actualScreenshotWidth != configuration.width || actualScreenshotHeight != configuration.height {
+                print("⚠️ CompanionScreenCapture: requested \(configuration.width)x\(configuration.height), got \(actualScreenshotWidth)x\(actualScreenshotHeight), display points \(Int(displayFrame.width))x\(Int(displayFrame.height))")
             }
 
             let screenLabel: String

@@ -287,6 +287,9 @@ final class RealtimeClient: ObservableObject {
             }
             self.latestScreenCaptures = captures
             self.latestVisualScene = visualScene
+            for capture in captures {
+                print("🧪 ScreenContextDiagnostics displayID=\(capture.displayID) cursor=\(capture.isCursorScreen) displayPoints=\(capture.displayWidthInPoints)x\(capture.displayHeightInPoints) screenshot=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) displayFrame=\(capture.displayFrame.debugDescription) visualScene=\(visualScene?.screenWidth ?? -1)x\(visualScene?.screenHeight ?? -1) targets=\(visualScene?.targets.count ?? 0)")
+            }
             // Images cannot live in a function_call_output, so attach them as a separate
             // user message before the function result is sent. The realtime model remains
             // the visual director: it sees the screen, decides what to say, and can call
@@ -482,6 +485,7 @@ final class RealtimeClient: ObservableObject {
             displayFrame: sequence.displayFrame ?? capture.visualGuidanceDisplayFrame,
             steps: resolvedSteps
         ).validated()
+        print("🧪 VisualGuidanceSequenceDiagnostics source=\(sourceWidth)x\(sourceHeight) matchedCaptureDisplayID=\(capture.displayID) captureDisplayPoints=\(capture.displayWidthInPoints)x\(capture.displayHeightInPoints) captureScreenshot=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) displayFrame=\((sequence.displayFrame ?? capture.visualGuidanceDisplayFrame).cgRect.debugDescription) steps=\(resolvedSequence.steps.count)")
         try validateCanvasCoordinates(sequence: resolvedSequence, sourceWidth: sourceWidth, sourceHeight: sourceHeight)
         return resolvedSequence
     }
@@ -703,6 +707,9 @@ final class RealtimeClient: ObservableObject {
                     : nil
                 latestScreenCaptures = captures
                 latestVisualScene = visualScene
+                for capture in captures {
+                    print("🧪 VisualGuidanceSelfCaptureDiagnostics displayID=\(capture.displayID) cursor=\(capture.isCursorScreen) displayPoints=\(capture.displayWidthInPoints)x\(capture.displayHeightInPoints) screenshot=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) displayFrame=\(capture.displayFrame.debugDescription) visualScene=\(visualScene?.screenWidth ?? -1)x\(visualScene?.screenHeight ?? -1) targets=\(visualScene?.targets.count ?? 0)")
+                }
                 sendScreenContext(captures, visualScene: visualScene)
             } catch {
                 print("⚠️ RealtimeClient: visual guidance self-capture failed: \(error.localizedDescription)")
@@ -713,6 +720,7 @@ final class RealtimeClient: ObservableObject {
         guard let capture = latestScreenCaptures.first(where: { $0.isCursorScreen }) ?? latestScreenCaptures.first else {
             return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"screen capture unavailable\"}"
         }
+        print("🧪 CanvasVisionRequestDiagnostics displayID=\(capture.displayID) displayPoints=\(capture.displayWidthInPoints)x\(capture.displayHeightInPoints) screenshot=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) displayFrame=\(capture.displayFrame.debugDescription)")
 
         let requestText = guidanceRequest?.isEmpty == false
             ? guidanceRequest!

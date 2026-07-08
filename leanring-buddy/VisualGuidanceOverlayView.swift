@@ -20,6 +20,9 @@ struct VisualGuidanceOverlayView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .onAppear {
+                print("🧪 VisualGuidanceRenderDiagnostics targetSize=\(geometry.size.debugDescription) sourceSize=\(sourceSize.debugDescription) scaleX=\(geometry.size.width / max(1, sourceSize.width)) scaleY=\(geometry.size.height / max(1, sourceSize.height)) commands=\(step.canvas.count)")
+            }
             .animation(.easeInOut(duration: 0.18), value: step.canvas.count)
         }
         .allowsHitTesting(false)
