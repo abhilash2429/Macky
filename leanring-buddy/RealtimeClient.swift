@@ -142,6 +142,13 @@ final class RealtimeClient: ObservableObject {
     private var hasActiveResponse = false
     /// Last response ID observed from the realtime service, used only for lifecycle diagnostics.
     private var currentResponseID: String?
+    /// A response.create that must wait for the server to finish/cancel the active response.
+    private var pendingResponseCreate: (reason: String, callID: String?)?
+    /// True after response.cancel is sent until the server confirms the response is done.
+    private var isResponseCancelPending = false
+    /// Monotonic user turn number. Visual guidance must use a capture from the same turn.
+    private var userTurnGeneration = 0
+    private var latestScreenCaptureTurnGeneration: Int?
     /// Clears a push-to-talk turn if the server never acknowledges `response.create`.
     /// Without this, a dropped/ignored response request leaves the notch in "Thinking"
     /// and makes the next press send a bogus `response.cancel`.
@@ -289,6 +296,7 @@ final class RealtimeClient: ObservableObject {
             }
             self.latestScreenCaptures = captures
             self.latestVisualScene = visualScene
+            self.latestScreenCaptureTurnGeneration = self.userTurnGeneration
             for capture in captures {
                 print("🧪 ScreenContextDiagnostics displayID=\(capture.displayID) cursor=\(capture.isCursorScreen) displayPoints=\(capture.displayWidthInPoints)x\(capture.displayHeightInPoints) screenshot=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) displayFrame=\(capture.displayFrame.debugDescription) visualScene=\(visualScene?.screenWidth ?? -1)x\(visualScene?.screenHeight ?? -1) targets=\(visualScene?.targets.count ?? 0)")
             }
@@ -396,7 +404,9 @@ final class RealtimeClient: ObservableObject {
                                     "type": ["type": "string", "enum": ["move", "click"]],
                                     "x": ["type": "number"],
                                     "y": ["type": "number"],
-                                    "duration_ms": ["type": "integer"]
+                                    "duration_ms": ["type": "integer"],
+                                    "label": ["type": "string", "description": "Short callout text to show beside the cursor while it points at this UI element."],
+                                    "label_placement": ["type": "string", "enum": ["above", "below", "left", "right", "above_right", "below_right", "above_left", "below_left"], "description": "Where to place the cursor label relative to the cursor point. Default above_right."]
                                 ],
                                 "required": ["type", "x", "y"]
                             ]
@@ -429,7 +439,7 @@ final class RealtimeClient: ObservableObject {
 
         registerTool(
             name: "show_visual_guidance",
-            description: "Show a timed full-screen teaching overlay on the display captured by the latest get_screen_context call with highlights, arrows, labels, polygons, circles, rings, spotlights, lines, braces, optional subtle animations, and optional safe cursor movement. Reason from the raw screenshot first. Prefer target_id/from_target_id/to_target_id from visual_scene when they clearly match visible UI; use raw coordinates only when no suitable target exists. Coordinates must use the latest screenshot's top-left logical screen-point space, stay within screenshot bounds, and source_width/source_height must match get_screen_context screenshot_width/screenshot_height.",
+            description: "Show a timed full-screen teaching overlay on the display captured by the current turn's get_screen_context call with highlights, arrows, labels, polygons, circles, rings, spotlights, lines, braces, optional subtle animations, and optional safe cursor movement with cursor labels. Call get_screen_context first in the same user turn. Prefer target_id/from_target_id/to_target_id from visual_scene when they clearly match visible UI. For small buttons, icons, menu items, tabs, and other compact controls, prefer cursor.move with label/label_placement over a large highlight. Use raw coordinates only for simple high-confidence targets. For coordinate-heavy guidance, use generate_visual_guidance instead. Coordinates must use the latest screenshot's top-left logical screen-point space, stay within screenshot bounds, and source_width/source_height must match get_screen_context screenshot_width/screenshot_height.",
             schema: visualGuidanceSequenceSchema
         ) { [weak self] arguments in
             guard let self else { return "{\"error\": \"client unavailable\"}" }
@@ -457,6 +467,10 @@ final class RealtimeClient: ObservableObject {
 
     private func resolvedVisualGuidanceSequence(_ sequence: VisualGuidanceSequence) throws -> VisualGuidanceSequence {
         logVisualGuidanceCommands(sequence, label: "raw")
+        guard latestScreenCaptureTurnGeneration == userTurnGeneration else {
+            print("⚠️ RealtimeClient: visual guidance rejected — screenshot is stale or missing for current turn")
+            throw VisualGuidanceValidationError.staleScreenCapture
+        }
         guard let capture = captureMatching(sequence: sequence),
               let sourceWidth = sequence.sourceWidth,
               let sourceHeight = sequence.sourceHeight else {
@@ -502,7 +516,7 @@ final class RealtimeClient: ObservableObject {
                 print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) step=\(stepIndex + 1) command=\(commandIndex + 1) type=\(command.type.rawValue) x=\(command.x?.description ?? "nil") y=\(command.y?.description ?? "nil") width=\(command.width?.description ?? "nil") height=\(command.height?.description ?? "nil") toX=\(command.toX?.description ?? "nil") toY=\(command.toY?.description ?? "nil") target=\(command.targetId ?? "nil") fromTarget=\(command.fromTargetId ?? "nil") toTarget=\(command.toTargetId ?? "nil") points=\(pointCount) text=\(command.text ?? "nil")")
             }
             if let cursor = step.cursor {
-                print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) step=\(stepIndex + 1) cursor type=\(cursor.type.rawValue) x=\(cursor.x) y=\(cursor.y) durationMs=\(cursor.durationMs?.description ?? "nil")")
+                print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) step=\(stepIndex + 1) cursor type=\(cursor.type.rawValue) x=\(cursor.x) y=\(cursor.y) durationMs=\(cursor.durationMs?.description ?? "nil") label=\(cursor.label ?? "nil") labelPlacement=\(cursor.labelPlacement?.rawValue ?? "nil")")
             }
         }
     }
@@ -1270,6 +1284,7 @@ final class RealtimeClient: ObservableObject {
             print("🧪 ResponseLifecycleDiagnostics event=response.done id=\(doneResponseID ?? "nil") current=\(currentResponseID ?? "nil") hasActiveBefore=\(hasActiveResponse)")
             hasActiveResponse = false
             currentResponseID = nil
+            isResponseCancelPending = false
             // A full turn finished: hand the captured transcripts to the owner for
             // the history list, then reset for the next turn.
             onTurnCompleted?(pendingUserPhrase, pendingModelTranscript)
@@ -1278,6 +1293,7 @@ final class RealtimeClient: ObservableObject {
             // Drop any buffered narration that no tool consumed (e.g. a plain
             // reply), so it can't be mistaken for a later tool's narration.
             pendingNarration = nil
+            sendPendingResponseCreateIfNeeded()
             settleIfIdle()
         // The GA gpt-realtime API documents `response.output_audio.*`, but some
         // deployments still emit the older `response.audio.*` — handle both.
@@ -1329,10 +1345,12 @@ final class RealtimeClient: ObservableObject {
             responseStartTimeoutTask = nil
             hasActiveResponse = false
             currentResponseID = nil
+            isResponseCancelPending = false
             let message = (json["error"] as? [String: Any])?["message"] as? String ?? text
             print("⚠️ RealtimeClient: server error: \(message)")
             print("🧪 ResponseLifecycleDiagnostics event=error message=\(message)")
             lastError = message
+            sendPendingResponseCreateIfNeeded()
             settleIfIdle()
         default:
             break
@@ -1491,15 +1509,17 @@ final class RealtimeClient: ObservableObject {
         Visual help mode:
         - When the user is stuck in an app, asks for help with "this", asks what to click, asks a follow-up after \
         time has passed, or the visible app/page may have changed, immediately call get_screen_context for a fresh \
-        raw screenshot. You can request a new screenshot at any time; never claim you cannot. Use all_screens only \
-        when the user explicitly asks about multiple displays.
+        raw screenshot in the same turn before drawing. You can request a new screenshot at any time; never claim you \
+        cannot. Use all_screens only when the user explicitly asks about multiple displays.
         - You are the brain for visual help. First reason from the raw screenshot yourself. Do not pretend you can see \
         the screen until get_screen_context has returned and the screenshot has been attached.
         - If the user only needs an explanation, answer from the screenshot in clear spoken language.
         - If the user needs visual teaching, build a short show_visual_guidance sequence yourself from the latest \
         screenshot. Use the screenshot_width and screenshot_height returned by get_screen_context as source_width and \
         source_height, and use top-left logical screen-point coordinates inside those bounds. Prefer visual_scene target IDs \
-        when they clearly match visible UI; use raw coordinates only when no suitable target exists.
+        when they clearly match visible UI. For small buttons, icons, menu items, tabs, and other compact controls, prefer \
+        cursor.move with a short cursor label/label_placement over a large highlight. Use raw coordinates only for simple \
+        high-confidence targets. For coordinate-heavy guidance, use generate_visual_guidance.
         - Keep overlays simple and high-confidence: highlight obvious controls, draw arrows between clear points, \
         add short labels, outline irregular regions with polygons, use spotlight for focus, ring/circle for small \
         targets, line when direction is not important, and brace for grouping. Add subtle animation only when it \
@@ -1512,7 +1532,7 @@ final class RealtimeClient: ObservableObject {
         describe the steps verbally instead.
         - Only allow cursor clicks for safe, low-risk clicks the user clearly asked for. Never click delete, \
         publish, share, overwrite, invite, purchase, payment, submit, or other risky/destructive controls.
-        - Keep teaching clear and short. One idea per step. Prefer visual guidance over long spoken lists.
+        - Keep teaching clear and short. One idea per step. Time your narration to the visible overlay: say what you are highlighting while it is visible, do not say "drawing complete", and do not continue explaining after the overlay has moved on.
         - If the user says stop, cancel, clear the overlay, or never mind, call clear_visual_guidance and stop.
 
         Tool rules:
@@ -1602,6 +1622,7 @@ final class RealtimeClient: ObservableObject {
                 "type": "realtime",
                 "instructions": Self.sessionInstructions(),
                 "output_modalities": ["audio"],
+                "reasoning": ["effort": "medium"],
                 "tools": tools,
                 "tool_choice": "auto",
                 "audio": [
@@ -1699,8 +1720,6 @@ final class RealtimeClient: ObservableObject {
                     "output": output
                 ]
             ])
-            self.hasActiveResponse = true
-            self.isResponseCancelled = false
             self.sendResponseCreate(reason: "tool_continuation:\(name)", callID: callID)
 
             // The handler is done and the follow-up response is requested. Drop this
@@ -2042,15 +2061,28 @@ final class RealtimeClient: ObservableObject {
 
     /// Asks the model to generate a response to the committed audio.
     func requestResponse() {
+        userTurnGeneration += 1
         sendResponseCreate(reason: "user_request", callID: nil)
     }
 
     private func sendResponseCreate(reason: String, callID: String?) {
+        guard !hasActiveResponse, !isResponseCancelPending else {
+            pendingResponseCreate = (reason, callID)
+            print("🧪 ResponseLifecycleDiagnostics event=response.create.queued reason=\(reason) callID=\(callID ?? "nil") hasActive=\(hasActiveResponse) cancelPending=\(isResponseCancelPending) current=\(currentResponseID ?? "nil")")
+            return
+        }
         print("📨 RealtimeClient: response.create")
         print("🧪 ResponseLifecycleDiagnostics event=response.create reason=\(reason) callID=\(callID ?? "nil") hasActiveBefore=\(hasActiveResponse) current=\(currentResponseID ?? "nil")")
         isResponseCancelled = false
+        hasActiveResponse = true
         sendJSON(["type": "response.create"])
         scheduleResponseStartTimeout()
+    }
+
+    private func sendPendingResponseCreateIfNeeded() {
+        guard let pendingResponseCreate, !hasActiveResponse, !isResponseCancelPending else { return }
+        self.pendingResponseCreate = nil
+        sendResponseCreate(reason: pendingResponseCreate.reason, callID: pendingResponseCreate.callID)
     }
 
     private func scheduleResponseStartTimeout() {
@@ -2061,9 +2093,12 @@ final class RealtimeClient: ObservableObject {
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard let self,
                   self.responseStartGeneration == generation,
-                  !self.hasActiveResponse else { return }
+                  self.currentResponseID == nil else { return }
             print("⚠️ RealtimeClient: response.create timed out before response.created")
+            self.hasActiveResponse = false
+            self.isResponseCancelPending = false
             self.lastError = "The realtime service didn't start a response — try again."
+            self.sendPendingResponseCreateIfNeeded()
             self.settleIfIdle()
         }
     }
@@ -2201,12 +2236,11 @@ final class RealtimeClient: ObservableObject {
     func interruptPlayback() {
         // Stop the server from generating the rest of the current response;
         // otherwise its in-flight audio deltas would just re-fill the player.
-        if hasActiveResponse {
+        if hasActiveResponse, !isResponseCancelPending {
             print("✋ RealtimeClient: barge-in → response.cancel")
             print("🧪 ResponseLifecycleDiagnostics event=response.cancel current=\(currentResponseID ?? "nil")")
             sendJSON(["type": "response.cancel"])
-            hasActiveResponse = false
-            currentResponseID = nil
+            isResponseCancelPending = true
         }
         responseStartTimeoutTask?.cancel()
         responseStartTimeoutTask = nil

@@ -537,9 +537,9 @@ final class CompanionManager: ObservableObject {
                 MackyAnalytics.turnLatency(milliseconds: Int(Date().timeIntervalSince(start) * 1000))
                 self.turnReleaseTimestamp = nil
             }
+            self.startPendingVisualGuidanceIfNeeded()
             self.voiceState = .responding
             self.operationState = .speaking
-            self.startPendingVisualGuidanceIfNeeded()
         }
 
         realtimeClient.onResponseCompleted = { [weak self] in

@@ -86,8 +86,10 @@ final class VisualGuidanceOverlayController: ObservableObject {
                     }
                     try? await Task.sleep(nanoseconds: step.displayDurationNanoseconds)
                     if step.clearBeforeNext ?? true {
-                        self.currentStep = nil
-                        try? await Task.sleep(nanoseconds: 140_000_000)
+                        withAnimation(.easeOut(duration: 0.45)) {
+                            self.currentStep = nil
+                        }
+                        try? await Task.sleep(nanoseconds: 450_000_000)
                     }
                 }
                 self.clear()

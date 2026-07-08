@@ -18,14 +18,83 @@ struct VisualGuidanceOverlayView: View {
                 ForEach(Array(step.canvas.enumerated()), id: \.offset) { _, command in
                     AnimatedCanvasCommandView(command: command, targetSize: geometry.size, sourceSize: sourceSize)
                 }
+                if let cursor = step.cursor,
+                   let label = cursor.label?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !label.isEmpty {
+                    CursorCalloutLabel(text: label, cursor: cursor, targetSize: geometry.size, sourceSize: sourceSize)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onAppear {
                 print("🧪 VisualGuidanceRenderDiagnostics targetSize=\(geometry.size.debugDescription) sourceSize=\(sourceSize.debugDescription) scaleX=\(geometry.size.width / max(1, sourceSize.width)) scaleY=\(geometry.size.height / max(1, sourceSize.height)) commands=\(step.canvas.count)")
             }
-            .animation(.easeInOut(duration: 0.18), value: step.canvas.count)
+            .animation(.easeInOut(duration: 0.35), value: step.canvas.count)
         }
         .allowsHitTesting(false)
+    }
+}
+
+private struct CursorCalloutLabel: View {
+    let text: String
+    let cursor: CursorCommand
+    let targetSize: CGSize
+    let sourceSize: CGSize
+
+    private var placement: CursorLabelPlacement {
+        cursor.labelPlacement ?? .aboveRight
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 15, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.blue.opacity(0.92))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+            )
+            .shadow(color: Color.blue.opacity(0.42), radius: 12)
+            .fixedSize()
+            .position(anchor)
+            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+    }
+
+    private var anchor: CGPoint {
+        let cursorPoint = CGPoint(
+            x: CGFloat(cursor.x) * targetSize.width / max(1, sourceSize.width),
+            y: CGFloat(cursor.y) * targetSize.height / max(1, sourceSize.height)
+        )
+        let offset = offsetForPlacement
+        return CGPoint(
+            x: min(max(cursorPoint.x + offset.x, 80), max(80, targetSize.width - 80)),
+            y: min(max(cursorPoint.y + offset.y, 24), max(24, targetSize.height - 24))
+        )
+    }
+
+    private var offsetForPlacement: CGPoint {
+        switch placement {
+        case .above:
+            return CGPoint(x: 0, y: -38)
+        case .below:
+            return CGPoint(x: 0, y: 38)
+        case .left:
+            return CGPoint(x: -92, y: 0)
+        case .right:
+            return CGPoint(x: 92, y: 0)
+        case .aboveRight:
+            return CGPoint(x: 96, y: -34)
+        case .belowRight:
+            return CGPoint(x: 96, y: 34)
+        case .aboveLeft:
+            return CGPoint(x: -96, y: -34)
+        case .belowLeft:
+            return CGPoint(x: -96, y: 34)
+        }
     }
 }
 
@@ -49,7 +118,7 @@ private struct AnimatedCanvasCommandView: View {
     }
 
     private var duration: Double {
-        reduceMotion ? 0.18 : (command.animation?.duration ?? 0.45)
+        reduceMotion ? 0.25 : max(command.animation?.duration ?? 0.7, 0.45)
     }
 
     private var delay: Double {

@@ -99,7 +99,7 @@ struct VisualGuidanceStep: Codable {
     }
 
     var displayDurationNanoseconds: UInt64 {
-        let clampedMs = min(max(durationMs ?? 2200, 500), 12_000)
+        let clampedMs = min(max(durationMs ?? 5_500, 4_000), 20_000)
         return UInt64(clampedMs) * 1_000_000
     }
 
@@ -257,12 +257,16 @@ struct CursorCommand: Codable {
     let x: Double
     let y: Double
     let durationMs: Int?
+    let label: String?
+    let labelPlacement: CursorLabelPlacement?
 
     enum CodingKeys: String, CodingKey {
         case type
         case x
         case y
         case durationMs = "duration_ms"
+        case label
+        case labelPlacement = "label_placement"
     }
 
     var duration: TimeInterval {
@@ -271,8 +275,23 @@ struct CursorCommand: Codable {
 
     func validated() throws -> CursorCommand {
         guard x.isFinite, y.isFinite else { throw VisualGuidanceValidationError.invalidCursorCommand }
+        if let label, label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw VisualGuidanceValidationError.invalidCursorCommand
+        }
         return self
     }
+}
+
+/// Label position relative to the cursor point. The renderer clamps the label onto screen.
+enum CursorLabelPlacement: String, Codable {
+    case above
+    case below
+    case left
+    case right
+    case aboveRight = "above_right"
+    case belowRight = "below_right"
+    case aboveLeft = "above_left"
+    case belowLeft = "below_left"
 }
 
 enum CursorCommandType: String, Codable {
@@ -289,6 +308,7 @@ enum VisualGuidanceValidationError: LocalizedError {
     case invalidCursorCommand
     case invalidAnimation
     case sourceDimensionMismatch
+    case staleScreenCapture
     case coordinateOutOfBounds(String)
     case visualSceneUnavailable
     case missingVisualTarget(String)
@@ -311,6 +331,8 @@ enum VisualGuidanceValidationError: LocalizedError {
             return "visual guidance animation is invalid"
         case .sourceDimensionMismatch:
             return "visual guidance source dimensions do not match the latest screenshot"
+        case .staleScreenCapture:
+            return "visual guidance needs a fresh screenshot for the current request; call get_screen_context first, then retry"
         case .coordinateOutOfBounds(let detail):
             return "visual guidance coordinates are outside the latest screenshot coordinate space: \(detail). Retry using coordinates within the latest screenshot bounds."
         case .visualSceneUnavailable:
