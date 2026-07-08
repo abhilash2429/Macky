@@ -42,6 +42,7 @@ final class MackyAppDelegate: NSObject, NSApplicationDelegate {
 
         let manager = CompanionManager()
         companionManager = manager
+        SkillsWindowController.shared.configure(companionManager: manager)
         notchPanelController = NotchPanelController(companionManager: manager)
         manager.start()
     }
