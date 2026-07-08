@@ -499,10 +499,10 @@ final class RealtimeClient: ObservableObject {
         for (stepIndex, step) in sequence.steps.enumerated() {
             for (commandIndex, command) in step.canvas.enumerated() {
                 let pointCount = command.points?.count ?? 0
-                print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) step=\(stepIndex + 1) command=\(commandIndex + 1) type=\(command.type.rawValue) x=\(command.x?.description ?? \"nil\") y=\(command.y?.description ?? \"nil\") width=\(command.width?.description ?? \"nil\") height=\(command.height?.description ?? \"nil\") toX=\(command.toX?.description ?? \"nil\") toY=\(command.toY?.description ?? \"nil\") target=\(command.targetId ?? \"nil\") fromTarget=\(command.fromTargetId ?? \"nil\") toTarget=\(command.toTargetId ?? \"nil\") points=\(pointCount) text=\(command.text ?? \"nil\")")
+                print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) step=\(stepIndex + 1) command=\(commandIndex + 1) type=\(command.type.rawValue) x=\(command.x?.description ?? "nil") y=\(command.y?.description ?? "nil") width=\(command.width?.description ?? "nil") height=\(command.height?.description ?? "nil") toX=\(command.toX?.description ?? "nil") toY=\(command.toY?.description ?? "nil") target=\(command.targetId ?? "nil") fromTarget=\(command.fromTargetId ?? "nil") toTarget=\(command.toTargetId ?? "nil") points=\(pointCount) text=\(command.text ?? "nil")")
             }
             if let cursor = step.cursor {
-                print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) step=\(stepIndex + 1) cursor type=\(cursor.type.rawValue) x=\(cursor.x) y=\(cursor.y) durationMs=\(cursor.durationMs?.description ?? \"nil\")")
+                print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) step=\(stepIndex + 1) cursor type=\(cursor.type.rawValue) x=\(cursor.x) y=\(cursor.y) durationMs=\(cursor.durationMs?.description ?? "nil")")
             }
         }
     }
@@ -1260,14 +1260,14 @@ final class RealtimeClient: ObservableObject {
             responseStartTimeoutTask?.cancel()
             responseStartTimeoutTask = nil
             currentResponseID = Self.responseID(from: json)
-            print("🧪 ResponseLifecycleDiagnostics event=response.created id=\(currentResponseID ?? \"nil\") hasActiveBefore=\(hasActiveResponse)")
+            print("🧪 ResponseLifecycleDiagnostics event=response.created id=\(currentResponseID ?? "nil") hasActiveBefore=\(hasActiveResponse)")
             hasActiveResponse = true
             isResponseCancelled = false
         case "response.done":
             responseStartTimeoutTask?.cancel()
             responseStartTimeoutTask = nil
             let doneResponseID = Self.responseID(from: json)
-            print("🧪 ResponseLifecycleDiagnostics event=response.done id=\(doneResponseID ?? \"nil\") current=\(currentResponseID ?? \"nil\") hasActiveBefore=\(hasActiveResponse)")
+            print("🧪 ResponseLifecycleDiagnostics event=response.done id=\(doneResponseID ?? "nil") current=\(currentResponseID ?? "nil") hasActiveBefore=\(hasActiveResponse)")
             hasActiveResponse = false
             currentResponseID = nil
             // A full turn finished: hand the captured transcripts to the owner for
@@ -2047,7 +2047,7 @@ final class RealtimeClient: ObservableObject {
 
     private func sendResponseCreate(reason: String, callID: String?) {
         print("📨 RealtimeClient: response.create")
-        print("🧪 ResponseLifecycleDiagnostics event=response.create reason=\(reason) callID=\(callID ?? \"nil\") hasActiveBefore=\(hasActiveResponse) current=\(currentResponseID ?? \"nil\")")
+        print("🧪 ResponseLifecycleDiagnostics event=response.create reason=\(reason) callID=\(callID ?? "nil") hasActiveBefore=\(hasActiveResponse) current=\(currentResponseID ?? "nil")")
         isResponseCancelled = false
         sendJSON(["type": "response.create"])
         scheduleResponseStartTimeout()
@@ -2203,7 +2203,7 @@ final class RealtimeClient: ObservableObject {
         // otherwise its in-flight audio deltas would just re-fill the player.
         if hasActiveResponse {
             print("✋ RealtimeClient: barge-in → response.cancel")
-            print("🧪 ResponseLifecycleDiagnostics event=response.cancel current=\(currentResponseID ?? \"nil\")")
+            print("🧪 ResponseLifecycleDiagnostics event=response.cancel current=\(currentResponseID ?? "nil")")
             sendJSON(["type": "response.cancel"])
             hasActiveResponse = false
             currentResponseID = nil
