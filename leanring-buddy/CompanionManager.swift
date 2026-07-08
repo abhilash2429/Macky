@@ -54,6 +54,7 @@ struct PendingConnection: Identifiable {
 @MainActor
 final class CompanionManager: ObservableObject {
     private static let panelOnboardingDefaultsKey = "mackyPanelOnboardingComplete"
+    private static let enabledSkillIDsDefaultsKey = "mackyEnabledSkillIDs"
     private static let maxRecentInteractions = 5
     private static let maxHistoryEntries = 20
 
@@ -104,6 +105,17 @@ final class CompanionManager: ObservableObject {
     /// the system permission dialog isn't hidden behind the panel.
     @Published private(set) var systemPromptToken = 0
     @Published var hasCompletedPanelOnboarding: Bool = UserDefaults.standard.bool(forKey: CompanionManager.panelOnboardingDefaultsKey)
+
+    /// IDs of the Skills (see `SkillRegistry`) the user has enabled. This is the
+    /// UI-observable half of a Skill: it drives the Home preview strip and the
+    /// Skills window's toggle state today. It does NOT yet change what the
+    /// realtime session can do — merging an enabled skill's instructions/tools
+    /// into `session.update` is an explicitly separate, later milestone (see
+    /// SkillRegistry.swift). Persisted as a plain string array since
+    /// `UserDefaults` has no native Set<String> support.
+    @Published private(set) var enabledSkillIDs: Set<String> = Set(
+        UserDefaults.standard.stringArray(forKey: CompanionManager.enabledSkillIDsDefaultsKey) ?? []
+    )
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
@@ -209,6 +221,31 @@ final class CompanionManager: ObservableObject {
     func setPanelOnboardingComplete(_ isComplete: Bool = true) {
         hasCompletedPanelOnboarding = isComplete
         UserDefaults.standard.set(isComplete, forKey: Self.panelOnboardingDefaultsKey)
+    }
+
+    func isSkillEnabled(_ id: String) -> Bool {
+        enabledSkillIDs.contains(id)
+    }
+
+    /// Enables a Skill by id. Silently ignores an id that isn't in `SkillRegistry`
+    /// so a stale persisted id (e.g. after a catalog change) can't wedge the set.
+    func enableSkill(_ id: String) {
+        guard SkillRegistry.identity(forID: id) != nil else { return }
+        enabledSkillIDs.insert(id)
+        persistEnabledSkillIDs()
+    }
+
+    func disableSkill(_ id: String) {
+        enabledSkillIDs.remove(id)
+        persistEnabledSkillIDs()
+    }
+
+    func toggleSkill(_ id: String) {
+        isSkillEnabled(id) ? disableSkill(id) : enableSkill(id)
+    }
+
+    private func persistEnabledSkillIDs() {
+        UserDefaults.standard.set(Array(enabledSkillIDs), forKey: Self.enabledSkillIDsDefaultsKey)
     }
 
     func attachDroppedText(_ text: String, name: String) {
