@@ -140,6 +140,8 @@ final class RealtimeClient: ObservableObject {
     /// `response.created`/our `response.create` and `response.done`). Gates
     /// `response.cancel` so we never cancel when nothing is running.
     private var hasActiveResponse = false
+    /// Last response ID observed from the realtime service, used only for lifecycle diagnostics.
+    private var currentResponseID: String?
     /// Clears a push-to-talk turn if the server never acknowledges `response.create`.
     /// Without this, a dropped/ignored response request leaves the notch in "Thinking"
     /// and makes the next press send a bogus `response.cancel`.
@@ -454,6 +456,7 @@ final class RealtimeClient: ObservableObject {
     }
 
     private func resolvedVisualGuidanceSequence(_ sequence: VisualGuidanceSequence) throws -> VisualGuidanceSequence {
+        logVisualGuidanceCommands(sequence, label: "raw")
         guard let capture = captureMatching(sequence: sequence),
               let sourceWidth = sequence.sourceWidth,
               let sourceHeight = sequence.sourceHeight else {
@@ -486,8 +489,22 @@ final class RealtimeClient: ObservableObject {
             steps: resolvedSteps
         ).validated()
         print("🧪 VisualGuidanceSequenceDiagnostics source=\(sourceWidth)x\(sourceHeight) matchedCaptureDisplayID=\(capture.displayID) captureDisplayPoints=\(capture.displayWidthInPoints)x\(capture.displayHeightInPoints) captureScreenshot=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) displayFrame=\((sequence.displayFrame ?? capture.visualGuidanceDisplayFrame).cgRect.debugDescription) steps=\(resolvedSequence.steps.count)")
+        logVisualGuidanceCommands(resolvedSequence, label: "resolved")
         try validateCanvasCoordinates(sequence: resolvedSequence, sourceWidth: sourceWidth, sourceHeight: sourceHeight)
         return resolvedSequence
+    }
+
+    private func logVisualGuidanceCommands(_ sequence: VisualGuidanceSequence, label: String) {
+        print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) source=\(sequence.sourceWidth ?? -1)x\(sequence.sourceHeight ?? -1) steps=\(sequence.steps.count)")
+        for (stepIndex, step) in sequence.steps.enumerated() {
+            for (commandIndex, command) in step.canvas.enumerated() {
+                let pointCount = command.points?.count ?? 0
+                print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) step=\(stepIndex + 1) command=\(commandIndex + 1) type=\(command.type.rawValue) x=\(command.x?.description ?? \"nil\") y=\(command.y?.description ?? \"nil\") width=\(command.width?.description ?? \"nil\") height=\(command.height?.description ?? \"nil\") toX=\(command.toX?.description ?? \"nil\") toY=\(command.toY?.description ?? \"nil\") target=\(command.targetId ?? \"nil\") fromTarget=\(command.fromTargetId ?? \"nil\") toTarget=\(command.toTargetId ?? \"nil\") points=\(pointCount) text=\(command.text ?? \"nil\")")
+            }
+            if let cursor = step.cursor {
+                print("🧪 VisualGuidanceCommandDiagnostics phase=\(label) step=\(stepIndex + 1) cursor type=\(cursor.type.rawValue) x=\(cursor.x) y=\(cursor.y) durationMs=\(cursor.durationMs?.description ?? \"nil\")")
+            }
+        }
     }
 
     private func resolvedCanvasCommand(_ command: CanvasCommand, targets: [String: VisualTarget]?, sourceSize: CGSize) throws -> CanvasCommand {
@@ -691,6 +708,15 @@ final class RealtimeClient: ObservableObject {
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else {
             return "{\"error\":\"tool failed\"}"
+        }
+        return json
+    }
+
+    private static func compactJSON(_ object: Any) -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object),
+              let json = String(data: data, encoding: .utf8) else {
+            return String(describing: object)
         }
         return json
     }
@@ -1233,12 +1259,17 @@ final class RealtimeClient: ObservableObject {
             // A fresh response has truly started → allow its audio to play.
             responseStartTimeoutTask?.cancel()
             responseStartTimeoutTask = nil
+            currentResponseID = Self.responseID(from: json)
+            print("🧪 ResponseLifecycleDiagnostics event=response.created id=\(currentResponseID ?? \"nil\") hasActiveBefore=\(hasActiveResponse)")
             hasActiveResponse = true
             isResponseCancelled = false
         case "response.done":
             responseStartTimeoutTask?.cancel()
             responseStartTimeoutTask = nil
+            let doneResponseID = Self.responseID(from: json)
+            print("🧪 ResponseLifecycleDiagnostics event=response.done id=\(doneResponseID ?? \"nil\") current=\(currentResponseID ?? \"nil\") hasActiveBefore=\(hasActiveResponse)")
             hasActiveResponse = false
+            currentResponseID = nil
             // A full turn finished: hand the captured transcripts to the owner for
             // the history list, then reset for the next turn.
             onTurnCompleted?(pendingUserPhrase, pendingModelTranscript)
@@ -1297,8 +1328,10 @@ final class RealtimeClient: ObservableObject {
             responseStartTimeoutTask?.cancel()
             responseStartTimeoutTask = nil
             hasActiveResponse = false
+            currentResponseID = nil
             let message = (json["error"] as? [String: Any])?["message"] as? String ?? text
             print("⚠️ RealtimeClient: server error: \(message)")
+            print("🧪 ResponseLifecycleDiagnostics event=error message=\(message)")
             lastError = message
             settleIfIdle()
         default:
@@ -1425,6 +1458,16 @@ final class RealtimeClient: ObservableObject {
         guard let match = regex.firstMatch(in: text, range: range),
               let matchRange = Range(match.range, in: text) else { return nil }
         return String(text[matchRange])
+    }
+
+    private static func responseID(from json: [String: Any]) -> String? {
+        if let response = json["response"] as? [String: Any], let id = response["id"] as? String {
+            return id
+        }
+        if let id = json["response_id"] as? String {
+            return id
+        }
+        return json["id"] as? String
     }
 
     // MARK: - Session Configuration
@@ -1638,6 +1681,7 @@ final class RealtimeClient: ObservableObject {
             do {
                 output = try await tool.handler(arguments)
             } catch {
+                print("⚠️ ToolErrorDiagnostics name=\(name) callID=\(callID) error=\(error.localizedDescription) arguments=\(Self.compactJSON(arguments))")
                 output = Self.errorJSON(error.localizedDescription)
                 didThrow = true
             }
@@ -1657,7 +1701,7 @@ final class RealtimeClient: ObservableObject {
             ])
             self.hasActiveResponse = true
             self.isResponseCancelled = false
-            self.sendJSON(["type": "response.create"])
+            self.sendResponseCreate(reason: "tool_continuation:\(name)", callID: callID)
 
             // The handler is done and the follow-up response is requested. Drop this
             // call's in-flight count now (the model's spoken reply, if any, drives the
@@ -1998,7 +2042,12 @@ final class RealtimeClient: ObservableObject {
 
     /// Asks the model to generate a response to the committed audio.
     func requestResponse() {
+        sendResponseCreate(reason: "user_request", callID: nil)
+    }
+
+    private func sendResponseCreate(reason: String, callID: String?) {
         print("📨 RealtimeClient: response.create")
+        print("🧪 ResponseLifecycleDiagnostics event=response.create reason=\(reason) callID=\(callID ?? \"nil\") hasActiveBefore=\(hasActiveResponse) current=\(currentResponseID ?? \"nil\")")
         isResponseCancelled = false
         sendJSON(["type": "response.create"])
         scheduleResponseStartTimeout()
@@ -2154,8 +2203,10 @@ final class RealtimeClient: ObservableObject {
         // otherwise its in-flight audio deltas would just re-fill the player.
         if hasActiveResponse {
             print("✋ RealtimeClient: barge-in → response.cancel")
+            print("🧪 ResponseLifecycleDiagnostics event=response.cancel current=\(currentResponseID ?? \"nil\")")
             sendJSON(["type": "response.cancel"])
             hasActiveResponse = false
+            currentResponseID = nil
         }
         responseStartTimeoutTask?.cancel()
         responseStartTimeoutTask = nil
