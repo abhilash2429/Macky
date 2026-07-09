@@ -277,10 +277,6 @@ final class CompanionManager: ObservableObject {
         NSWorkspace.shared.open(connection.redirectURL)
     }
 
-    func dismissPendingConnection(_ connection: PendingConnection) {
-        pendingConnections.removeAll { $0.id == connection.id }
-    }
-
     /// The Cloudflare Worker endpoint that returns a Composio connect link directly,
     /// bypassing the realtime voice model so a connector tap doesn't trigger filler.
     /// Host derives from the shared `WorkerEndpoints`.

@@ -9,7 +9,6 @@
 import AppKit
 import Carbon
 import Combine
-import EventKit
 import SwiftUI
 
 enum MackyPanelPage {
@@ -21,407 +20,51 @@ enum MackyPanelPage {
 struct AurenPanel: View {
     @ObservedObject var companionManager: CompanionManager
     let page: MackyPanelPage
-    @StateObject private var sidebar = AurenSidebarData()
-    @StateObject private var music = MackyMusicManager()
+    var onOpenConnectors: () -> Void = {}
 
     var body: some View {
-        Group {
-            switch page {
-            case .home:
-                home
-            case .connectors:
-                ConnectorsPanel(companionManager: companionManager)
-            case .settings:
-                SettingsPanel(companionManager: companionManager)
-            }
-        }
-        .task {
-            await sidebar.refresh()
+        switch page {
+        case .home:
+            home
+        case .connectors:
+            ConnectorsPanel(companionManager: companionManager)
+        case .settings:
+            SettingsPanel(companionManager: companionManager)
         }
     }
 
     private var home: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 11) {
-                if companionManager.isAssistantActive {
-                    AssistantActivityCard(companionManager: companionManager)
-                }
+            VStack(alignment: .leading, spacing: 14) {
+                IconPreviewStrip(
+                    title: "Skills",
+                    statusText: enabledSkills.isEmpty ? nil : "\(enabledSkills.count) active",
+                    icons: enabledSkills.map { .init(id: $0.id, systemName: $0.icon, image: nil) },
+                    onTap: { SkillsWindowController.shared.showWindow() }
+                )
 
-                HStack(alignment: .top, spacing: 11) {
-                    // LEFT — music on top, recent activity (history) below it.
-                    VStack(alignment: .leading, spacing: 11) {
-                        BoringStyleMusicCard(music: music)
+                IconPreviewStrip(
+                    title: "Connectors",
+                    statusText: nil,
+                    icons: connectedConnectors.map { .init(id: $0.slug, systemName: nil, image: NSImage(named: $0.logoAssetName)) },
+                    onTap: onOpenConnectors
+                )
 
-                        if !companionManager.recentInteractions.isEmpty {
-                            PanelSection("Recent Activity") {
-                                ForEach(companionManager.recentInteractions.prefix(3)) { interaction in
-                                    ActivityRow(interaction: interaction)
-                                }
-                            }
-                        }
-                    }
-                    .frame(width: 300)
-
-                    // RIGHT — calendar and reminders.
-                    VStack(alignment: .leading, spacing: 10) {
-                        CalendarCard(sidebar: sidebar)
-                        RemindersCard(sidebar: sidebar)
-                    }
-                }
-
-                if !companionManager.pendingConnections.isEmpty {
-                    PanelSection("Connect Accounts") {
-                        ForEach(companionManager.pendingConnections) { connection in
-                            PendingConnectionRow(
-                                connection: connection,
-                                onConnect: { companionManager.openPendingConnection(connection) },
-                                onDismiss: { companionManager.dismissPendingConnection(connection) }
-                            )
-                        }
-                    }
-                }
+                ChatsSection(interactions: companionManager.recentInteractions)
             }
             .padding(.horizontal, 14)
             .padding(.top, 8)
             .padding(.bottom, 14)
         }
-    }
-}
-
-private struct AssistantActivityCard: View {
-    @ObservedObject var companionManager: CompanionManager
-
-    /// Bundled logo for the connector whose MCP call is running, if any resolves.
-    private var connectorLogo: NSImage? {
-        guard let name = companionManager.activeConnectorToolCall?.logoAssetName else { return nil }
-        return NSImage(named: name)
+        .onAppear { companionManager.refreshConnectedToolkits() }
     }
 
-    var body: some View {
-        HStack(spacing: 10) {
-            // While a registered connector's MCP call runs, its logo stands in for the
-            // waveform; otherwise the usual voice-activity waveform is shown.
-            if let connectorLogo {
-                Image(nsImage: connectorLogo)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .padding(3)
-                    .frame(width: 26, height: 18)
-                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(DS.Colors.surface3))
-                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-            } else {
-                VoiceActivityView(companionManager: companionManager, realtimeClient: companionManager.realtimeClient)
-                    .frame(width: 26, height: 18)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(DS.Gradients.panelSubtle)
-                    )
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(companionManager.activeStatusText.isEmpty ? "Ready" : companionManager.activeStatusText)
-                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold, design: .rounded))
-                    .foregroundStyle(DS.Colors.textPrimary)
-                Text("Macky is working in the notch.")
-                    .font(.system(size: DS.PanelTypography.size(9)))
-                    .foregroundStyle(DS.Colors.textTertiary)
-            }
-            Spacer()
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
-    }
-}
-
-private struct BoringStyleMusicCard: View {
-    @ObservedObject var music: MackyMusicManager
-    @State private var isDragging = false
-    @State private var sliderValue: Double = 0
-
-    var body: some View {
-        HStack(spacing: 11) {
-            albumArt
-                .frame(width: 100, height: 100)
-
-            VStack(alignment: .leading, spacing: 8) {
-                songInfo
-                TimelineView(.animation(minimumInterval: music.isPlaying ? 0.5 : nil)) { _ in
-                    progressSlider
-                }
-                controlToolbar
-
-                Button {
-                    music.openActiveMusicApp()
-                } label: {
-                    Label(music.activeAppName, systemImage: "arrow.up.forward.app")
-                        .font(.system(size: DS.PanelTypography.size(8), weight: .medium))
-                        .foregroundStyle(.white.opacity(0.48))
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(11)
-        // Same flat surface as the Calendar/Reminders cards so the home page reads
-        // as one cohesive panel instead of a distinct, album-tinted left container.
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
-        .onReceive(music.$elapsedTime) { elapsedTime in
-            if !isDragging {
-                sliderValue = elapsedTime
-            }
-        }
-        .onAppear { music.startPolling() }
-        .onDisappear { music.stopPolling() }
+    private var enabledSkills: [SkillIdentity] {
+        SkillRegistry.skills.filter { companionManager.isSkillEnabled($0.id) }
     }
 
-    private var albumArt: some View {
-        ZStack(alignment: .bottomTrailing) {
-            Image(nsImage: music.albumArt)
-                .resizable()
-                .aspectRatio(1, contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .scaleEffect(music.isPlaying ? 1 : 0.92)
-                .animation(.smooth(duration: 0.24), value: music.isPlaying)
-
-            if !music.isPlaying {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.black.opacity(0.38))
-            }
-
-            Image(nsImage: music.activeAppIcon)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 18, height: 18)
-                .padding(4)
-                .background(Circle().fill(Color.black.opacity(0.78)))
-                .offset(x: 6, y: 6)
-        }
-    }
-
-    private var songInfo: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(music.title)
-                .font(.system(size: DS.PanelTypography.size(13), weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-            Text(music.artist)
-                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
-                .foregroundStyle(.white.opacity(0.58))
-                .lineLimit(1)
-            Text(music.album)
-                .font(.system(size: DS.PanelTypography.size(9)))
-                .foregroundStyle(.white.opacity(0.36))
-                .lineLimit(1)
-        }
-    }
-
-    private var progressSlider: some View {
-        VStack(spacing: 4) {
-            Slider(
-                value: Binding(
-                    get: { music.duration > 0 ? min(isDragging ? sliderValue : music.currentElapsedTime, music.duration) : 0 },
-                    set: { sliderValue = $0 }
-                ),
-                in: 0...max(music.duration, 1),
-                onEditingChanged: { editing in
-                    isDragging = editing
-                    if !editing {
-                        music.seek(to: sliderValue)
-                    }
-                }
-            )
-            .controlSize(.mini)
-            .tint(.white)
-
-            HStack {
-                Text(music.timeString(from: music.currentElapsedTime))
-                Spacer()
-                Text(music.timeString(from: music.duration))
-            }
-            .font(.system(size: DS.PanelTypography.size(8), weight: .medium))
-            .foregroundStyle(.white.opacity(0.42))
-        }
-    }
-
-    private var controlToolbar: some View {
-        HStack(spacing: 6) {
-            MusicButton(icon: "shuffle", isActive: music.isShuffled) { music.toggleShuffle() }
-            MusicButton(icon: "backward.fill") { music.previous() }
-            MusicButton(icon: music.isPlaying ? "pause.fill" : "play.fill", isPrimary: true) { music.togglePlay() }
-            MusicButton(icon: "forward.fill") { music.next() }
-            MusicButton(icon: music.repeatIcon, isActive: music.isRepeatEnabled) { music.toggleRepeat() }
-        }
-    }
-}
-
-private struct MusicButton: View {
-    let icon: String
-    var isPrimary = false
-    var isActive = false
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: DS.PanelTypography.size(isPrimary ? 12 : 10), weight: .semibold))
-                .foregroundStyle(isPrimary ? DS.Colors.textOnAccent : (isActive ? DS.Colors.textPrimary : .white))
-                .frame(width: isPrimary ? 26 : 20, height: isPrimary ? 26 : 20)
-                .background(Circle().fill(isPrimary ? DS.Colors.accent : Color.white.opacity(0.12)))
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct CalendarCard: View {
-    @ObservedObject var sidebar: AurenSidebarData
-    @State private var selectedDate = Date()
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            // Full month + year, matching the screenshot's "July 2026" heading.
-            Text("\(selectedDate.formatted(.dateTime.month(.wide))) \(selectedDate.formatted(.dateTime.year()))")
-                .font(.system(size: DS.PanelTypography.size(15), weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-
-            MackyWeekStrip(selectedDate: $selectedDate)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if sidebar.selectedEvents.isEmpty {
-                EmptyPanelLine(
-                    icon: "calendar.badge.checkmark",
-                    title: Calendar.current.isDateInToday(selectedDate) ? "No events today" : "No events"
-                )
-            } else {
-                ForEach(Array(sidebar.selectedEvents.prefix(3).enumerated()), id: \.element.id) { index, event in
-                    HStack(spacing: 8) {
-                        RoundedRectangle(cornerRadius: 1.5)
-                            .fill(index == 0 ? DS.Colors.accentText : DS.Colors.floatingGradientPurple)
-                            .frame(width: 3, height: 26)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(event.title)
-                                .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
-                                .foregroundStyle(DS.Colors.textPrimary)
-                                .lineLimit(1)
-                            Text(event.timeString)
-                                .font(.system(size: DS.PanelTypography.size(9)))
-                                .foregroundStyle(DS.Colors.textTertiary)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.05)))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
-        .task { await sidebar.loadEvents(for: selectedDate) }
-        .onChange(of: selectedDate) { _, newDate in
-            Task { await sidebar.loadEvents(for: newDate) }
-        }
-    }
-}
-
-/// A clean week strip — weekday initial over the day number, six days across,
-/// today highlighted in a soft rounded tile. Matches the calendar header in the
-/// panel screenshots (e.g. "W T F S S M / 1 2 3 4 5 6" with today filled).
-private struct MackyWeekStrip: View {
-    @Binding var selectedDate: Date
-
-    /// Six consecutive days starting today, so the current day leads the strip.
-    private let days: [Date] = {
-        let calendar = Calendar.current
-        let start = calendar.startOfDay(for: Date())
-        return (0..<6).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
-    }()
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(Array(days.enumerated()), id: \.offset) { _, day in
-                let isSelected = Calendar.current.isDate(day, inSameDayAs: selectedDate)
-                Button {
-                    withAnimation(.smooth(duration: 0.18)) { selectedDate = day }
-                } label: {
-                    VStack(spacing: 6) {
-                        Text(day.formatted(.dateTime.weekday(.narrow)))
-                            .font(.system(size: DS.PanelTypography.size(9), weight: .medium))
-                            .foregroundStyle(DS.Colors.textTertiary)
-                        Text(day.formatted(.dateTime.day()))
-                            .font(.system(size: DS.PanelTypography.size(13), weight: .semibold))
-                            .foregroundStyle(isSelected ? .white : DS.Colors.textPrimary.opacity(0.9))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isSelected ? Color.white.opacity(0.12) : Color.clear)
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .onAppear { selectedDate = Date() }
-    }
-}
-
-private struct RemindersCard: View {
-    @ObservedObject var sidebar: AurenSidebarData
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("Reminders")
-                .font(.system(size: DS.PanelTypography.size(10), weight: .bold, design: .rounded))
-                .foregroundStyle(DS.Colors.textTertiary)
-                .textCase(.uppercase)
-                .tracking(1.2)
-
-            if sidebar.reminders.isEmpty {
-                EmptyPanelLine(icon: "checklist", title: "No open reminders")
-            } else {
-                ForEach(sidebar.reminders.prefix(4)) { reminder in
-                    Button {
-                        withAnimation(.smooth(duration: 0.16)) {
-                            sidebar.complete(reminder)
-                        }
-                    } label: {
-                        HStack(spacing: 9) {
-                            Image(systemName: "circle")
-                                .font(.system(size: DS.PanelTypography.size(12), weight: .light))
-                                .foregroundStyle(DS.Colors.textTertiary)
-                            Text(reminder.title)
-                                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
-                                .foregroundStyle(DS.Colors.textPrimary.opacity(0.9))
-                                .lineLimit(1)
-                            Spacer()
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.05)))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
-    }
-}
-
-private struct EmptyPanelLine: View {
-    let icon: String
-    let title: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: DS.PanelTypography.size(10)))
-                .foregroundStyle(.white.opacity(0.42))
-            Text(title)
-                .font(.system(size: DS.PanelTypography.size(9)))
-                .foregroundStyle(.white.opacity(0.52))
-            Spacer()
-        }
-        .frame(height: 22)
+    private var connectedConnectors: [ConnectorIdentity] {
+        ConnectorRegistry.connectors.filter { companionManager.connectedToolkits.contains($0.slug) }
     }
 }
 
@@ -1018,548 +661,140 @@ private struct PanelTitle: View {
     }
 }
 
-private struct PanelSection<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: () -> Content
-
-    init(_ title: String, @ViewBuilder content: @escaping () -> Content) {
-        self.title = title
-        self.content = content
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title)
-                .font(.system(size: DS.PanelTypography.size(10), weight: .bold, design: .rounded))
-                .foregroundStyle(DS.Colors.textTertiary)
-                .textCase(.uppercase)
-                .tracking(1.2)
-            content()
-        }
-    }
-}
-
-private struct PendingConnectionRow: View {
-    let connection: PendingConnection
-    let onConnect: () -> Void
-    let onDismiss: () -> Void
+/// Home page's chats section: a horizontal strip of recent interactions (mirroring
+/// components/Shelf/Views/ShelfView.swift's ScrollView(.horizontal) { HStack { ForEach } }
+/// layout, without its drag/drop/selection machinery), or the detail of one tapped
+/// interaction. Renders `interactions` in the order CompanionManager provides it —
+/// no sorting or truncating here.
+private struct ChatsSection: View {
+    let interactions: [Interaction]
+    @State private var selectedInteraction: Interaction?
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(connection.toolkit.capitalized)
-                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
-                .foregroundStyle(.white.opacity(0.9))
-            Spacer()
-            Button("Open link", action: onConnect)
-                .buttonStyle(.plain)
-                .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
-                .foregroundStyle(DS.Colors.textOnAccent)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(DS.Colors.accent))
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: DS.PanelTypography.size(9), weight: .bold))
-                    .foregroundStyle(.white.opacity(0.45))
+        VStack(alignment: .leading, spacing: 8) {
+            if let selectedInteraction {
+                ChatDetailView(interaction: selectedInteraction) {
+                    self.selectedInteraction = nil
+                }
+            } else {
+                Text("Chats")
+                    .font(.system(.headline, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+
+                if interactions.isEmpty {
+                    Text("No recent chats yet")
+                        .font(.system(.footnote, design: .rounded))
+                        .foregroundColor(.white.opacity(0.4))
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(interactions) { interaction in
+                                ChatChip(interaction: interaction) {
+                                    selectedInteraction = interaction
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            .buttonStyle(.plain)
         }
     }
 }
 
-struct ActivityRow: View {
+/// A single chat's preview tile on the Home chats strip. Uses the same tile
+/// vocabulary as IconPreviewStrip's IconTile (30x30, 8pt corner radius,
+/// `.secondarySystemFill`) for visual consistency, plus a short truncated label
+/// so chips remain distinguishable from one another at a glance.
+private struct ChatChip: View {
     let interaction: Interaction
-    @State private var isExpanded = false
+    let onTap: () -> Void
 
-    private var timeString: String {
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        return formatter.string(from: interaction.timestamp)
-    }
-
-    private var title: String {
-        interaction.userPhrase.isEmpty ? interaction.modelSummary : interaction.userPhrase
-    }
-
-    private var detail: String? {
-        guard !interaction.userPhrase.isEmpty, !interaction.modelSummary.isEmpty else { return nil }
-        return interaction.modelSummary
+    private var label: String {
+        let phrase = interaction.userPhrase.isEmpty ? interaction.modelSummary : interaction.userPhrase
+        return phrase.isEmpty ? "Chat" : phrase
     }
 
     var body: some View {
-        Button {
-            withAnimation(.smooth(duration: 0.18)) { isExpanded.toggle() }
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
-                        .foregroundStyle(DS.Colors.textPrimary)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(timeString)
-                        .font(.system(size: DS.PanelTypography.size(10)))
-                        .foregroundStyle(DS.Colors.textTertiary)
-                }
-                if isExpanded, let detail {
-                    Text(detail)
-                        .font(.system(size: DS.PanelTypography.size(10)))
-                        .foregroundStyle(DS.Colors.textSecondary)
-                }
+        Button(action: onTap) {
+            VStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .secondarySystemFill))
+                    .frame(width: 30, height: 30)
+                    .overlay {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+                Text(label)
+                    .font(.system(.caption2, design: .rounded))
+                    .foregroundColor(.white.opacity(0.6))
+                    .lineLimit(1)
+                    .frame(width: 56)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 11)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(detail == nil)
     }
 }
 
-@MainActor
-final class MackyMusicManager: ObservableObject {
-    @Published var title = "Nothing playing"
-    @Published var artist = "Spotify or Music"
-    @Published var album = "Open a player to control it here"
-    @Published var isPlaying = false
-    @Published var duration: Double = 0
-    @Published var elapsedTime: Double = 0
-    @Published var timestampDate = Date()
-    @Published var playbackRate: Double = 0
-    @Published var isShuffled = false
-    @Published var repeatMode = "off"
-    @Published var activeAppName = "Music"
-    @Published var activeBundleIdentifier = "com.apple.Music"
-    @Published var activeAppIcon: NSImage = NSWorkspace.shared.icon(forFile: "/System/Applications/Music.app")
-    @Published var albumArt: NSImage = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Album Art")!
+/// Full detail for one tapped chat: a back button to return to the strip, then the
+/// user's phrase and the model's summary, each clearly labeled, plus a
+/// human-readable timestamp.
+private struct ChatDetailView: View {
+    let interaction: Interaction
+    let onBack: () -> Void
 
-    private let placeholderArt = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Album Art")!
-    private var lastArtworkURL: String?
-    private var pollTimer: Timer?
-
-    /// Keeps the panel in sync with whatever the player is doing. Polling is the
-    /// only way the panel reflects a track the user starts *after* opening it, and
-    /// it also lets the first Apple event reach Spotify/Music so macOS can show the
-    /// one-time Automation permission prompt.
-    func startPolling() {
-        Task { @MainActor in await refresh() }
-        pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
-        }
+    private var formattedTimestamp: String {
+        interaction.timestamp.formatted(date: .abbreviated, time: .shortened)
     }
 
-    func stopPolling() {
-        pollTimer?.invalidate()
-        pollTimer = nil
-    }
-
-    var currentElapsedTime: Double {
-        guard isPlaying else { return elapsedTime }
-        return min(max(elapsedTime + Date().timeIntervalSince(timestampDate) * playbackRate, 0), duration)
-    }
-
-    var isRepeatEnabled: Bool { repeatMode != "off" }
-
-    var repeatIcon: String {
-        repeatMode == "one" ? "repeat.1" : "repeat"
-    }
-
-    func refresh() async {
-        if await updateFromSpotify() { return }
-        if await updateFromMusic() { return }
-        title = "Nothing playing"
-        artist = "Spotify or Music"
-        album = "Open a player to control it here"
-        isPlaying = false
-        duration = 0
-        elapsedTime = 0
-        playbackRate = 0
-        activeBundleIdentifier = "com.apple.Music"
-        activeAppName = "Music"
-        activeAppIcon = icon(forBundleIdentifier: activeBundleIdentifier)
-        lastArtworkURL = nil
-        albumArt = placeholderArt
-    }
-
-    func togglePlay() {
-        // Optimistic flip so the button reacts instantly; the player state query
-        // right after a playpause command often still reports the old value.
-        isPlaying.toggle()
-        playbackRate = isPlaying ? 1 : 0
-        timestampDate = Date()
-        runScript(command: "playpause", in: activeAppName)
-        refreshAfterCommand()
-    }
-
-    func next() {
-        runScript(command: "next track", in: activeAppName)
-        refreshAfterCommand()
-    }
-
-    func previous() {
-        runScript(command: "previous track", in: activeAppName)
-        refreshAfterCommand()
-    }
-
-    /// Player state lags a beat after a transport command, so re-read once now and
-    /// again shortly after to settle on the real values.
-    private func refreshAfterCommand() {
-        Task { @MainActor in
-            await refresh()
-            try? await Task.sleep(for: .milliseconds(350))
-            await refresh()
-        }
-    }
-
-    func toggleShuffle() {
-        if activeAppName == "Spotify" {
-            runScriptDetached("tell application \"Spotify\" to set shuffling to not shuffling")
-        }
-        Task { @MainActor in await refresh() }
-    }
-
-    func toggleRepeat() {
-        if activeAppName == "Spotify" {
-            runScriptDetached("tell application \"Spotify\" to set repeating to not repeating")
-        } else {
-            let targetMode = repeatMode == "off" ? "all" : "off"
-            runScriptDetached("tell application \"Music\" to set song repeat to \(targetMode)")
-        }
-        Task { @MainActor in await refresh() }
-    }
-
-    func seek(to seconds: Double) {
-        guard duration > 0 else { return }
-        if activeAppName == "Spotify" {
-            runScriptDetached("tell application \"Spotify\" to set player position to \(seconds)")
-        } else {
-            runScriptDetached("tell application \"Music\" to set player position to \(seconds)")
-        }
-        elapsedTime = seconds
-        timestampDate = Date()
-    }
-
-    func openActiveMusicApp() {
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: activeBundleIdentifier) {
-            NSWorkspace.shared.open(appURL)
-        }
-    }
-
-    func timeString(from seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else { return "0:00" }
-        let totalSeconds = Int(seconds)
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        let secs = totalSeconds % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, secs)
-        }
-        return String(format: "%d:%02d", minutes, secs)
-    }
-
-    private func updateFromSpotify() async -> Bool {
-        guard isRunning(bundleIdentifier: "com.spotify.client") else { return false }
-
-        // One Apple event instead of nine. `try` guards the cases where there is no
-        // current track (ad, podcast boundary) so a single missing field can't drop
-        // the whole read back to the "Spotify / Ready" placeholder state.
-        let script = """
-        tell application "Spotify"
-            set _state to player state as string
-            set _pos to player position as string
-            set _shuffle to shuffling as string
-            set _repeat to repeating as string
-            set _name to ""
-            set _artist to ""
-            set _album to ""
-            set _dur to "0"
-            set _art to ""
-            try
-                set _name to name of current track
-                set _artist to artist of current track
-                set _album to album of current track
-                set _dur to duration of current track as string
-                set _art to artwork url of current track
-            end try
-            return _state & "\t" & _name & "\t" & _artist & "\t" & _album & "\t" & _dur & "\t" & _pos & "\t" & _shuffle & "\t" & _repeat & "\t" & _art
-        end tell
-        """
-        guard let fields = await scriptValues(script, expected: 9) else {
-            // The script failed even though Spotify is running — almost always the
-            // Automation permission. Explicitly ask macOS for it so the system prompt
-            // appears (a bare NSAppleScript call can fail silently without prompting).
-            requestAutomationPermission(forBundleIdentifier: "com.spotify.client")
-            return false
-        }
-
-        activeAppName = "Spotify"
-        activeBundleIdentifier = "com.spotify.client"
-        activeAppIcon = icon(forBundleIdentifier: activeBundleIdentifier)
-        isPlaying = fields[0] == "playing"
-        title = fields[1].isEmpty ? "Spotify" : fields[1]
-        artist = fields[2].isEmpty ? "Ready" : fields[2]
-        album = fields[3]
-        duration = (Double(fields[4]) ?? 0) / 1000
-        elapsedTime = Double(fields[5]) ?? 0
-        timestampDate = Date()
-        playbackRate = isPlaying ? 1 : 0
-        isShuffled = fields[6] == "true"
-        repeatMode = fields[7] == "true" ? "all" : "off"
-        updateArtwork(from: fields[8])
-        return true
-    }
-
-    private func updateFromMusic() async -> Bool {
-        guard isRunning(bundleIdentifier: "com.apple.Music") else { return false }
-
-        let script = """
-        tell application "Music"
-            set _state to player state as string
-            set _pos to player position as string
-            set _repeat to song repeat as string
-            set _name to ""
-            set _artist to ""
-            set _album to ""
-            set _dur to "0"
-            try
-                set _name to name of current track
-                set _artist to artist of current track
-                set _album to album of current track
-                set _dur to duration of current track as string
-            end try
-            return _state & "\t" & _name & "\t" & _artist & "\t" & _album & "\t" & _dur & "\t" & _pos & "\t" & _repeat
-        end tell
-        """
-        guard let fields = await scriptValues(script, expected: 7) else {
-            requestAutomationPermission(forBundleIdentifier: "com.apple.Music")
-            return false
-        }
-
-        activeAppName = "Music"
-        activeBundleIdentifier = "com.apple.Music"
-        activeAppIcon = icon(forBundleIdentifier: activeBundleIdentifier)
-        isPlaying = fields[0] == "playing"
-        title = fields[1].isEmpty ? "Music" : fields[1]
-        artist = fields[2].isEmpty ? "Ready" : fields[2]
-        album = fields[3]
-        duration = Double(fields[4]) ?? 0
-        elapsedTime = Double(fields[5]) ?? 0
-        timestampDate = Date()
-        playbackRate = isPlaying ? 1 : 0
-        isShuffled = false
-        repeatMode = fields[6].lowercased()
-        lastArtworkURL = nil
-        albumArt = icon(forBundleIdentifier: activeBundleIdentifier)
-        return true
-    }
-
-    private func isRunning(bundleIdentifier: String) -> Bool {
-        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleIdentifier }
-    }
-
-    /// Bundle IDs we've already asked macOS to authorize this session, so the 1s poll
-    /// doesn't re-issue the request on every tick.
-    private var automationRequested: Set<String> = []
-
-    /// Explicitly requests Automation (Apple Events) permission to control `bundleID`.
-    /// A bare `NSAppleScript` call can fail silently without ever surfacing the TCC
-    /// prompt — especially on dev builds whose code signature changes each run — which
-    /// is why the app may never appear under System Settings ▸ Privacy & Security ▸
-    /// Automation. `AEDeterminePermissionToAutomateTarget` with askUserIfNeeded=true
-    /// reliably triggers the system prompt the first time and registers the app there.
-    /// Runs off the main thread because the call blocks while the dialog is up.
-    private func requestAutomationPermission(forBundleIdentifier bundleID: String) {
-        guard automationRequested.insert(bundleID).inserted else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let data = bundleID.data(using: .utf8) else { return }
-            var target = AEAddressDesc()
-            let createStatus = data.withUnsafeBytes { raw in
-                AECreateDesc(typeApplicationBundleID, raw.baseAddress, data.count, &target)
-            }
-            guard createStatus == noErr else { return }
-            defer { AEDisposeDesc(&target) }
-            let status = AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, true)
-            if status != noErr {
-                print("⚠️ MackyMusicManager: Automation permission for \(bundleID) not granted (status \(status))")
-            }
-        }
-    }
-
-    private func icon(forBundleIdentifier bundleIdentifier: String) -> NSImage {
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
-            return NSWorkspace.shared.icon(forFile: url.path)
-        }
-        return NSImage(systemSymbolName: "music.note", accessibilityDescription: "Music")!
-    }
-
-    private func updateArtwork(from urlString: String) {
-        guard !urlString.isEmpty, let url = URL(string: urlString) else { return }
-        // Avoid re-downloading the same artwork on every 1s poll.
-        guard urlString != lastArtworkURL else { return }
-        lastArtworkURL = urlString
-        Task {
-            guard let data = try? Data(contentsOf: url), let image = NSImage(data: data) else { return }
-            await MainActor.run {
-                guard self.lastArtworkURL == urlString else { return }
-                self.albumArt = image
-            }
-        }
-    }
-
-    private func runScript(command: String, in appName: String) {
-        runScriptDetached("tell application \"\(appName)\" to \(command)")
-    }
-
-    /// Runs an AppleScript **off the main actor** and returns its string value.
-    /// `NSAppleScript.executeAndReturnError` blocks the calling thread for the full
-    /// Apple Event round-trip; running it on `@MainActor` (as the 1s poll used to)
-    /// stalled the UI every tick. `nonisolated` + an off-main detached hop keeps the
-    /// block off the main thread; callers `await` and then hop back to the main actor
-    /// only to assign `@Published` state. Mirrors the detached-`Process` pattern in
-    /// `SystemControlsIntegration.runAppleScript`.
-    private nonisolated static func executeScript(_ source: String) async -> String? {
-        await Task.detached(priority: .utility) { () -> String? in
-            var error: NSDictionary?
-            let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
-            if let error {
-                // Don't swallow the failure: when this returns nil the panel falls back
-                // to "Nothing playing" even while Spotify/Music is clearly playing. The
-                // usual cause is the macOS Automation permission to control the player
-                // being denied or never granted (error -1743 errAEEventNotPermitted),
-                // fixable in System Settings ▸ Privacy & Security ▸ Automation ▸ Macky.
-                let code = error[NSAppleScript.errorNumber] ?? "?"
-                let message = error[NSAppleScript.errorMessage] ?? "unknown"
-                print("⚠️ MackyMusicManager: AppleScript failed (\(code)): \(message)")
-            }
-            return result?.stringValue
-        }.value
-    }
-
-    /// Read-path helper: runs `source` off the main actor and returns its string value.
-    @discardableResult
-    private func scriptValue(_ source: String) async -> String? {
-        await Self.executeScript(source)
-    }
-
-    /// Fire-and-forget write-path helper for transport commands whose return value is
-    /// unused. Runs off the main actor so a transport tap never blocks the UI.
-    private func runScriptDetached(_ source: String) {
-        Task { await Self.executeScript(source) }
-    }
-
-    /// Runs a script that returns tab-delimited fields. Returns nil if the script
-    /// failed (e.g. Automation permission not granted) so the caller can fall back.
-    private func scriptValues(_ source: String, expected: Int) async -> [String]? {
-        guard let raw = await scriptValue(source) else { return nil }
-        var fields = raw.components(separatedBy: "\t")
-        guard fields.count >= expected else { return nil }
-        if fields.count > expected {
-            fields = Array(fields.prefix(expected))
-        }
-        return fields
-    }
-}
-
-@MainActor
-final class AurenSidebarData: ObservableObject {
-    struct CalEvent: Identifiable {
-        let id: String
-        let title: String
-        let timeString: String
-        let color: Color
-    }
-
-    struct ReminderItem: Identifiable {
-        let id: String
-        let title: String
-    }
-
-    @Published private(set) var todaysEvents: [CalEvent] = []
-    @Published private(set) var selectedEvents: [CalEvent] = []
-    @Published private(set) var reminders: [ReminderItem] = []
-
-    private let store = EKEventStore()
-
-    func refresh() async {
-        await loadEvents(for: Date())
-        await loadReminders()
-    }
-
-    func loadEvents(for date: Date) async {
-        guard await ensureAccess(.event) else {
-            todaysEvents = []
-            selectedEvents = []
-            return
-        }
-        let calendar = Calendar.current
-        let start = calendar.startOfDay(for: date)
-        guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return }
-
-        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
-        let timeFormatter = DateFormatter()
-        timeFormatter.timeStyle = .short
-        timeFormatter.dateStyle = .none
-
-        let events = store.events(matching: predicate)
-            .sorted { $0.startDate < $1.startDate }
-            .map { event in
-                return CalEvent(
-                    id: event.eventIdentifier ?? UUID().uuidString,
-                    title: event.title ?? "(untitled)",
-                    timeString: event.isAllDay ? "All day" : timeFormatter.string(from: event.startDate),
-                    color: DS.Colors.accentText
-                )
-            }
-        selectedEvents = events
-        if calendar.isDateInToday(date) {
-            todaysEvents = events
-        }
-    }
-
-    private func loadReminders() async {
-        guard await ensureAccess(.reminder) else {
-            reminders = []
-            return
-        }
-        let predicate = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: nil)
-        let fetched: [EKReminder] = await withCheckedContinuation { continuation in
-            store.fetchReminders(matching: predicate) { result in
-                continuation.resume(returning: result ?? [])
-            }
-        }
-        reminders = fetched.prefix(8).map { ReminderItem(id: $0.calendarItemIdentifier, title: $0.title ?? "(untitled)") }
-    }
-
-    func complete(_ item: ReminderItem) {
-        guard let reminder = store.calendarItem(withIdentifier: item.id) as? EKReminder else {
-            reminders.removeAll { $0.id == item.id }
-            return
-        }
-        reminder.isCompleted = true
-        try? store.save(reminder, commit: true)
-        reminders.removeAll { $0.id == item.id }
-    }
-
-    private func ensureAccess(_ type: EKEntityType) async -> Bool {
-        switch EKEventStore.authorizationStatus(for: type) {
-        case .fullAccess:
-            return true
-        case .notDetermined:
-            do {
-                if type == .event {
-                    return try await store.requestFullAccessToEvents()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.75))
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color(nsColor: .secondarySystemFill)))
                 }
-                return try await store.requestFullAccessToReminders()
-            } catch {
-                return false
+                .buttonStyle(.plain)
+
+                Text("Chat")
+                    .font(.system(.headline, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+
+                Spacer()
+
+                Text(formattedTimestamp)
+                    .font(.system(.footnote, design: .rounded))
+                    .foregroundColor(.white.opacity(0.4))
             }
-        case .writeOnly:
-            return type == .reminder
-        default:
-            return false
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("You said")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundColor(.accentColor)
+                Text(interaction.userPhrase.isEmpty ? "—" : interaction.userPhrase)
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .secondarySystemFill)))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Macky replied")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundColor(.accentColor)
+                Text(interaction.modelSummary.isEmpty ? "—" : interaction.modelSummary)
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .secondarySystemFill)))
         }
     }
 }
+

@@ -145,7 +145,7 @@ struct NotchContainerView: View {
         } else {
             switch panelPage {
             case .home:
-                AurenPanel(companionManager: companionManager, page: .home)
+                AurenPanel(companionManager: companionManager, page: .home, onOpenConnectors: { panelPage = .connectors })
             case .connectors:
                 AurenPanel(companionManager: companionManager, page: .connectors)
             case .settings:
@@ -284,18 +284,20 @@ private struct MackyPanelHeader: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            MackyGlyphLogo(size: 15, glow: false)
-
-            Text("Macky")
-                .font(.system(size: DS.PanelTypography.size(12), weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+            PanelTabBar(
+                tabs: [
+                    .init(id: "home", icon: "house", label: "Home"),
+                    .init(id: "connectors", icon: "square.grid.2x2", label: "Connectors")
+                ],
+                selectedID: selectedPage == .connectors ? "connectors" : "home",
+                onSelect: { id in
+                    selectedPage = id == "connectors" ? .connectors : .home
+                }
+            )
 
             Spacer()
 
-            HeaderIcon(systemName: "house", isSelected: selectedPage == .home) { selectedPage = .home }
-            HeaderIcon(systemName: "square.grid.2x2", isSelected: selectedPage == .connectors) { selectedPage = .connectors }
-            HeaderIcon(systemName: "paperclip", isSelected: selectedPage == .files) { selectedPage = .files }
-            HeaderIcon(systemName: "sun.max", isSelected: selectedPage == .settings) { selectedPage = .settings }
+            HeaderIcon(systemName: "gearshape", isSelected: selectedPage == .settings) { selectedPage = .settings }
             HeaderIcon(systemName: "chevron.up", isSelected: false, action: onClose)
         }
         .padding(.horizontal, 4)
@@ -310,12 +312,12 @@ private struct HeaderIcon: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(isSelected ? .white : .white.opacity(0.6))
                 .frame(width: 27, height: 27)
                 .background(
                     Circle()
-                        .fill(isSelected ? Color.white.opacity(0.14) : Color.white.opacity(0.05))
+                        .fill(isSelected ? Color(nsColor: .secondarySystemFill) : Color.white.opacity(0.05))
                 )
                 .overlay(
                     Circle().strokeBorder(Color.white.opacity(isSelected ? 0.14 : 0.07), lineWidth: 1)
