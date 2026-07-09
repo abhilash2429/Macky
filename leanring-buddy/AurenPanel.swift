@@ -388,23 +388,6 @@ private struct ConnectorIcon: View {
 private struct SettingsPanel: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject private var authManager = AuthManager.shared
-    @State private var selectedTab: SettingsTab = .general
-
-    private enum SettingsTab: String, CaseIterable {
-        case general = "General"
-        case permissions = "Permissions"
-        case shortcuts = "Shortcuts"
-        case account = "Account"
-
-        var icon: String {
-            switch self {
-            case .general: return "gearshape"
-            case .permissions: return "lock.shield"
-            case .shortcuts: return "keyboard"
-            case .account: return "person.crop.circle"
-            }
-        }
-    }
 
     /// A live, accurate summary of connected connectors — never a hardcoded 0.
     /// Reads the real set of connected toolkits from the worker (populated by
@@ -415,123 +398,93 @@ private struct SettingsPanel: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                MackyGlyphLogo(size: 26, glow: false)
-                    .padding(.leading, 6)
-                    .padding(.bottom, 12)
-
-                ForEach(SettingsTab.allCases, id: \.self) { tab in
-                    let isSelected = selectedTab == tab
-                    Button {
-                        selectedTab = tab
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: tab.icon)
-                                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
-                                .frame(width: 14)
-                            Text(tab.rawValue)
-                                .font(.system(size: DS.PanelTypography.size(11), weight: isSelected ? .semibold : .medium))
-                            Spacer()
-                        }
-                        .foregroundStyle(isSelected ? DS.Colors.textPrimary : DS.Colors.textSecondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 20) {
+                generalSection
+                permissionsSection
+                shortcutsSection
+                accountSection
             }
-            .frame(width: 132, alignment: .topLeading)
-            .padding(.top, 8)
-
-            Rectangle()
-                .fill(Color.white.opacity(0.1))
-                .frame(width: 1)
-
-            ScrollView(.vertical, showsIndicators: false) {
-                settingsDetail
-                    .padding(.top, 10)
-                    .padding(.bottom, 14)
-            }
+            .padding(.horizontal, 18)
+            .padding(.top, 10)
+            .padding(.bottom, 14)
         }
-        .padding(.horizontal, 18)
         .onAppear { companionManager.refreshConnectedToolkits() }
     }
 
-    @ViewBuilder
-    private var settingsDetail: some View {
-        switch selectedTab {
-        case .general:
-            VStack(alignment: .leading, spacing: 9) {
-                PanelTitle("General", subtitle: "Panel, status, and active-state controls.")
-                SettingsInfoRow(icon: "capsule.portrait.fill", title: "Notch UI", value: "Enabled")
-                SettingsInfoRow(icon: "waveform", title: "Active state", value: companionManager.activeStatusText.isEmpty ? "Idle" : companionManager.activeStatusText)
-                SettingsInfoRow(
-                    icon: "square.grid.2x2",
-                    title: "Connectors",
-                    value: connectorsSummary
-                )
-            }
-        case .permissions:
-            VStack(alignment: .leading, spacing: 9) {
-                PanelTitle("Permissions", subtitle: "Grant access without leaving the panel flow.")
-                SettingsPermissionRow(title: "Microphone", granted: companionManager.hasMicrophonePermission) {
-                    companionManager.requestMicrophonePermission()
-                }
-                SettingsPermissionRow(title: "Accessibility", granted: companionManager.hasAccessibilityPermission) {
-                    companionManager.requestAccessibilityPermission()
-                }
-                SettingsPermissionRow(title: "Automation (AppleScript)", granted: companionManager.hasAutomationPermission) {
-                    companionManager.requestAutomationPermission()
-                }
-                SettingsPermissionRow(title: "Calendar", granted: companionManager.hasCalendarPermission) {
-                    companionManager.requestCalendarPermission()
-                }
-                SettingsPermissionRow(title: "Reminders", granted: companionManager.hasRemindersPermission) {
-                    companionManager.requestRemindersPermission()
-                }
-                SettingsPermissionRow(title: "Screen Recording", granted: companionManager.hasScreenRecordingPermission) {
-                    companionManager.requestScreenRecordingPermission()
-                }
-                SettingsPermissionRow(title: "Screen Content", granted: companionManager.hasScreenContentPermission) {
-                    companionManager.requestScreenContentPermission()
-                }
-            }
-        case .shortcuts:
-            VStack(alignment: .leading, spacing: 9) {
-                PanelTitle("Shortcuts", subtitle: "Push-to-talk listens globally while Macky is running.")
-                HotkeySettingsView(companionManager: companionManager)
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
-            }
-        case .account:
-            VStack(alignment: .leading, spacing: 9) {
-                PanelTitle("Account", subtitle: "Session and app controls.")
-                Button("Reset onboarding") {
-                    companionManager.setPanelOnboardingComplete(false)
-                }
-                .mackySettingsButton()
+    private var generalSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            PanelTitle("General", subtitle: "Panel, status, and active-state controls.")
+            SettingsInfoRow(icon: "capsule.portrait.fill", title: "Notch UI", value: "Enabled")
+            SettingsInfoRow(icon: "waveform", title: "Active state", value: companionManager.activeStatusText.isEmpty ? "Idle" : companionManager.activeStatusText)
+            SettingsInfoRow(
+                icon: "square.grid.2x2",
+                title: "Connectors",
+                value: connectorsSummary
+            )
+        }
+    }
 
-                Button("Sign out") {
-                    authManager.clearSession()
-                    companionManager.setPanelOnboardingComplete(false)
-                }
-                .mackySettingsButton()
-
-                Button("Quit Macky") {
-                    NSApp.terminate(nil)
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
-                .foregroundStyle(DS.Colors.destructiveText)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 8).fill(DS.Colors.destructive))
+    private var permissionsSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            PanelTitle("Permissions", subtitle: "Grant access without leaving the panel flow.")
+            SettingsPermissionRow(title: "Microphone", granted: companionManager.hasMicrophonePermission) {
+                companionManager.requestMicrophonePermission()
             }
+            SettingsPermissionRow(title: "Accessibility", granted: companionManager.hasAccessibilityPermission) {
+                companionManager.requestAccessibilityPermission()
+            }
+            SettingsPermissionRow(title: "Automation (AppleScript)", granted: companionManager.hasAutomationPermission) {
+                companionManager.requestAutomationPermission()
+            }
+            SettingsPermissionRow(title: "Calendar", granted: companionManager.hasCalendarPermission) {
+                companionManager.requestCalendarPermission()
+            }
+            SettingsPermissionRow(title: "Reminders", granted: companionManager.hasRemindersPermission) {
+                companionManager.requestRemindersPermission()
+            }
+            SettingsPermissionRow(title: "Screen Recording", granted: companionManager.hasScreenRecordingPermission) {
+                companionManager.requestScreenRecordingPermission()
+            }
+            SettingsPermissionRow(title: "Screen Content", granted: companionManager.hasScreenContentPermission) {
+                companionManager.requestScreenContentPermission()
+            }
+        }
+    }
+
+    private var shortcutsSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            PanelTitle("Shortcuts", subtitle: "Push-to-talk listens globally while Macky is running.")
+            HotkeySettingsView(companionManager: companionManager)
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .secondarySystemFill)))
+        }
+    }
+
+    private var accountSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            PanelTitle("Account", subtitle: "Session and app controls.")
+            Button("Reset onboarding") {
+                companionManager.setPanelOnboardingComplete(false)
+            }
+            .mackySettingsButton()
+
+            Button("Sign out") {
+                authManager.clearSession()
+                companionManager.setPanelOnboardingComplete(false)
+            }
+            .mackySettingsButton()
+
+            Button("Quit Macky") {
+                NSApp.terminate(nil)
+            }
+            .buttonStyle(.plain)
+            .font(.system(.footnote, design: .rounded))
+            .fontWeight(.semibold)
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.red))
         }
     }
 }
@@ -544,21 +497,20 @@ private struct SettingsInfoRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
-                .foregroundStyle(.white.opacity(0.58))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.6))
                 .frame(width: 16)
             Text(title)
-                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
-                .foregroundStyle(.white.opacity(0.88))
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.9))
             Spacer()
             Text(value)
-                .font(.system(size: DS.PanelTypography.size(10), weight: .medium))
-                .foregroundStyle(.white.opacity(0.5))
+                .font(.system(.footnote, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.6))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .secondarySystemFill)))
     }
 }
 
@@ -566,11 +518,12 @@ private extension View {
     func mackySettingsButton() -> some View {
         self
             .buttonStyle(.plain)
-            .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
-            .foregroundStyle(.white.opacity(0.78))
+            .font(.system(.footnote, design: .rounded))
+            .fontWeight(.semibold)
+            .foregroundStyle(Color.white.opacity(0.9))
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .secondarySystemFill)))
     }
 }
 
@@ -582,33 +535,35 @@ private struct SettingsPermissionRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: granted ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: DS.PanelTypography.size(15), weight: granted ? .medium : .light))
-                .foregroundStyle(granted ? DS.Colors.success : DS.Colors.textTertiary)
+                .font(.system(size: 15, weight: granted ? .medium : .light))
+                .foregroundStyle(granted ? Color.green : Color.white.opacity(0.4))
             Text(title)
-                .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
-                .foregroundStyle(DS.Colors.textPrimary)
+                .font(.system(.subheadline, design: .rounded))
+                .fontWeight(.semibold)
+                .foregroundStyle(Color.white.opacity(0.9))
             Spacer()
             if granted {
                 Text("Granted")
-                    .font(.system(size: DS.PanelTypography.size(10), weight: .semibold))
-                    .foregroundStyle(DS.Colors.success)
+                    .font(.system(.footnote, design: .rounded))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.green)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(Capsule().fill(DS.Colors.success.opacity(0.15)))
+                    .background(Capsule().fill(Color.green.opacity(0.15)))
             } else {
                 Button("Allow") { action() }
                     .buttonStyle(.plain)
-                    .font(.system(size: DS.PanelTypography.size(10), weight: .semibold))
-                    .foregroundStyle(DS.Colors.textOnAccent)
+                    .font(.system(.footnote, design: .rounded))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.white)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
-                    .background(Capsule().fill(DS.Colors.accent))
+                    .background(Capsule().fill(Color.accentColor))
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .secondarySystemFill)))
     }
 }
 
@@ -624,11 +579,11 @@ private struct PanelTitle: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.system(size: DS.PanelTypography.size(19), weight: .bold, design: .rounded))
-                .foregroundStyle(DS.Colors.textPrimary)
+                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.9))
             Text(subtitle)
-                .font(.system(size: DS.PanelTypography.size(11)))
-                .foregroundStyle(DS.Colors.textTertiary)
+                .font(.system(.footnote, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.4))
         }
         .padding(.bottom, 4)
     }
