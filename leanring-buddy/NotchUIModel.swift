@@ -22,9 +22,13 @@ import SwiftUI
 
 /// Fixed geometry constants, mirroring BoringNotch's `sizing/matters.swift`.
 enum NotchConstants {
-    /// The expanded panel's content size. Width is unchanged; the height is reduced
-    /// to ~67% of the original 420 so the panel is shorter without getting narrower.
-    static let openNotchSize = CGSize(width: 680, height: 280)
+    /// The expanded panel's content size. Width is unchanged. Height was originally
+    /// reduced from 420 to 280 to keep the panel short; bumped to 340 for the
+    /// horizon redesign so the single-column Connectors list and the fully
+    /// scrollable Settings page can show more content before scrolling further.
+    /// This height is shared by every open-panel page (Home, Connectors, Settings,
+    /// Files, Auth, Onboarding) — there is only one open panel size.
+    static let openNotchSize = CGSize(width: 680, height: 340)
     /// Transparent breathing room around the panel so the drop shadow isn't clipped.
     static let shadowPadding: CGFloat = 20
     /// Total host-window size when open (content + shadow padding).

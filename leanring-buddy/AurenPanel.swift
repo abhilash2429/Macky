@@ -72,11 +72,6 @@ private struct ConnectorsPanel: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var searchText = ""
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 9),
-        GridItem(.flexible(), spacing: 9)
-    ]
-
     private var filteredConnectors: [MackyConnector] {
         let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
         guard !query.isEmpty else { return MackyConnectorCatalog.items }
@@ -90,9 +85,9 @@ private struct ConnectorsPanel: View {
             searchBar
 
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVGrid(columns: columns, spacing: 9) {
+                LazyVStack(spacing: 8) {
                     ForEach(filteredConnectors) { connector in
-                        ConnectorGridCard(
+                        ConnectorListRow(
                             connector: connector,
                             pendingConnection: pendingConnection(for: connector),
                             isConnected: companionManager.connectedToolkits.contains(connector.slug.lowercased()),
@@ -112,17 +107,19 @@ private struct ConnectorsPanel: View {
     private var searchBar: some View {
         HStack(spacing: 9) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: DS.PanelTypography.size(12), weight: .medium))
-                .foregroundStyle(DS.Colors.textTertiary)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white.opacity(0.4))
             TextField("Search 250+ connectors…", text: $searchText)
                 .textFieldStyle(.plain)
-                .font(.system(size: DS.PanelTypography.size(12)))
-                .foregroundStyle(DS.Colors.textPrimary)
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundColor(.white.opacity(0.9))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
-        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.white.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color(nsColor: .secondarySystemFill))
+        )
     }
 
     private func pendingConnection(for connector: MackyConnector) -> PendingConnection? {
@@ -181,7 +178,7 @@ private enum MackyConnectorCatalog {
             icon: "envelope.fill",
             category: "Communication",
             description: "Draft, send, search, and summarize email from voice requests.",
-            accent: DS.Colors.accentText,
+            accent: Color.accentColor,
             badge: .popular(2),
             examples: ["Write a follow-up to John", "Find the latest client email", "Summarize unread mail"]
         ),
@@ -190,7 +187,7 @@ private enum MackyConnectorCatalog {
             icon: "number",
             category: "Communication",
             description: "Send messages, look up channels, and turn threads into next actions.",
-            accent: DS.Colors.accentText,
+            accent: Color.accentColor,
             badge: .popular(9),
             examples: ["Send the standup update", "Catch me up on design", "Post a reminder"]
         ),
@@ -199,7 +196,7 @@ private enum MackyConnectorCatalog {
             icon: "calendar",
             category: "Planning",
             description: "Create meetings and inspect availability through Composio.",
-            accent: DS.Colors.accentText,
+            accent: Color.accentColor,
             badge: .popular(3),
             examples: ["Schedule a call tomorrow", "Move my 3 PM meeting", "Find open time Friday"]
         ),
@@ -208,7 +205,7 @@ private enum MackyConnectorCatalog {
             icon: "doc.text.fill",
             category: "Knowledge",
             description: "Create pages, update notes, and pull workspace context into Macky.",
-            accent: DS.Colors.accentText,
+            accent: Color.accentColor,
             badge: .popular(6),
             examples: ["Add this to product notes", "Find the launch checklist", "Create a meeting page"]
         ),
@@ -217,7 +214,7 @@ private enum MackyConnectorCatalog {
             icon: "chevron.left.forwardslash.chevron.right",
             category: "Developer",
             description: "Read issues, create pull requests, and work with repositories.",
-            accent: DS.Colors.accentText,
+            accent: Color.accentColor,
             badge: .new,
             examples: ["Open a bug issue", "Summarize recent PRs", "Find failing checks"]
         ),
@@ -226,7 +223,7 @@ private enum MackyConnectorCatalog {
             icon: "line.3.horizontal.decrease.circle.fill",
             category: "Planning",
             description: "Create issues, inspect cycles, and keep project status moving.",
-            accent: DS.Colors.accentText,
+            accent: Color.accentColor,
             badge: .new,
             examples: ["Create a task for this", "Move it to in progress", "List urgent bugs"]
         ),
@@ -235,7 +232,7 @@ private enum MackyConnectorCatalog {
             icon: "music.note",
             category: "Media",
             description: "Control playback and use music context without leaving the notch.",
-            accent: DS.Colors.accentText,
+            accent: Color.accentColor,
             badge: .popular(4),
             examples: ["Play focus music", "Pause Spotify", "Skip this track"]
         )
@@ -261,7 +258,7 @@ private enum MackyConnectorCatalog {
     }
 }
 
-private struct ConnectorGridCard: View {
+private struct ConnectorListRow: View {
     let connector: MackyConnector
     let pendingConnection: PendingConnection?
     let isConnected: Bool
@@ -269,104 +266,83 @@ private struct ConnectorGridCard: View {
     let onOpenPending: (PendingConnection) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                ConnectorIcon(connector: connector, size: 40, iconSize: 18)
+        HStack(spacing: 12) {
+            ConnectorIcon(connector: connector, size: 38, iconSize: 17)
 
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(connector.name)
-                        .font(.system(size: DS.PanelTypography.size(13), weight: .semibold))
-                        .foregroundStyle(DS.Colors.textPrimary)
-                        .lineLimit(1)
-                    statusBadge
-                }
-                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(connector.name)
+                    .font(.system(.headline, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(1)
 
-                Spacer(minLength: 0)
-
-                actionButton
+                Text(connector.description)
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundColor(.white.opacity(0.6))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
 
-            Text(connector.description)
-                .font(.system(size: DS.PanelTypography.size(11)))
-                .foregroundStyle(DS.Colors.textSecondary)
-                .lineSpacing(2)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 8)
+
+            actionControl
         }
-        .padding(13)
-        .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.05)))
-        .overlay(
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(DS.Colors.borderSubtle, lineWidth: 1)
+                .fill(Color.white.opacity(0.05))
         )
     }
 
-    /// Connection-status pill under the connector name: "Connected" in a success
-    /// tone when the toolkit is live, "Connect" in an accent tone otherwise.
+    /// Trailing action control: a live connection shows a static "Connected"
+    /// pill (no action), a pending link resumes that authorization flow, and
+    /// otherwise a "Connect" pill kicks off a new one.
     @ViewBuilder
-    private var statusBadge: some View {
+    private var actionControl: some View {
         if isConnected {
-            Badge(text: "Connected", tone: .success)
-        } else {
-            Badge(text: "Connect", tone: .accent)
-        }
-    }
-
-    @ViewBuilder
-    private var actionButton: some View {
-        if isConnected {
-            // Live, end-to-end connection: show a tick, no action needed.
-            Image(systemName: "checkmark")
-                .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
-                .foregroundStyle(DS.Colors.success)
-                .frame(width: 30, height: 30)
-                .background(Circle().fill(DS.Colors.success.opacity(0.16)))
-                .help("\(connector.name) is connected")
-        } else {
+            HStack(spacing: 5) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Connected")
+                    .font(.system(.footnote, design: .rounded))
+                    .fontWeight(.semibold)
+            }
+            .foregroundColor(.green)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.green.opacity(0.16)))
+            .help("\(connector.name) is connected")
+        } else if let pendingConnection {
             Button {
-                if let pendingConnection {
-                    onOpenPending(pendingConnection)
-                } else {
-                    onConnect()
-                }
+                onOpenPending(pendingConnection)
             } label: {
-                Image(systemName: pendingConnection != nil ? "arrow.triangle.2.circlepath" : "plus")
-                    .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
-                    .foregroundStyle(DS.Colors.textOnAccent)
-                    .frame(width: 30, height: 30)
-                    .background(Circle().fill(DS.Colors.accent))
-                    .contentShape(Rectangle())
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Resume")
+                        .font(.system(.footnote, design: .rounded))
+                        .fontWeight(.semibold)
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.accentColor))
             }
             .buttonStyle(.plain)
-            .help(pendingConnection != nil ? "Open authorization link" : "Connect \(connector.name)")
+            .help("Open authorization link")
+        } else {
+            Button(action: onConnect) {
+                Text("Connect")
+                    .font(.system(.footnote, design: .rounded))
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Color.accentColor))
+            }
+            .buttonStyle(.plain)
+            .help("Connect \(connector.name)")
         }
-    }
-}
-
-/// A small status pill used on connector cards. `success` reads as a live
-/// connection, `accent` as an available-to-connect action.
-private struct Badge: View {
-    enum Tone { case success, accent }
-    let text: String
-    let tone: Tone
-
-    private var foreground: Color {
-        tone == .success ? DS.Colors.success : DS.Colors.accentText
-    }
-    private var fill: Color {
-        tone == .success ? DS.Colors.success.opacity(0.16) : DS.Colors.accent.opacity(0.16)
-    }
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: DS.PanelTypography.size(10), weight: .semibold))
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(fill))
     }
 }
 
@@ -384,8 +360,6 @@ private struct ConnectorIcon: View {
         let corner = min(11, size * 0.28)
         Group {
             if let logoImage {
-                // Official logo on a near-black tile so connector rows stay inside
-                // the panel's flat black palette.
                 Image(nsImage: logoImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -393,23 +367,22 @@ private struct ConnectorIcon: View {
                     .frame(width: size, height: size)
                     .background(
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .fill(DS.Colors.surface3)
+                            .fill(Color(nsColor: .secondarySystemFill))
                     )
             } else {
-                // Fallback: the brand mark/letter on the same near-black tile.
+                // Fallback: the brand mark/letter on the same system-adaptive tile.
                 Image(systemName: connector.icon)
-                    .font(.system(size: DS.PanelTypography.size(iconSize), weight: .semibold))
-                    .foregroundStyle(DS.Colors.textPrimary)
+                    .font(.system(size: iconSize, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.85))
                     .frame(width: size, height: size)
                     .background(
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .fill(DS.Colors.surface3)
+                            .fill(Color(nsColor: .secondarySystemFill))
                     )
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     }
-
 }
 
 private struct SettingsPanel: View {
