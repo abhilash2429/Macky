@@ -125,7 +125,11 @@ struct NotchContainerView: View {
 
     @ViewBuilder
     private var headerOrStatus: some View {
-        if isOpen {
+        if isOpen && setupRequiresPanel {
+            // Auth/onboarding own the full open-panel height; the header's tabs,
+            // gear, and close button are all inert while setup is required.
+            EmptyView()
+        } else if isOpen {
             MackyPanelHeader(selectedPage: $panelPage, onClose: { close(userInitiated: true) })
                 .frame(height: max(28, notch.effectiveClosedNotchHeight))
         } else if companionManager.isAssistantActive {
@@ -340,8 +344,8 @@ private struct MackyPanelOnboardingView: View {
             ZStack {
                 switch step {
                 case .welcome:
-                    MackyOnboardingWelcomeView(onContinue: goNext)
-                case .microphone, .screenRecording, .screenContent, .accessibility, .calendar, .reminders:
+                    MackyOnboardingWelcomeView(step: step, onContinue: goNext)
+                case .microphone, .screenRecording, .accessibility, .calendar, .reminders:
                     MackyOnboardingPermissionView(
                         step: step,
                         isGranted: step.isGranted(companionManager),
@@ -350,12 +354,14 @@ private struct MackyPanelOnboardingView: View {
                     )
                 case .hotkey:
                     MackyOnboardingHotkeyView(
+                        step: step,
                         companionManager: companionManager,
                         onContinue: goNext,
                         onSkip: goNext
                     )
                 case .finished:
                     MackyOnboardingFinishedView(
+                        step: step,
                         hasAllPermissions: companionManager.allPermissionsGranted,
                         onFinish: { companionManager.setPanelOnboardingComplete(true) }
                     )
@@ -372,7 +378,7 @@ private struct MackyPanelOnboardingView: View {
         HStack(spacing: 5) {
             ForEach(0..<MackyPanelOnboardingStep.allCases.count, id: \.self) { index in
                 Capsule()
-                    .fill(index <= step.rawValue ? DS.Colors.accent : Color.white.opacity(0.14))
+                    .fill(index <= step.rawValue ? Color.accentColor : Color.white.opacity(0.14))
                     .frame(height: 3)
             }
         }
@@ -396,11 +402,14 @@ private struct MackyPanelOnboardingView: View {
 }
 
 private enum MackyPanelOnboardingStep: Int, CaseIterable {
+    // Microphone and accessibility gate the core push-to-talk loop (accessibility
+    // specifically gates whether the global hotkey fires at all), so they come
+    // first — ahead of the supplementary screen-recording/calendar/reminders
+    // steps, and before the hotkey step that depends on accessibility.
     case welcome
     case microphone
-    case screenRecording
-    case screenContent
     case accessibility
+    case screenRecording
     case calendar
     case reminders
     case hotkey
@@ -411,7 +420,6 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
         case .welcome: return "Macky"
         case .microphone: return "Enable Microphone"
         case .screenRecording: return "Enable Screen Recording"
-        case .screenContent: return "Enable Screen Context"
         case .accessibility: return "Enable Accessibility"
         case .calendar: return "Enable Calendar"
         case .reminders: return "Enable Reminders"
@@ -425,7 +433,6 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
         case .welcome: return "capsule.portrait.fill"
         case .microphone: return "mic.fill"
         case .screenRecording: return "rectangle.dashed.badge.record"
-        case .screenContent: return "macwindow"
         case .accessibility: return "accessibility"
         case .calendar: return "calendar"
         case .reminders: return "checklist"
@@ -442,8 +449,6 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
             return "Macky needs microphone access to hear your push-to-talk requests. Audio capture only starts when you hold the key."
         case .screenRecording:
             return "Screen Recording lets Macky understand visible app context when you ask for help."
-        case .screenContent:
-            return "Screen context lets Macky attach the current page or selected content to a request."
         case .accessibility:
             return "Accessibility lets the global hotkey and system-level actions work reliably."
         case .calendar:
@@ -463,7 +468,7 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
             return ""
         case .microphone:
             return "Nothing is recorded in the background — only while the key is held."
-        case .screenRecording, .screenContent:
+        case .screenRecording:
             return "Screen context is sent only when Macky needs it for your request."
         case .accessibility:
             return "This is used for control and hotkey behavior, not background browsing."
@@ -482,8 +487,6 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
             return companionManager.hasMicrophonePermission
         case .screenRecording:
             return companionManager.hasScreenRecordingPermission
-        case .screenContent:
-            return companionManager.hasScreenContentPermission
         case .accessibility:
             return companionManager.hasAccessibilityPermission
         case .calendar:
@@ -501,8 +504,6 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
             companionManager.requestMicrophonePermission()
         case .screenRecording:
             companionManager.requestScreenRecordingPermission()
-        case .screenContent:
-            companionManager.requestScreenContentPermission()
         case .accessibility:
             companionManager.requestAccessibilityPermission()
         case .calendar:
@@ -514,6 +515,7 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
 }
 
 private struct MackyOnboardingWelcomeView: View {
+    let step: MackyPanelOnboardingStep
     let onContinue: () -> Void
 
     var body: some View {
@@ -523,26 +525,35 @@ private struct MackyOnboardingWelcomeView: View {
 
                 VStack(spacing: 3) {
                     Text("Macky")
-                        .font(.system(size: DS.PanelTypography.size(26), weight: .bold, design: .rounded))
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                     Text("Welcome")
-                        .font(.system(size: DS.PanelTypography.size(14), weight: .medium))
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.56))
+                    Text(step.description)
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 320)
+                        .padding(.top, 3)
                 }
 
                 Button(action: onContinue) {
                     Text("Get started")
-                        .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
-                        .foregroundStyle(DS.Colors.textOnAccent)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.white)
                         .padding(.horizontal, 18)
                         .padding(.vertical, 7)
-                        .background(Capsule().fill(DS.Colors.accent))
+                        .background(Capsule().fill(Color.accentColor))
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 9)
             }
             .padding(.bottom, 18)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow))
     }
 }
 
@@ -556,27 +567,27 @@ private struct MackyOnboardingPermissionView: View {
         VStack(spacing: 15) {
             // 54px rounded icon tile with a soft accent wash.
             Image(systemName: isGranted ? "checkmark.circle.fill" : step.icon)
-                .font(.system(size: DS.PanelTypography.size(22), weight: .semibold))
-                .foregroundStyle(isGranted ? DS.Colors.success : DS.Colors.accentText)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(isGranted ? Color.green : Color.accentColor)
                 .frame(width: 54, height: 54)
                 .background(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill((isGranted ? DS.Colors.success : DS.Colors.accentText).opacity(0.14))
+                        .fill((isGranted ? Color.green : Color.accentColor).opacity(0.14))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder((isGranted ? DS.Colors.success : DS.Colors.accentText).opacity(0.28), lineWidth: 1)
+                        .strokeBorder((isGranted ? Color.green : Color.accentColor).opacity(0.28), lineWidth: 1)
                 )
                 .padding(.top, 4)
 
             VStack(spacing: 7) {
                 Text(step.title)
-                    .font(.system(size: DS.PanelTypography.size(22), weight: .bold, design: .rounded))
-                    .foregroundStyle(DS.Colors.textPrimary)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.9))
 
                 Text(step.description)
-                    .font(.system(size: DS.PanelTypography.size(12)))
-                    .foregroundStyle(DS.Colors.textSecondary)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.6))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 380)
@@ -585,11 +596,11 @@ private struct MackyOnboardingPermissionView: View {
             if !step.privacyNote.isEmpty {
                 HStack(alignment: .center, spacing: 8) {
                     Image(systemName: "lock.shield")
-                        .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
-                        .foregroundStyle(DS.Colors.textTertiary)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.4))
                     Text(step.privacyNote)
-                        .font(.system(size: DS.PanelTypography.size(10)))
-                        .foregroundStyle(DS.Colors.textTertiary)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.4))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.horizontal, 12)
@@ -601,16 +612,16 @@ private struct MackyOnboardingPermissionView: View {
             HStack(spacing: 11) {
                 Button("Not now", action: onSkip)
                     .buttonStyle(.plain)
-                    .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
-                    .foregroundStyle(DS.Colors.textSecondary)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.6))
 
                 Button(action: onAllow) {
                     Text(isGranted ? "Continue" : "Allow access")
-                        .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 9)
-                        .background(Capsule().fill(DS.Colors.accent))
+                        .background(Capsule().fill(Color.accentColor))
                 }
                 .buttonStyle(.plain)
             }
@@ -618,37 +629,40 @@ private struct MackyOnboardingPermissionView: View {
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(Color.black)
+        .background(VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow))
     }
 }
 
 private struct MackyOnboardingHotkeyView: View {
+    let step: MackyPanelOnboardingStep
     @ObservedObject var companionManager: CompanionManager
     let onContinue: () -> Void
     let onSkip: () -> Void
 
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: "keyboard")
-                .font(.system(size: DS.PanelTypography.size(20), weight: .semibold))
-                .foregroundStyle(DS.Colors.accentText)
-                .frame(width: 46, height: 46)
+            // 54px rounded icon tile with a soft accent wash — matches the other
+            // onboarding steps' icon tiles.
+            Image(systemName: step.icon)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 54, height: 54)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(DS.Colors.accentText.opacity(0.14))
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.14))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(DS.Colors.accentText.opacity(0.28), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.28), lineWidth: 1)
                 )
 
             VStack(spacing: 5) {
-                Text("Set push-to-talk")
-                    .font(.system(size: DS.PanelTypography.size(17), weight: .bold, design: .rounded))
-                    .foregroundStyle(DS.Colors.textPrimary)
-                Text("This shortcut is the only trigger you need; setup stays in the panel.")
-                    .font(.system(size: DS.PanelTypography.size(10)))
-                    .foregroundStyle(DS.Colors.textSecondary)
+                Text(step.title)
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.9))
+                Text(step.description)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.6))
                     .multilineTextAlignment(.center)
             }
 
@@ -662,71 +676,96 @@ private struct MackyOnboardingHotkeyView: View {
                 )
 
             HStack(spacing: 9) {
-                Button("Skip", action: onSkip)
+                Button("Not now", action: onSkip)
                     .buttonStyle(.plain)
-                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.62))
                     .padding(.horizontal, 13)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(DS.Colors.surface3))
+                    .background(Capsule().fill(Color(nsColor: .secondarySystemFill)))
 
                 Button("Continue", action: onContinue)
                     .buttonStyle(.plain)
-                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold))
-                    .foregroundStyle(DS.Colors.textOnAccent)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white)
                     .padding(.horizontal, 15)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(DS.Colors.accent))
+                    .background(Capsule().fill(Color.accentColor))
             }
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(Color.black)
+        .background(VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow))
     }
 }
 
 private struct MackyOnboardingFinishedView: View {
+    let step: MackyPanelOnboardingStep
     let hasAllPermissions: Bool
     let onFinish: () -> Void
 
     var body: some View {
         VStack(spacing: 11) {
-            Image(systemName: "sparkles")
-                .font(.system(size: DS.PanelTypography.size(20), weight: .semibold))
-                .foregroundStyle(DS.Colors.accentText)
-                .frame(width: 46, height: 46)
+            // 54px rounded icon tile with a soft accent wash — matches the other
+            // onboarding steps' icon tiles.
+            Image(systemName: step.icon)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 54, height: 54)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(DS.Colors.accentText.opacity(0.14))
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.14))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(DS.Colors.accentText.opacity(0.28), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.28), lineWidth: 1)
                 )
 
-            Text("You're all set")
-                .font(.system(size: DS.PanelTypography.size(21), weight: .bold, design: .rounded))
-                .foregroundStyle(DS.Colors.textPrimary)
+            Text(step.title)
+                .font(.system(size: 21, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.9))
 
-            Text(hasAllPermissions ? "Macky is ready in the notch." : "You can finish now and grant remaining access later in panel settings.")
-                .font(.system(size: DS.PanelTypography.size(10)))
-                .foregroundStyle(DS.Colors.textSecondary)
+            Text(hasAllPermissions ? step.description : "You can finish now and grant remaining access later in panel settings.")
+                .font(.system(size: 10, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.6))
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 340)
 
             Button(action: onFinish) {
                 Text("Start using Macky")
-                    .font(.system(size: DS.PanelTypography.size(12), weight: .semibold))
-                    .foregroundStyle(DS.Colors.textOnAccent)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 8)
-                    .background(Capsule().fill(DS.Colors.accent))
+                    .background(Capsule().fill(Color.accentColor))
             }
             .buttonStyle(.plain)
             .padding(.top, 6)
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(Color.black)
+        .background(VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow))
+    }
+}
+
+/// Ported from boring.notch's `components/Settings/EditPanelView.swift` so the
+/// onboarding steps share one translucent background instead of each picking its
+/// own flat color.
+private struct VisualEffectView: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blendingMode: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context _: Context) -> NSVisualEffectView {
+        let visualEffectView = NSVisualEffectView()
+        visualEffectView.material = material
+        visualEffectView.blendingMode = blendingMode
+        visualEffectView.state = NSVisualEffectView.State.active
+        visualEffectView.isEmphasized = true
+        return visualEffectView
+    }
+
+    func updateNSView(_ visualEffectView: NSVisualEffectView, context _: Context) {
+        visualEffectView.material = material
+        visualEffectView.blendingMode = blendingMode
     }
 }

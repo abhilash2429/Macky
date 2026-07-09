@@ -41,27 +41,27 @@ struct AurenFileDropPanel: View {
     private var dropZone: some View {
         VStack(spacing: 9) {
             Image(systemName: "arrow.up.to.line")
-                .font(.system(size: DS.PanelTypography.size(26), weight: .light))
-                .foregroundStyle(DS.Colors.textSecondary)
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(Color.white.opacity(0.6))
             Text("Drop files here")
-                .font(.system(size: DS.PanelTypography.size(14), weight: .semibold))
-                .foregroundStyle(DS.Colors.textSecondary)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.6))
             Text("or drag straight onto the notch to attach")
-                .font(.system(size: DS.PanelTypography.size(10)))
-                .foregroundStyle(DS.Colors.textTertiary)
+                .font(.system(size: 10))
+                .foregroundStyle(Color.white.opacity(0.4))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Near-transparent black at rest (matches the reference), lifting only a
-        // touch on drag-over. No blue/violet wash so the zone reads as flat black.
+        // Flat neutral wash at rest; accent highlight while a drag is
+        // targeted (mirrors boring.notch's ShelfView drop-zone treatment).
         .background(
             RoundedRectangle(cornerRadius: 14)
-                .fill(Color.white.opacity(isTargeted ? 0.06 : 0.015))
+                .fill(isTargeted ? Color.accentColor.opacity(0.1) : Color.white.opacity(0.015))
                 .animation(.smooth(duration: 0.15), value: isTargeted)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(
-                    isTargeted ? Color.white.opacity(0.32) : Color.white.opacity(0.12),
+                    isTargeted ? Color.accentColor.opacity(0.9) : Color.white.opacity(0.12),
                     style: StrokeStyle(lineWidth: 1.4, dash: [6, 4])
                 )
                 .animation(.smooth(duration: 0.15), value: isTargeted)
@@ -86,18 +86,18 @@ struct AurenFileDropPanel: View {
         HStack(spacing: 10) {
             TextField("Ask something about these files…", text: $promptText)
                 .textFieldStyle(.plain)
-                .font(.system(size: DS.PanelTypography.size(12)))
-                .foregroundStyle(DS.Colors.textPrimary)
+                .font(.system(size: 12))
+                .foregroundStyle(Color.white.opacity(0.9))
                 .onSubmit { sendIfReady() }
 
             Button { sendIfReady() } label: {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: DS.PanelTypography.size(13), weight: .semibold))
-                    .foregroundStyle(DS.Colors.textOnAccent)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white)
                     .frame(width: 29, height: 29)
                     // Full bright accent to match the reference; only softens when
                     // there's genuinely nothing to send.
-                    .background(Circle().fill(canSend ? DS.Colors.accent : DS.Colors.accent.opacity(0.7)))
+                    .background(Circle().fill(canSend ? Color.accentColor : Color.accentColor.opacity(0.7)))
             }
             .buttonStyle(.plain)
             .disabled(!canSend)
@@ -106,7 +106,6 @@ struct AurenFileDropPanel: View {
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
         .background(RoundedRectangle(cornerRadius: 13).fill(Color.white.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
     }
 
     // MARK: - Helpers
@@ -149,25 +148,24 @@ struct FileChip: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: iconName)
-                .font(.system(size: DS.PanelTypography.size(11)))
+                .font(.system(size: 11))
                 .foregroundStyle(iconTint)
             Text(url.lastPathComponent)
-                .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
-                .foregroundStyle(DS.Colors.textPrimary.opacity(0.92))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.9))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: 120)
             Button { onRemove() } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: DS.PanelTypography.size(9), weight: .bold))
-                    .foregroundStyle(DS.Colors.textTertiary)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.white.opacity(0.4))
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 7)
         .background(Capsule().fill(Color.white.opacity(0.06)))
-        .overlay(Capsule().strokeBorder(DS.Colors.borderSubtle, lineWidth: 1))
     }
 
     private var iconName: String {
@@ -186,9 +184,9 @@ struct FileChip: View {
     /// else the neutral secondary text color.
     private var iconTint: Color {
         switch url.pathExtension.lowercased() {
-        case "pdf": return DS.Colors.destructive
-        case "png", "jpg", "jpeg", "webp", "gif": return DS.Colors.accentText
-        default: return DS.Colors.textSecondary
+        case "pdf": return Color.red
+        case "png", "jpg", "jpeg", "webp", "gif": return Color.accentColor
+        default: return Color.white.opacity(0.6)
         }
     }
 }
