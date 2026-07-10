@@ -3,6 +3,10 @@ export interface Env {
   COMPOSIO_API_KEY: string;
   // Pending magic-link tokens: token -> email, 15-minute TTL.
   AUTH_TOKENS: KVNamespace;
+  // Long-lived Composio sessions: sessionToken -> ComposioSession (JSON). Created by
+  // /auth/anonymous (first-run, no login) and /auth/verify (email login). No TTL —
+  // a session lives as long as the app's Keychain entry does.
+  SESSIONS: KVNamespace;
   // Durable session state for typed non-realtime events. The realtime socket remains
   // byte-forwarded; this object is the foundation for reconnect-safe side channels.
   SESSION_OBJECTS: DurableObjectNamespace;
@@ -22,9 +26,62 @@ export interface Env {
   CANVAS_VISION_MODEL: string;
 }
 
-/// Fixed Composio user for now. M14 (real per-user auth) swaps this one line.
-const COMPOSIO_USER_ID = "speed-test-user";
 const DEFAULT_SESSION_ID = "default";
+
+/// A Composio identity bound to an opaque `sessionToken` the app carries in the
+/// `Authorization: Bearer …` header. Two kinds:
+///   - "anonymous": minted on first run (or whenever the app has no session yet) via
+///     POST /auth/anonymous, with no login required. `composioUserId` is a random
+///     `anon-<uuid>`.
+///   - "email": minted by POST /auth/verify after a magic-link login. `composioUserId`
+///     is the user's email, so it's stable across reinstalls/devices.
+/// Logging in replaces any existing anonymous session with an email one; toolkits
+/// connected under the old anonymous identity are not migrated (Composio has no
+/// cross-user account transfer) — the user reconnects them under the email identity.
+interface ComposioSession {
+  composioUserId: string;
+  kind: "anonymous" | "email";
+  email?: string;
+  createdAt: string;
+}
+
+/// Resolves the caller's Composio session from the `Authorization: Bearer <sessionToken>`
+/// header. Returns null (→ callers should 401) when the header is missing, malformed, or
+/// the token isn't in SESSIONS (never issued, or the KV was wiped).
+async function resolveSession(request: Request, env: Env): Promise<ComposioSession | null> {
+  const authHeader = request.headers.get("Authorization") ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(authHeader.trim());
+  const token = match?.[1]?.trim();
+  if (!token) return null;
+  const raw = await env.SESSIONS.get(token);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as ComposioSession;
+  } catch {
+    return null;
+  }
+}
+
+/// Creates and persists a new Composio session, provisioning the Composio user
+/// (best-effort) so it's ready to use immediately. Shared by /auth/anonymous and
+/// /auth/verify so both produce the same `{ sessionToken, composioUserId }` shape.
+async function createSession(
+  composioUserId: string,
+  kind: ComposioSession["kind"],
+  env: Env,
+  email?: string
+): Promise<{ sessionToken: string; composioUserId: string }> {
+  await provisionComposioUser(composioUserId, env);
+  const sessionToken = crypto.randomUUID();
+  const session: ComposioSession = {
+    composioUserId,
+    kind,
+    email,
+    createdAt: new Date().toISOString(),
+  };
+  await env.SESSIONS.put(sessionToken, JSON.stringify(session));
+  return { sessionToken, composioUserId };
+}
 
 interface TypedSessionEvent {
   version: 1;
@@ -103,7 +160,7 @@ export default {
     }
 
     if (url.pathname === "/composio-config") {
-      return handleComposioConfig(env);
+      return handleComposioConfig(request, env);
     }
 
     if (url.pathname === "/composio-connect") {
@@ -111,7 +168,7 @@ export default {
     }
 
     if (url.pathname === "/composio-connections") {
-      return handleComposioConnections(env);
+      return handleComposioConnections(request, env);
     }
 
     if (url.pathname === "/spotify-play" && request.method === "POST") {
@@ -138,6 +195,12 @@ export default {
       return handleVerify(request, env);
     }
 
+    // First-run / no-login Composio identity. Called by the app whenever it has no
+    // stored session yet, so connectors work immediately without requiring email auth.
+    if (url.pathname === "/auth/anonymous" && request.method === "POST") {
+      return handleAnonymousAuth(env);
+    }
+
     // Clickable https link from the email; bounces the browser into the app via
     // the Macky:// custom scheme. Custom-scheme links aren't clickable in Gmail,
     // so the email always points here instead.
@@ -145,20 +208,32 @@ export default {
       return handleAuthOpen(url);
     }
 
+    // Composio's OAuth callback_url after a connector finishes linking. Bounces the
+    // browser back into the app so it can refresh the connectors grid immediately.
+    if (url.pathname === "/auth/connected" && request.method === "GET") {
+      return handleAuthConnected(url);
+    }
+
     return new Response("Not found", { status: 404 });
   },
 };
 
-/// Creates a fresh Composio Tool Router session for COMPOSIO_USER_ID and returns
-/// the session's MCP URL plus the project API key, which the Swift client wires
-/// into the Realtime `session.update` as an `mcp` tool entry.
+/// Creates a fresh Composio Tool Router session for the caller's resolved Composio
+/// identity (see `resolveSession`) and returns the session's MCP URL plus the project
+/// API key, which the Swift client wires into the Realtime `session.update` as an
+/// `mcp` tool entry.
 ///
 /// No `toolkits` allowlist is sent, so the agent gets the full Composio catalog via
 /// COMPOSIO_SEARCH_TOOLS. `manage_connections` lets the agent call
 /// COMPOSIO_MANAGE_CONNECTIONS mid-turn to get a Connect Link for an app the user
 /// hasn't authorized; `enable_wait_for_connections: false` so a voice turn never
 /// blocks on the user finishing OAuth in the browser.
-async function handleComposioConfig(env: Env): Promise<Response> {
+async function handleComposioConfig(request: Request, env: Env): Promise<Response> {
+  const session = await resolveSession(request, env);
+  if (!session) {
+    return jsonResponse({ error: "missing or invalid session" }, 401);
+  }
+
   try {
     const sessionResponse = await fetch(
       "https://backend.composio.dev/api/v3.1/tool_router/session",
@@ -169,7 +244,7 @@ async function handleComposioConfig(env: Env): Promise<Response> {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          user_id: COMPOSIO_USER_ID,
+          user_id: session.composioUserId,
           manage_connections: {
             enable: true,
             enable_connection_removal: true,
@@ -210,15 +285,22 @@ async function handleComposioConfig(env: Env): Promise<Response> {
 /// Initiates a Composio connection for a toolkit and returns the OAuth redirect
 /// URL directly, so the app can open it without routing through the realtime voice
 /// model (which would narrate filler). Two steps, both Composio-managed:
-///   1. Look up an auth config for the toolkit slug.
-///   2. Create a hosted connection `link` for COMPOSIO_USER_ID → redirect URL.
+///   1. Look up an auth config for the toolkit slug (created in the Composio dashboard).
+///   2. Create a hosted connection `link` for the caller's resolved Composio identity
+///      (see `resolveSession`) → redirect URL.
 ///
-/// Body/query: `toolkit` (slug, e.g. "spotify"). Returns `{ toolkit, redirect_url }`.
+/// Body/query: `toolkit` (slug, e.g. "spotify"). Requires `Authorization: Bearer
+/// <sessionToken>`. Returns `{ toolkit, redirect_url }`.
 async function handleComposioConnect(
   request: Request,
   url: URL,
   env: Env
 ): Promise<Response> {
+  const session = await resolveSession(request, env);
+  if (!session) {
+    return jsonResponse({ error: "missing or invalid session" }, 401);
+  }
+
   try {
     // Accept the toolkit slug from a POST JSON body or a ?toolkit= query param.
     let toolkit = url.searchParams.get("toolkit") ?? "";
@@ -261,15 +343,20 @@ async function handleComposioConnect(
       return jsonResponse({ error: "no auth config for toolkit" }, 404);
     }
 
-    // 2. Create a hosted connection link → OAuth redirect URL for the user.
+    // 2. Create a hosted connection link → OAuth redirect URL for the user. The
+    //    callback_url bounces the browser back into the app once OAuth finishes, so
+    //    the connectors grid can refresh immediately instead of waiting on the user
+    //    to switch back manually.
+    const callbackUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/auth/connected?toolkit=${encodeURIComponent(toolkit)}`;
     const linkResponse = await fetch(
       "https://backend.composio.dev/api/v3/connected_accounts/link",
       {
         method: "POST",
         headers,
         body: JSON.stringify({
-          user_id: COMPOSIO_USER_ID,
+          user_id: session.composioUserId,
           auth_config_id: authConfigId,
+          callback_url: callbackUrl,
         }),
       }
     );
@@ -300,12 +387,18 @@ async function handleComposioConnect(
 
 /// Lists the toolkits the user currently has an ACTIVE connection to, so the app
 /// can show a "connected" (live) tick on those connectors instead of a connect
-/// prompt. Returns `{ connected: ["gmail", ...] }` (lowercased toolkit slugs).
-async function handleComposioConnections(env: Env): Promise<Response> {
+/// prompt. Requires `Authorization: Bearer <sessionToken>`. Returns
+/// `{ connected: ["gmail", ...] }` (lowercased toolkit slugs).
+async function handleComposioConnections(request: Request, env: Env): Promise<Response> {
+  const session = await resolveSession(request, env);
+  if (!session) {
+    return jsonResponse({ error: "missing or invalid session" }, 401);
+  }
+
   try {
     const response = await fetch(
       `https://backend.composio.dev/api/v3/connected_accounts?user_ids=${encodeURIComponent(
-        COMPOSIO_USER_ID
+        session.composioUserId
       )}&statuses=ACTIVE&limit=100`,
       {
         method: "GET",
@@ -338,12 +431,13 @@ async function handleComposioConnections(env: Env): Promise<Response> {
   }
 }
 
-/// Executes a single Composio tool for COMPOSIO_USER_ID via the REST execute
+/// Executes a single Composio tool for `composioUserId` via the REST execute
 /// endpoint and returns the parsed `{ successful, data, error }` envelope. This is
 /// the *direct* path (no MCP tool-router discovery), so it's one hop with no voice
 /// model in the loop — the whole point of the fast Spotify route below.
 async function composioExecute(
   env: Env,
+  composioUserId: string,
   slug: string,
   args: Record<string, unknown>
 ): Promise<{ successful: boolean; data: any; error: unknown }> {
@@ -355,7 +449,7 @@ async function composioExecute(
         "x-api-key": env.COMPOSIO_API_KEY,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ user_id: COMPOSIO_USER_ID, arguments: args }),
+      body: JSON.stringify({ user_id: composioUserId, arguments: args }),
     }
   );
   if (!response.ok) {
@@ -407,6 +501,11 @@ function isNoActiveDevice(result: { error: unknown; data: any }): boolean {
 ///     "says playing but nothing plays" bug was the old path reporting success here.
 ///   • `{ error }` when the search finds nothing or a call hard-fails.
 async function handleSpotifyPlay(request: Request, env: Env): Promise<Response> {
+  const session = await resolveSession(request, env);
+  if (!session) {
+    return jsonResponse({ error: "missing or invalid session" }, 401);
+  }
+
   let query = "";
   let knownUri = "";
   try {
@@ -430,7 +529,7 @@ async function handleSpotifyPlay(request: Request, env: Env): Promise<Response> 
     // 1. Search for the best-matching track (skipped when a URI was carried over
     //    from a prior needs_device response).
     if (!uri) {
-      const search = await composioExecute(env, "SPOTIFY_SEARCH_FOR_ITEM", {
+      const search = await composioExecute(env, session.composioUserId, "SPOTIFY_SEARCH_FOR_ITEM", {
         q: query,
         type: ["track"],
         limit: 1,
@@ -456,6 +555,7 @@ async function handleSpotifyPlay(request: Request, env: Env): Promise<Response> 
     //    won't start on a fully-idle client without help.
     const devicesResult = await composioExecute(
       env,
+      session.composioUserId,
       "SPOTIFY_GET_AVAILABLE_DEVICES",
       {}
     );
@@ -468,6 +568,7 @@ async function handleSpotifyPlay(request: Request, env: Env): Promise<Response> 
     //    an idle one returns "Device not found" (verified).
     const play = await startPlayback(
       env,
+      session.composioUserId,
       uri,
       activeDevice?.is_active ? activeDevice.id : undefined
     );
@@ -480,12 +581,12 @@ async function handleSpotifyPlay(request: Request, env: Env): Promise<Response> 
     //    the transfer itself starts the track context. This is the "any device"
     //    fallback for when the Mac has no Spotify app to open.
     if (isNoActiveDevice(play) && idleDevice?.id) {
-      const transfer = await composioExecute(env, "SPOTIFY_TRANSFER_PLAYBACK", {
+      const transfer = await composioExecute(env, session.composioUserId, "SPOTIFY_TRANSFER_PLAYBACK", {
         device_ids: [idleDevice.id],
         play: true,
       });
       if (transfer.successful) {
-        const retry = await startPlayback(env, uri, idleDevice.id);
+        const retry = await startPlayback(env, session.composioUserId, uri, idleDevice.id);
         if (retry.successful) {
           return jsonResponse({ status: "playing", track: trackName, artist, uri });
         }
@@ -511,6 +612,7 @@ async function handleSpotifyPlay(request: Request, env: Env): Promise<Response> 
 /// share one call site.
 async function startPlayback(
   env: Env,
+  composioUserId: string,
   uri: string,
   deviceId?: string
 ): Promise<{ successful: boolean; data: any; error: unknown }> {
@@ -518,7 +620,7 @@ async function startPlayback(
   if (deviceId) {
     args.device_id = deviceId;
   }
-  return composioExecute(env, "SPOTIFY_START_RESUME_PLAYBACK", args);
+  return composioExecute(env, composioUserId, "SPOTIFY_START_RESUME_PLAYBACK", args);
 }
 
 /// Generates visual-guidance canvas commands from a screenshot. The Swift app captures
@@ -564,7 +666,7 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   });
 
   const deployment = env.CANVAS_VISION_MODEL || "gpt-5.5";
-  const azureUrl = "https://auren-resource.services.ai.azure.com/openai/v1/responses";
+  const azureUrl = "https://abhilashreddymand-0825-resource.services.ai.azure.com";
 
   const systemPrompt = canvasVisionSystemPrompt(logicalWidth, logicalHeight);
   const userText =
@@ -1012,9 +1114,51 @@ function handleAuthOpen(url: URL): Response {
   });
 }
 
+/// GET /auth/connected?toolkit=… — the `callback_url` Composio's hosted connect page
+/// redirects the browser to once a connector finishes linking. Bounces into the app via
+/// the Macky:// scheme (same pattern as `handleAuthOpen`) so the connectors grid can
+/// refresh immediately instead of waiting for the user to switch back manually.
+function handleAuthConnected(url: URL): Response {
+  const rawToolkit = url.searchParams.get("toolkit") ?? "";
+  // Only allow a plain slug-shaped value through into the deep link.
+  const toolkit = /^[a-z0-9_-]+$/i.test(rawToolkit) ? rawToolkit.toLowerCase() : "";
+
+  const deepLink = toolkit ? `Macky://connected?toolkit=${toolkit}` : "Macky://connected";
+  const html = `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Connected — returning to Macky…</title>
+    <meta http-equiv="refresh" content="0;url=${deepLink}">
+    <style>
+      body{margin:0;background:#0b0b0c;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;}
+      .card{text-align:center;padding:32px;}
+      a.btn{display:inline-block;margin-top:16px;background:#6d5efc;color:#fff;text-decoration:none;font-weight:600;padding:12px 24px;border-radius:10px;}
+      p{color:#a1a1aa;font-size:14px;}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Connected — returning to Macky…</h2>
+      <p>If the app didn't come back to the front automatically, click below.</p>
+      <a class="btn" href="${deepLink}">Open Macky</a>
+    </div>
+    <script>window.location.href = ${JSON.stringify(deepLink)};</script>
+  </body>
+</html>`;
+
+  return new Response(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
 /// POST /auth/verify — validates a magic-link token, provisions the Composio user for
-/// the email, and returns an opaque session token. Tokens are single-use: consumed on
-/// the first successful verify.
+/// the email, and returns `{ sessionToken, composioUserId }`. Tokens are single-use:
+/// consumed on the first successful verify. The returned session's `composioUserId` is
+/// the email — stable across reinstalls/devices — and replaces whatever anonymous
+/// session (see `handleAnonymousAuth`) the app was previously using; toolkits connected
+/// under the old anonymous identity are not migrated.
 async function handleVerify(request: Request, env: Env): Promise<Response> {
   let token: unknown;
   try {
@@ -1035,18 +1179,27 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
   // One-time use: consume the token so the link can't be replayed.
   await env.AUTH_TOKENS.delete(token);
 
-  // Provision the Composio user for this email (best-effort — auth still succeeds
-  // even if Composio is briefly unavailable; the user is re-provisioned on next use).
-  await provisionComposioUser(email, env);
-
-  const sessionJWT = crypto.randomUUID();
-  return jsonResponse({ sessionJWT, composioUserId: email });
+  // Provisions the Composio user (best-effort — auth still succeeds even if Composio is
+  // briefly unavailable) and mints the session the app will present as a bearer token
+  // on every subsequent Composio call.
+  const { sessionToken, composioUserId } = await createSession(email, "email", env, email);
+  return jsonResponse({ sessionToken, composioUserId });
 }
 
-/// Ensures a Composio user/entity exists for `email` by opening a Tool Router session
-/// with that `user_id` (Composio auto-provisions the entity on first use). Failures are
-/// logged but not surfaced, so a Composio hiccup never blocks login.
-async function provisionComposioUser(email: string, env: Env): Promise<void> {
+/// POST /auth/anonymous — mints a fresh, no-login Composio identity + session. Called by
+/// the app on first run (or whenever it has no stored session), so connectors work
+/// immediately without requiring the user to complete email auth first. Returns the same
+/// `{ sessionToken, composioUserId }` shape as `/auth/verify`.
+async function handleAnonymousAuth(env: Env): Promise<Response> {
+  const composioUserId = `anon-${crypto.randomUUID()}`;
+  const { sessionToken } = await createSession(composioUserId, "anonymous", env);
+  return jsonResponse({ sessionToken, composioUserId });
+}
+
+/// Ensures a Composio user/entity exists for `composioUserId` by opening a Tool Router
+/// session with that `user_id` (Composio auto-provisions the entity on first use).
+/// Failures are logged but not surfaced, so a Composio hiccup never blocks login.
+async function provisionComposioUser(composioUserId: string, env: Env): Promise<void> {
   try {
     const response = await fetch(
       "https://backend.composio.dev/api/v3.1/tool_router/session",
@@ -1056,7 +1209,7 @@ async function provisionComposioUser(email: string, env: Env): Promise<void> {
           "x-api-key": env.COMPOSIO_API_KEY,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ user_id: email }),
+        body: JSON.stringify({ user_id: composioUserId }),
       }
     );
     if (!response.ok) {
@@ -1081,7 +1234,7 @@ async function handleRealtimeProxy(
   }
 
   const azureUrl =
-    "https://auren-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2";
+    "https://abhilashreddymand-0825-resource.services.ai.azure.comm/openai/v1/realtime?model=gpt-realtime-2";
 
   console.log("Connecting to Azure:", azureUrl);
 

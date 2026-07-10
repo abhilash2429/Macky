@@ -21,6 +21,7 @@ enum WorkerEndpoints {
     static let realtimeURL = URL(string: "wss://\(baseHost)/realtime")!
 
     /// One-time Composio MCP session config fetch (`/composio-config`) → `{ url, key }`.
+    /// Requires an `Authorization: Bearer <sessionToken>` header (see `AuthManager`).
     static let composioConfigURL = URL(string: "\(httpsBase)/composio-config")!
 
     /// Composio OAuth redirect-URL fetch for a single toolkit (`/composio-connect`).

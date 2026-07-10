@@ -11,6 +11,17 @@ binding = "AUTH_TOKENS"
 id = "9fb206927354473a9b24e3fe81739843"
 preview_id = "1bcdd4aaa4f34aa2891a137fc5121a9f"
 
+# Stores long-lived Composio sessions (sessionToken -> { composioUserId, kind, email? }).
+# No TTL: a session lives as long as the app's Keychain entry does. Created for both
+# the anonymous first-run identity (/auth/anonymous) and the email identity (/auth/verify).
+# Create the namespaces and paste the returned ids here:
+#   npx wrangler kv namespace create SESSIONS
+#   npx wrangler kv namespace create SESSIONS --preview
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "119ce6e7df9c423cb6861ccccc8c6340"
+preview_id = "ccc42f14358a4812bf4d5fcc007cd03b"
+
 [[durable_objects.bindings]]
 name = "SESSION_OBJECTS"
 class_name = "MackySessionObject"
@@ -35,4 +46,3 @@ PUBLIC_BASE_URL = "https://realtime-proxy.winky-secrets.workers.dev"
 # Azure deployment name for the primary visual-guidance model (screen coordinates).
 # Runs on the same Azure resource / AZURE_OPENAI_API_KEY as the realtime endpoint.
 CANVAS_VISION_MODEL = "gpt-5.5"
-

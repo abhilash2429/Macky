@@ -51,6 +51,13 @@ struct PendingConnection: Identifiable {
     let redirectURL: URL
 }
 
+/// Failure surfaced when a connector-connect request has no Composio session to
+/// authorize it — e.g. the Worker was unreachable when `ensureSessionToken()` tried
+/// to bootstrap one.
+private enum ConnectorConnectError: Error {
+    case noSession
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     private static let panelOnboardingDefaultsKey = "mackyPanelOnboardingComplete"
@@ -122,6 +129,11 @@ final class CompanionManager: ObservableObject {
     private var realtimeActivityCancellables = Set<AnyCancellable>()
     private var accessibilityCheckTimer: Timer?
     private var didBecomeActiveObserver: NSObjectProtocol?
+    /// Observes `.mackyConnectorConnected` (posted by `AuthManager.handleIncomingURL`
+    /// when a `Macky://connected?toolkit=…` deep link arrives) so the connectors grid
+    /// refreshes the moment OAuth finishes, instead of waiting on the panel's next
+    /// `onAppear`.
+    private var connectorConnectedObserver: NSObjectProtocol?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
 
     private var lastNarration: String?
@@ -168,6 +180,7 @@ final class CompanionManager: ObservableObject {
         refreshAllPermissions()
         startPermissionPolling()
         observeAppActivation()
+        observeConnectorConnected()
         bindAudioPowerLevel()
         bindShortcutTransitions()
         bindRealtimeClient()
@@ -187,6 +200,23 @@ final class CompanionManager: ObservableObject {
         if let observer = didBecomeActiveObserver {
             NotificationCenter.default.removeObserver(observer)
             didBecomeActiveObserver = nil
+        }
+        if let observer = connectorConnectedObserver {
+            NotificationCenter.default.removeObserver(observer)
+            connectorConnectedObserver = nil
+        }
+    }
+
+    /// Refreshes connected toolkits the moment a `Macky://connected?toolkit=…` deep link
+    /// arrives, so the grid updates immediately rather than on the next panel `onAppear`.
+    private func observeConnectorConnected() {
+        guard connectorConnectedObserver == nil else { return }
+        connectorConnectedObserver = NotificationCenter.default.addObserver(
+            forName: .mackyConnectorConnected,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshConnectedToolkits()
         }
     }
 
@@ -262,8 +292,14 @@ final class CompanionManager: ObservableObject {
     func refreshConnectedToolkits() {
         Task { [weak self] in
             guard let self else { return }
+            guard let sessionToken = await AuthManager.shared.ensureSessionToken() else {
+                print("⚠️ Companion: refreshConnectedToolkits skipped, no Composio session")
+                return
+            }
             do {
-                let (data, response) = try await URLSession.shared.data(from: Self.composioConnectionsURL)
+                var request = URLRequest(url: Self.composioConnectionsURL)
+                request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+                let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                       let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let slugs = json["connected"] as? [String] else { return }
@@ -290,7 +326,10 @@ final class CompanionManager: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let url = try await Self.fetchConnectLink(slug: normalizedSlug)
+                guard let sessionToken = await AuthManager.shared.ensureSessionToken() else {
+                    throw ConnectorConnectError.noSession
+                }
+                let url = try await Self.fetchConnectLink(slug: normalizedSlug, sessionToken: sessionToken)
                 let connection = PendingConnection(toolkit: normalizedSlug, redirectURL: url)
                 self.pendingConnections.removeAll { $0.toolkit.caseInsensitiveCompare(normalizedSlug) == .orderedSame }
                 self.pendingConnections.append(connection)
@@ -301,17 +340,27 @@ final class CompanionManager: ObservableObject {
             } catch {
                 print("⚠️ Companion: connector connect failed for \(normalizedSlug): \(error)")
                 if self.operationState == .executing("connecting \(normalizedSlug)") {
-                    self.operationState = .idle
+                    self.operationState = .error("Couldn't connect \(normalizedSlug) — try again")
+                    // Surfaced briefly, then back to idle so it doesn't linger as a
+                    // stuck "needs attention" state.
+                    Task { [weak self] in
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        guard let self else { return }
+                        if case .error = self.operationState {
+                            self.operationState = .idle
+                        }
+                    }
                 }
             }
         }
     }
 
     /// Calls the worker's `/composio-connect` endpoint and returns the redirect URL.
-    private static func fetchConnectLink(slug: String) async throws -> URL {
+    private static func fetchConnectLink(slug: String, sessionToken: String) async throws -> URL {
         var request = URLRequest(url: composioConnectURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["toolkit": slug])
 
         let (data, response) = try await URLSession.shared.data(for: request)

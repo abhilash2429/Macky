@@ -2,17 +2,39 @@
 //  AuthManager.swift
 //  leanring-buddy
 //
-//  Magic-link authentication. On launch the app checks for a Keychain session or
-//  the temporary local skip flag; if neither exists it shows AuthView. The user can
-//  submit their email (requestMagicLink), then the Worker emails them a clickable
-//  link that bounces through `/auth/open` into the `Macky://auth?token=…` deep link.
-//  Opening it routes back through `handleIncomingURL` → `verify`, which stores the
-//  session in the Keychain and flips `phase` to `.authenticated`.
+//  Owns two related but distinct things:
+//
+//  1. UI auth (`phase`) — gates whether the panel shows AuthView or the main UI.
+//     On launch this is `.authenticated` only if the Keychain holds an email-verified
+//     session, or the user previously tapped "Skip for now". Otherwise AuthView shows,
+//     where the user can submit their email (`requestMagicLink`); the Worker emails a
+//     clickable link that bounces through `/auth/open` into the `Macky://auth?token=…`
+//     deep link, which routes back through `handleIncomingURL` → `verify`.
+//
+//  2. Composio identity (`sessionToken` / `composioUserId`) — the credential every
+//     Composio-facing Worker route (`/composio-config`, `/composio-connect`,
+//     `/composio-connections`, `/spotify-play`) requires as `Authorization: Bearer
+//     <sessionToken>`. This is deliberately independent of `phase`: `ensureSessionToken()`
+//     transparently mints a no-login "anonymous" session (`POST /auth/anonymous`) the
+//     first time anything needs one, so connectors work from the very first launch —
+//     before, and without ever requiring, email auth. Completing email auth later
+//     (`verify`) replaces the anonymous session with one whose `composioUserId` is the
+//     email (stable across reinstalls/devices); it does not migrate connections made
+//     under the old anonymous identity — Composio has no cross-user account transfer, and
+//     today's single-operator setup makes that an acceptable tradeoff.
 //
 
 import Combine
 import Foundation
 import Security
+
+extension Notification.Name {
+    /// Posted when a `Macky://connected?toolkit=…` deep link arrives — Composio's OAuth
+    /// `callback_url` bouncing the browser back into the app once a connector finishes
+    /// linking. `CompanionManager` observes this to refresh the connectors grid
+    /// immediately instead of waiting on the next panel `onAppear`.
+    static let mackyConnectorConnected = Notification.Name("mackyConnectorConnected")
+}
 
 @MainActor
 final class AuthManager: ObservableObject {
@@ -31,23 +53,41 @@ final class AuthManager: ObservableObject {
     /// The email the magic link was sent to — shown in the "check your email" state.
     @Published private(set) var pendingEmail: String?
 
+    /// The Composio session token, present as soon as any session — anonymous or
+    /// email — exists. Nil only before the very first `ensureSessionToken()` call
+    /// resolves. Callers should use `ensureSessionToken()` rather than reading this
+    /// directly, since it bootstraps one on demand.
+    @Published private(set) var sessionToken: String?
+    /// The identity behind `sessionToken`: either `"anon-<uuid>"` (no login) or the
+    /// verified email. Purely informational for the UI — never used to authorize a
+    /// Worker call directly; the Worker resolves identity from `sessionToken` itself.
+    @Published private(set) var composioUserId: String?
+
     /// Base for the Worker's auth routes. Derived from the single shared host in
     /// `WorkerEndpoints` so self-hosting only requires changing it in one place.
     private let workerBaseURL = WorkerEndpoints.httpsBase
     private static let keychainService = "macky.session"
     private static let skippedAuthDefaultsKey = "macky.authSkippedForNow"
 
+    /// Coalesces concurrent `ensureSessionToken()` callers (e.g. `RealtimeClient.connect()`
+    /// and `CompanionManager.refreshConnectedToolkits()` both firing near launch) so they
+    /// share one `/auth/anonymous` bootstrap instead of each minting their own identity.
+    private var bootstrapTask: Task<String?, Never>?
+
     private init() {
-        phase = AuthManager.loadSession() != nil || AuthManager.hasSkippedAuth
-            ? .authenticated
-            : .idle
+        let existing = AuthManager.loadSession()
+        sessionToken = existing?.sessionToken
+        composioUserId = existing?.composioUserId
+        let isEmailVerified = existing?.kind == "email"
+        phase = isEmailVerified || AuthManager.hasSkippedAuth ? .authenticated : .idle
     }
 
     // MARK: - Session state
 
-    /// True when a session blob is present in the Keychain.
+    /// True when the Keychain holds an email-verified session (as opposed to an
+    /// anonymous, no-login one).
     var hasSession: Bool {
-        AuthManager.loadSession() != nil
+        AuthManager.loadSession()?.kind == "email"
     }
 
     private static var hasSkippedAuth: Bool {
@@ -58,6 +98,45 @@ final class AuthManager: ObservableObject {
         UserDefaults.standard.set(true, forKey: Self.skippedAuthDefaultsKey)
         pendingEmail = nil
         phase = .authenticated
+    }
+
+    // MARK: - Composio identity (independent of `phase`)
+
+    /// Returns the current Composio session token, bootstrapping a fresh anonymous
+    /// session if none exists yet. This is what makes connectors work from the very
+    /// first launch — no login, no manual setup. Safe to call from anywhere (including
+    /// non-MainActor contexts, via `await`); concurrent callers share one in-flight
+    /// bootstrap. Returns nil only if the Worker is unreachable/misconfigured, in which
+    /// case callers should proceed without Composio rather than block.
+    func ensureSessionToken() async -> String? {
+        if let sessionToken { return sessionToken }
+        if let bootstrapTask { return await bootstrapTask.value }
+
+        let task = Task<String?, Never> { [weak self] in
+            await self?.bootstrapAnonymousSession()
+        }
+        bootstrapTask = task
+        let token = await task.value
+        bootstrapTask = nil
+        return token
+    }
+
+    private func bootstrapAnonymousSession() async -> String? {
+        do {
+            let response: SessionResponse = try await post(path: "/auth/anonymous", body: [:])
+            AuthManager.saveSession(
+                sessionToken: response.sessionToken,
+                composioUserId: response.composioUserId,
+                kind: "anonymous",
+                email: nil
+            )
+            sessionToken = response.sessionToken
+            composioUserId = response.composioUserId
+            return response.sessionToken
+        } catch {
+            print("⚠️ AuthManager: anonymous session bootstrap failed: \(error)")
+            return nil
+        }
     }
 
     // MARK: - Request a magic link
@@ -88,38 +167,54 @@ final class AuthManager: ObservableObject {
         phase = .idle
     }
 
-    // MARK: - Incoming URL (Macky://auth?token=…)
+    // MARK: - Incoming URL (Macky://auth?token=… and Macky://connected?toolkit=…)
 
-    /// Entry point for the custom URL scheme. Extracts the token and verifies it.
+    /// Entry point for the custom URL scheme. Routes `auth` links to token verification
+    /// and `connected` links (Composio's post-OAuth bounce-back) to a notification that
+    /// `CompanionManager` uses to refresh the connectors grid.
     func handleIncomingURL(_ url: URL) {
-        // The URL can be delivered twice (Apple Event + application(_:open:)).
-        // Ignore re-entry so a one-time token isn't verified a second time, which
-        // would fail and flip an already-authenticated session into an error.
-        guard phase != .verifying, phase != .authenticated else { return }
-
         guard url.scheme?.lowercased() == "macky",
-              url.host?.lowercased() == "auth",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let token = components.queryItems?.first(where: { $0.name == "token" })?.value,
-              !token.isEmpty else {
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return
         }
-        Task { await verify(token: token) }
+
+        switch url.host?.lowercased() {
+        case "auth":
+            // The URL can be delivered twice (Apple Event + application(_:open:)).
+            // Ignore re-entry so a one-time token isn't verified a second time, which
+            // would fail and flip an already-authenticated session into an error.
+            guard phase != .verifying, phase != .authenticated,
+                  let token = components.queryItems?.first(where: { $0.name == "token" })?.value,
+                  !token.isEmpty else {
+                return
+            }
+            Task { await verify(token: token) }
+
+        case "connected":
+            NotificationCenter.default.post(name: .mackyConnectorConnected, object: nil)
+
+        default:
+            break
+        }
     }
 
     func verify(token: String) async {
         phase = .verifying
         do {
-            let response: VerifyResponse = try await post(
+            let response: SessionResponse = try await post(
                 path: "/auth/verify",
                 body: ["token": token]
             )
-            // The Worker returns composioUserId == the email, used as the Keychain account.
+            // The Worker returns composioUserId == the email. This replaces any
+            // anonymous session that was previously active.
             AuthManager.saveSession(
-                jwt: response.sessionJWT,
+                sessionToken: response.sessionToken,
                 composioUserId: response.composioUserId,
+                kind: "email",
                 email: response.composioUserId
             )
+            sessionToken = response.sessionToken
+            composioUserId = response.composioUserId
             phase = .authenticated
         } catch {
             phase = .error("That link is invalid or expired. Send a new one.")
@@ -151,13 +246,15 @@ final class AuthManager: ObservableObject {
     // MARK: - Keychain
 
     private struct StoredSession: Codable {
-        let jwt: String
+        let sessionToken: String
         let composioUserId: String
-        let email: String
+        /// `"anonymous"` or `"email"` — see the file header for what each means.
+        let kind: String
+        let email: String?
     }
 
-    private static func saveSession(jwt: String, composioUserId: String, email: String) {
-        let session = StoredSession(jwt: jwt, composioUserId: composioUserId, email: email)
+    private static func saveSession(sessionToken: String, composioUserId: String, kind: String, email: String?) {
+        let session = StoredSession(sessionToken: sessionToken, composioUserId: composioUserId, kind: kind, email: email)
         guard let data = try? JSONEncoder().encode(session) else { return }
 
         // Delete any existing item for this service first so SecItemAdd doesn't
@@ -170,7 +267,7 @@ final class AuthManager: ObservableObject {
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: email,
+            kSecAttrAccount as String: composioUserId,
             kSecValueData as String: data
         ]
         let status = SecItemAdd(addQuery as CFDictionary, nil)
@@ -180,7 +277,7 @@ final class AuthManager: ObservableObject {
     }
 
     /// Reads the stored session by service alone, so we can detect a session on launch
-    /// without knowing which email it belongs to.
+    /// without knowing which identity it belongs to.
     private static func loadSession() -> StoredSession? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -194,13 +291,16 @@ final class AuthManager: ObservableObject {
         return try? JSONDecoder().decode(StoredSession.self, from: data)
     }
 
-    /// Removes the stored session — handy for re-testing the auth flow.
+    /// Removes the stored session — handy for re-testing the auth flow. The next
+    /// `ensureSessionToken()` call mints a fresh anonymous session.
     func clearSession() {
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService
         ] as CFDictionary)
         UserDefaults.standard.removeObject(forKey: Self.skippedAuthDefaultsKey)
+        sessionToken = nil
+        composioUserId = nil
         pendingEmail = nil
         phase = .idle
     }
@@ -211,8 +311,9 @@ final class AuthManager: ObservableObject {
         let ok: Bool
     }
 
-    private struct VerifyResponse: Decodable {
-        let sessionJWT: String
+    /// Shared response shape for both `/auth/anonymous` and `/auth/verify`.
+    private struct SessionResponse: Decodable {
+        let sessionToken: String
         let composioUserId: String
     }
 

@@ -1099,8 +1099,13 @@ final class RealtimeClient: ObservableObject {
     /// Short timeout — a slow/unreachable Composio must not block voice. On any
     /// failure the cache stays nil and the session proceeds without the mcp tool.
     private func fetchComposioConfig() async {
+        guard let sessionToken = await AuthManager.shared.ensureSessionToken() else {
+            print("⚠️ RealtimeClient: no Composio session available; proceeding without MCP")
+            return
+        }
         var request = URLRequest(url: composioConfigURL)
         request.timeoutInterval = 5
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         do {
             let (data, response) = try await urlSession.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,

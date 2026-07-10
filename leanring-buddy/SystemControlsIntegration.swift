@@ -338,6 +338,9 @@ enum SystemControlsIntegration {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 12
+        if let sessionToken = await AuthManager.shared.ensureSessionToken() {
+            request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        }
         var body: [String: Any] = ["query": query]
         if let uri, !uri.isEmpty { body["uri"] = uri }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
