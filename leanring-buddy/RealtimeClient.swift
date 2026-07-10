@@ -34,11 +34,6 @@ final class RealtimeClient: ObservableObject {
     var onResponseAudioStarted: (() -> Void)?
     /// Fired when the model finishes producing audio for a response.
     var onResponseCompleted: (() -> Void)?
-    /// Fired when server VAD detects the user has started / stopped speaking. Only
-    /// emitted while continuous turn detection is enabled (push-to-talk omits it);
-    /// the owner uses them to drive listening/thinking UI in continuous mode.
-    var onSpeechStarted: (() -> Void)?
-    var onSpeechStopped: (() -> Void)?
     /// Fired (with the tool name) when a function-call handler starts executing,
     /// and again when it resolves, so the owner can pulse UI for tool activity and
     /// show a narration label. CompanionManager owns `toolCallActive`/`narrationText`.
@@ -160,25 +155,18 @@ final class RealtimeClient: ObservableObject {
     private var isResponseCancelled = false
     /// Count of audio chunks appended since the last commit (diagnostics).
     private var appendedAudioChunkCount = 0
+    /// Becomes true when a push-to-talk capture includes audible speech. Audio is
+    /// still streamed in full so quiet syllables are preserved; this only prevents
+    /// an entirely silent press/release from creating a model turn.
+    private var didDetectAudibleSpeech = false
     /// Set when a mic chunk (or the commit) can't be sent because the socket is down
     /// mid-utterance. Surfaced via `lastError` on commit so a reconnect during a
     /// push-to-talk press doesn't silently answer a truncated utterance. Reset at the
     /// start of each capture (`clearAudioBuffer`) and after surfacing.
     private var audioDroppedDuringUtterance = false
 
-    /// When true, the session enables server-side VAD (`turn_detection`) so the
-    /// model auto-detects turn boundaries and responds without a manual commit —
-    /// this powers continuous-listening mode. Push-to-talk leaves it false and
-    /// drives commit + response.create by hand. Toggled via
-    /// `setContinuousTurnDetection(_:)`.
-    private var continuousTurnDetectionEnabled = false
-
     /// True while the model's response audio is actively streaming in or still
-    /// draining from the player node — i.e. while the speakers are emitting. Used by
-    /// continuous mode to gate the mic (half-duplex) so the open mic can't feed
-    /// playback back into server VAD. Crucially this is self-clearing: playback
-    /// buffers always drain, so it can never leave the mic stuck muted the way a
-    /// UI-state flag could if a turn never completes.
+    /// draining from the player node — i.e. while the speakers are emitting.
     var isPlayingResponseAudio: Bool {
         isReceivingResponseAudio || scheduledPlaybackBufferCount > 0
     }
@@ -1082,7 +1070,7 @@ final class RealtimeClient: ObservableObject {
         // until `session.created` arrives, so the fetch has the whole handshake to
         // finish in parallel. If it resolves first, the MCP entry is in the first
         // session.update; if it resolves later, `fetchComposioConfig` sends a follow-up
-        // update (same live mid-session mechanism `setContinuousTurnDetection` uses).
+        // update so the new MCP entry becomes available in the live session.
         openSocket()
 
         // The config fetch runs once per session; heartbeat-driven reconnects skip it,
@@ -1260,14 +1248,6 @@ final class RealtimeClient: ObservableObject {
             }
         case "response.audio.done", "response.output_audio.done":
             handleResponseAudioDone()
-        // Server VAD turn boundaries (continuous-listening mode only). On speech
-        // start, flush local playback so the model stops talking the instant the
-        // user barges in; the server auto-commits and auto-creates the response.
-        case "input_audio_buffer.speech_started":
-            interruptPlayback()
-            onSpeechStarted?()
-        case "input_audio_buffer.speech_stopped":
-            onSpeechStopped?()
         // Transcript of the user's speech for this turn (input transcription).
         case "conversation.item.input_audio_transcription.completed":
             if let transcript = json["transcript"] as? String {
@@ -1459,6 +1439,9 @@ final class RealtimeClient: ObservableObject {
         and nothing more. Direct questions get only the answer. "42 plus 60" → "102". \
         "What time is it" → "3:40".
 
+        Turn discipline: respond or call tools only after an explicit user turn or user-provided panel context. \
+        Never initiate a conversation or action yourself. If a turn contains no intelligible request, remain silent.
+
         Simple actions: do the action, then confirm with a short, natural line only if useful. \
         Be lively without being chatty. If the user asks for a rock song, play it and a short \
         "rock on" style response is good. When the effect is obvious, a few words or silence is enough.
@@ -1539,11 +1522,10 @@ final class RealtimeClient: ObservableObject {
         }
 
         // GA gpt-realtime session schema: `type` is required, audio formats and
-        // turn detection are nested under `audio.input` / `audio.output`. In
-        // push-to-talk mode `turn_detection` is null so commit + response.create
-        // are driven manually. Continuous-listening mode sets it to server VAD so
-        // the model auto-detects turns and replies hands-free. Audio is PCM16 24kHz
-        // mono in both directions.
+        // turn detection are nested under `audio.input` / `audio.output`. Macky is
+        // push-to-talk only, so turn detection is null and commit + response.create
+        // are always driven manually after an audible user capture. Audio is PCM16
+        // 24kHz mono in both directions.
         let pcmFormat: [String: Any] = ["type": "audio/pcm", "rate": 24_000]
         // Enable input transcription so we receive a text transcript of the user's
         // speech (drives the drop panel's history). This adds a transcript channel
@@ -1552,18 +1534,7 @@ final class RealtimeClient: ObservableObject {
             "format": pcmFormat,
             "transcription": ["model": "whisper-1"]
         ]
-        if continuousTurnDetectionEnabled {
-            inputAudio["turn_detection"] = [
-                "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "silence_duration_ms": 500,
-                "create_response": true,
-                "interrupt_response": true
-            ]
-        } else {
-            inputAudio["turn_detection"] = NSNull()
-        }
+        inputAudio["turn_detection"] = NSNull()
         sendJSON([
             "type": "session.update",
             "session": [
@@ -1581,24 +1552,6 @@ final class RealtimeClient: ObservableObject {
             ]
         ])
         sessionUpdateSent = true
-    }
-
-    /// Enables or disables server-side VAD (`turn_detection`) for the live session
-    /// and re-sends the full `session.update` so the change takes effect mid-session.
-    /// Continuous-listening mode turns this on; push-to-talk turns it off.
-    ///
-    /// The full resend (tools + instructions + MCP entry) is deliberate here, not a
-    /// missed optimization: a partial `session.update` carrying only `turn_detection`
-    /// would be smaller, but Azure's GA realtime merge semantics for omitting `tools`/
-    /// `instructions` and for clearing `turn_detection` (push-to-talk needs it set to
-    /// null, not merely omitted) aren't verifiable without a live session — and this
-    /// runs only on a manual continuous-listening toggle, never per utterance, so the
-    /// extra payload is off the latency-critical path. Kept full to avoid silently
-    /// breaking VAD toggling for no user-perceptible gain.
-    func setContinuousTurnDetection(_ enabled: Bool) {
-        guard continuousTurnDetectionEnabled != enabled else { return }
-        continuousTurnDetectionEnabled = enabled
-        sendSessionUpdate()
     }
 
     // MARK: - Tool-activity state
@@ -1969,6 +1922,7 @@ final class RealtimeClient: ObservableObject {
             print("📤 RealtimeClient: sending first audio chunk (\(pcm16Data.count) bytes)")
         }
         appendedAudioChunkCount += 1
+        didDetectAudibleSpeech = didDetectAudibleSpeech || Self.containsAudibleSpeech(pcm16Data)
         sendJSON([
             "type": "input_audio_buffer.append",
             "audio": pcm16Data.base64EncodedString()
@@ -1980,6 +1934,7 @@ final class RealtimeClient: ObservableObject {
     /// can't be committed with the new utterance.
     func clearAudioBuffer() {
         appendedAudioChunkCount = 0
+        didDetectAudibleSpeech = false
         audioDroppedDuringUtterance = false
         sendJSON(["type": "input_audio_buffer.clear"])
     }
@@ -1994,17 +1949,40 @@ final class RealtimeClient: ObservableObject {
             lastError = "Lost connection while you were talking — try again."
             audioDroppedDuringUtterance = false
             appendedAudioChunkCount = 0
+            didDetectAudibleSpeech = false
             return false
         }
-        guard appendedAudioChunkCount > 0 else {
-            print("⚠️ RealtimeClient: commit skipped — no audio chunks captured")
-            lastError = "I didn't catch any audio — try holding the shortcut a little longer."
+        guard appendedAudioChunkCount > 0, didDetectAudibleSpeech else {
+            print("⚠️ RealtimeClient: commit skipped — no audible speech detected")
+            lastError = "I didn't catch any speech — try again when you're ready."
+            appendedAudioChunkCount = 0
+            didDetectAudibleSpeech = false
             return false
         }
         print("📤 RealtimeClient: commit audio (\(appendedAudioChunkCount) chunks)")
         appendedAudioChunkCount = 0
+        didDetectAudibleSpeech = false
         sendJSON(["type": "input_audio_buffer.commit"])
         return true
+    }
+
+    /// Returns true when a PCM16 chunk has enough RMS energy to plausibly contain
+    /// speech. The threshold is deliberately low (-42 dBFS) so quiet speech passes
+    /// while an untouched microphone's near-silence does not create a response.
+    private static func containsAudibleSpeech(_ pcm16Data: Data) -> Bool {
+        let sampleCount = pcm16Data.count / MemoryLayout<Int16>.size
+        guard sampleCount > 0 else { return false }
+
+        let meanSquare: Double = pcm16Data.withUnsafeBytes { bytes in
+            var sum = 0.0
+            for offset in stride(from: 0, to: sampleCount * MemoryLayout<Int16>.size, by: MemoryLayout<Int16>.size) {
+                let sample = bytes.loadUnaligned(fromByteOffset: offset, as: Int16.self).littleEndian
+                let normalized = Double(sample) / Double(Int16.max)
+                sum += normalized * normalized
+            }
+            return sum / Double(sampleCount)
+        }
+        return sqrt(meanSquare) >= 0.008
     }
 
     /// Asks the model to generate a response to the committed audio.

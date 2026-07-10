@@ -184,7 +184,7 @@ final class NotchPanelController {
         // While closed, switch between the idle cutout and the constant active bar as
         // the assistant becomes active/idle. Every signal that feeds `isAssistantActive`
         // / `activeStatusText` is a trigger, so the frame can't lag behind what the
-        // status bar renders (e.g. continuous-listening or a text-less active state).
+        // status bar renders (including a text-less active state).
         let activityA = Publishers.CombineLatest3(
             companionManager.$voiceState,
             companionManager.$toolCallActive,
@@ -192,11 +192,7 @@ final class NotchPanelController {
         )
         .map { _, _, _ in () }
 
-        let activityB = Publishers.CombineLatest(
-            companionManager.$operationState,
-            companionManager.$isContinuousListeningActive
-        )
-        .map { _, _ in () }
+        let activityB = companionManager.$operationState.map { _ in () }
 
         Publishers.Merge(activityA, activityB)
             .receive(on: DispatchQueue.main)

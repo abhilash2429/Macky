@@ -97,14 +97,19 @@ struct SkillsWindowView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
             Spacer()
+
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 28))
-                .foregroundColor(.white.opacity(0.3))
-            Text("No skills match \u201c\(searchText)\u201d")
-                .font(.system(.body, design: .rounded))
-                .foregroundColor(.white.opacity(0.6))
+                .font(.system(size: 32))
+                .foregroundStyle(.white.opacity(0.3))
+
+            Text("No skills match “\(searchText)”")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.white.opacity(0.6))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

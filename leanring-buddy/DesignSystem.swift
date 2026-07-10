@@ -602,29 +602,33 @@ struct DSIconButtonStyle: ButtonStyle {
             .overlay(
                 Group {
                     if isTooltipVisible, let text = tooltipText, !text.isEmpty {
-                        Text(text)
-                            .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
-                            .foregroundColor(DS.Colors.textSecondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(DS.Colors.surface3.opacity(0.85))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
-                            )
-                            .shadow(color: Color.black.opacity(0.42), radius: 14, x: 0, y: 8)
-                            .shadow(color: Color.black.opacity(0.26), radius: 4, x: 0, y: 2)
-                            .fixedSize()
-                            .offset(y: -(size / 2 + 20))
-                            .allowsHitTesting(false)
-                            .transition(.opacity)
+                        tooltip(text: text)
                     }
                 },
                 alignment: tooltipAlignment
             )
+    }
+
+    private func tooltip(text: String) -> some View {
+        Text(text)
+            .font(.system(size: DS.PanelTypography.size(11), weight: .medium))
+            .foregroundColor(DS.Colors.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(DS.Colors.surface3.opacity(0.85))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
+            )
+            .shadow(color: Color.black.opacity(0.42), radius: 14, x: 0, y: 8)
+            .shadow(color: Color.black.opacity(0.26), radius: 4, x: 0, y: 2)
+            .fixedSize()
+            .offset(y: -(size / 2 + 20))
+            .allowsHitTesting(false)
+            .transition(.opacity)
     }
 
     private func iconColor(isPressed: Bool) -> Color {
