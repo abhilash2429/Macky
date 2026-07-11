@@ -139,7 +139,7 @@ final class CompanionManager: ObservableObject {
     private var lastNarration: String?
     private var turnUsedTool = false
     private var activeToolCount = 0
-    private var pendingVisualGuidanceSequence: VisualGuidanceSequence?
+    private var pendingVisualGuidancePresentation: VisualGuidancePresentation?
 
     var allPermissionsGranted: Bool {
         hasAccessibilityPermission
@@ -561,25 +561,25 @@ final class CompanionManager: ObservableObject {
 
     private func bindRealtimeClient() {
         subAgentProgressController.onCancel = { [weak self] in
-            self?.visualGuidanceOverlayController.clear()
+            self?.cancelVisualGuidance()
         }
         visualGuidanceOverlayController.onSequenceCompleted = { [weak self] in
             self?.subAgentProgressController.hide()
         }
 
-        realtimeClient.onVisualGuidanceSequenceRequested = { [weak self] sequence in
+        realtimeClient.onVisualGuidanceSequenceRequested = { [weak self] presentation in
             guard let self else { return "{\"error\": \"app unavailable\"}" }
-            self.pendingVisualGuidanceSequence = sequence
-            self.subAgentProgressController.show(currentStep: "Building visual guide")
-            self.subAgentProgressController.markCompleted("Built visual guide", next: "Waiting for narration")
+            self.pendingVisualGuidancePresentation = presentation
             return "{\"status\": \"visual guidance queued for narration\"}"
+        }
+
+        realtimeClient.onCursorLabelRequested = { [weak self] presentation in
+            self?.visualGuidanceOverlayController.showCursorLabel(presentation)
         }
 
         realtimeClient.onVisualGuidanceClearRequested = { [weak self] in
             guard let self else { return "{\"error\": \"app unavailable\"}" }
-            self.pendingVisualGuidanceSequence = nil
-            self.visualGuidanceOverlayController.clear()
-            self.subAgentProgressController.hide()
+            self.cancelVisualGuidance()
             return "{\"status\": \"cleared\"}"
         }
 
@@ -669,10 +669,16 @@ final class CompanionManager: ObservableObject {
     }
 
     private func startPendingVisualGuidanceIfNeeded() {
-        guard let sequence = pendingVisualGuidanceSequence else { return }
-        pendingVisualGuidanceSequence = nil
-        visualGuidanceOverlayController.run(sequence: sequence)
-        subAgentProgressController.markCompleted("Narration started", next: "Showing overlay")
+        guard let presentation = pendingVisualGuidancePresentation else { return }
+        pendingVisualGuidancePresentation = nil
+        visualGuidanceOverlayController.run(presentation: presentation)
+    }
+
+    private func cancelVisualGuidance() {
+        pendingVisualGuidancePresentation = nil
+        realtimeClient.cancelVisualGuidanceWork()
+        visualGuidanceOverlayController.clear()
+        subAgentProgressController.hide()
     }
 
     private func beginToolActivity(toolName: String) {
@@ -764,6 +770,8 @@ final class CompanionManager: ObservableObject {
         switch transition {
         case .pressed:
             guard !buddyDictationManager.isDictationInProgress else { return }
+            cancelVisualGuidance()
+            realtimeClient.cancelCursorControlWork()
             realtimeClient.interruptPlayback()
             realtimeClient.clearAudioBuffer()
             voiceState = .listening

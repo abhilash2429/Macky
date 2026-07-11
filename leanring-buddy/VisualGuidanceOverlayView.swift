@@ -101,9 +101,13 @@ private struct CursorCalloutLabel: View {
         )
         let offset = offsetForPlacement
         let halfWidth = maxLabelWidth / 2
+        let estimatedHalfHeight: CGFloat = 38
         return CGPoint(
             x: min(max(cursorPoint.x + offset.x, halfWidth + 16), max(halfWidth + 16, targetSize.width - halfWidth - 16)),
-            y: min(max(cursorPoint.y + offset.y, 24), max(24, targetSize.height - 24))
+            y: min(
+                max(cursorPoint.y + offset.y, estimatedHalfHeight + 16),
+                max(estimatedHalfHeight + 16, targetSize.height - estimatedHalfHeight - 16)
+            )
         )
     }
 
@@ -276,10 +280,9 @@ private struct AnimatedCanvasCommandView: View {
     }
 
     // SwiftUI's coordinate space here is already top-left origin (`.position` measures y
-    // downward from the top), so no Y flip is needed. Since the screenshot is now captured at
-    // the display's logical point dimensions, `sourceSize` equals the fullscreen overlay's
-    // `targetSize`, so scaleX/scaleY are 1.0 and this is effectively a direct passthrough:
-    // overlayX == screenshotX, overlayY == screenshotY.
+    // downward from the top), so no Y flip is needed. `sourceSize` is the actual screenshot
+    // pixel size and `targetSize` is the overlay's display size in points, so the two scale
+    // factors preserve exact relative placement on Retina and non-Retina displays.
     private func point(x: Double, y: Double, in targetSize: CGSize) -> CGPoint {
         CGPoint(x: CGFloat(x) * scaleX(targetSize), y: CGFloat(y) * scaleY(targetSize))
     }
@@ -298,9 +301,13 @@ private struct AnimatedCanvasCommandView: View {
 
     private func clampedLabelPosition(_ point: CGPoint, in targetSize: CGSize) -> CGPoint {
         let halfWidth = labelMaxWidth(in: targetSize) / 2
+        let estimatedHalfHeight: CGFloat = 38
         return CGPoint(
             x: min(max(point.x, halfWidth + 16), max(halfWidth + 16, targetSize.width - halfWidth - 16)),
-            y: min(max(point.y, 24), max(24, targetSize.height - 24))
+            y: min(
+                max(point.y, estimatedHalfHeight + 16),
+                max(estimatedHalfHeight + 16, targetSize.height - estimatedHalfHeight - 16)
+            )
         )
     }
 
@@ -324,7 +331,7 @@ private struct AnimatedCanvasCommandView: View {
             dash: dash,
             dashPhase: dashPhase
         )
-        if animationType == .draw || animationType == .travel {
+        if animationType == .draw {
             shape
                 .trim(from: 0, to: progress)
                 .stroke(Color.blue, style: style)
@@ -363,7 +370,7 @@ private struct AnimatedCanvasCommandView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             let base = swiftUIAnimation()
             switch animationType {
-            case .draw, .travel:
+            case .draw:
                 visible = true
                 withAnimation(base) { progress = 1 }
             case .pulse:

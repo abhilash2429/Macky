@@ -47,15 +47,28 @@ final class VisualGuidanceOverlayController: ObservableObject {
 
     private var panel: VisualGuidanceOverlayPanel?
     private var sequenceTask: Task<Void, Never>?
+    private var presentationGeneration = 0
     private var activationObserver: NSObjectProtocol?
     private var guardedBundleIdentifier: String?
 
     var onSequenceCompleted: (() -> Void)?
 
-    func run(sequence: VisualGuidanceSequence) {
+    func run(presentation: VisualGuidancePresentation) {
+        clear()
         do {
-            let validated = try sequence.validated()
-            guard let screen = screen(for: validated) ?? NSScreen.main else { return }
+            let validated = try presentation.sequence.validated()
+            if let expectedBundleIdentifier = presentation.sourceApplicationBundleIdentifier,
+               NSWorkspace.shared.frontmostApplication?.bundleIdentifier != expectedBundleIdentifier {
+                print("⚠️ VisualGuidanceOverlay: source application changed before presentation")
+                onSequenceCompleted?()
+                return
+            }
+            guard let screen = screen(for: validated) else {
+                onSequenceCompleted?()
+                return
+            }
+
+            let generation = presentationGeneration
             sourceSize = validated.coordinateSpace?.cgSize ?? screen.frame.size
             print(
                 "🧪 VisualGuidanceOverlayDiagnostics " +
@@ -66,36 +79,107 @@ final class VisualGuidanceOverlayController: ObservableObject {
                 "steps=\(validated.steps.count)"
             )
             ensurePanel(on: screen)
-            guardedBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            guardedBundleIdentifier = presentation.sourceApplicationBundleIdentifier
+                ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             observeAppSwitches()
             panel?.orderFrontRegardless()
 
-            sequenceTask?.cancel()
             sequenceTask = Task { @MainActor [weak self] in
                 guard let self else { return }
+                var accumulatedCanvas: [CanvasCommand] = []
+                var shouldClearBeforeStep = true
+
                 for step in validated.steps {
-                    guard !Task.isCancelled else { return }
-                    self.currentStep = step
+                    guard !Task.isCancelled, self.presentationGeneration == generation else { return }
+                    if shouldClearBeforeStep {
+                        accumulatedCanvas = []
+                    }
+                    accumulatedCanvas.append(contentsOf: step.canvas)
+
+                    let stepStart = Date()
+                    self.currentStep = self.renderedStep(
+                        from: step,
+                        canvas: accumulatedCanvas,
+                        showCursorLabel: false
+                    )
                     if let cursor = step.cursor {
-                        _ = try? await CursorGuidanceIntegration.move(to: cursor, coordinateSpace: validated.coordinateSpace)
-                    }
-                    try? await Task.sleep(nanoseconds: step.displayDurationNanoseconds)
-                    if step.clearBeforeNext ?? true {
-                        withAnimation(.easeOut(duration: 0.45)) {
-                            self.currentStep = nil
+                        do {
+                            _ = try await CursorControlIntegration.move(
+                                to: cursor,
+                                coordinateSpace: validated.coordinateSpace,
+                                expectedApplicationBundleIdentifier: presentation.sourceApplicationBundleIdentifier
+                            )
+                        } catch is CancellationError {
+                            return
+                        } catch {
+                            print("⚠️ VisualGuidanceOverlay: cursor move failed: \(error.localizedDescription)")
                         }
-                        try? await Task.sleep(nanoseconds: 450_000_000)
+                        guard !Task.isCancelled, self.presentationGeneration == generation else { return }
+                        self.currentStep = self.renderedStep(
+                            from: step,
+                            canvas: accumulatedCanvas,
+                            showCursorLabel: true
+                        )
                     }
+
+                    let elapsedNanoseconds = UInt64(max(0, Date().timeIntervalSince(stepStart)) * 1_000_000_000)
+                    let remainingNanoseconds = step.displayDurationNanoseconds > elapsedNanoseconds
+                        ? step.displayDurationNanoseconds - elapsedNanoseconds
+                        : 0
+                    if remainingNanoseconds > 0 {
+                        do {
+                            try await Task.sleep(nanoseconds: remainingNanoseconds)
+                        } catch {
+                            return
+                        }
+                    }
+                    shouldClearBeforeStep = step.clearBeforeNext ?? true
                 }
-                self.clear()
-                self.onSequenceCompleted?()
+                self.finishPresentation(generation: generation, notifyCompletion: true)
             }
         } catch {
             print("⚠️ VisualGuidanceOverlay: invalid sequence: \(error.localizedDescription)")
+            onSequenceCompleted?()
+        }
+    }
+
+    func showCursorLabel(_ presentation: CursorLabelPresentation) {
+        clear()
+        let generation = presentationGeneration
+
+        sourceSize = presentation.coordinateSpace.cgSize
+        let sequence = VisualGuidanceSequence(
+            title: nil,
+            sourceWidth: presentation.coordinateSpace.width,
+            sourceHeight: presentation.coordinateSpace.height,
+            displayFrame: presentation.coordinateSpace.displayFrame,
+            steps: []
+        )
+        guard let screen = screen(for: sequence) else { return }
+        ensurePanel(on: screen)
+        guardedBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        observeAppSwitches()
+        panel?.orderFrontRegardless()
+        currentStep = VisualGuidanceStep(
+            narrationCue: nil,
+            durationMs: nil,
+            clearBeforeNext: true,
+            canvas: [],
+            cursor: presentation.command
+        )
+
+        sequenceTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: presentation.displayDurationNanoseconds)
+            } catch {
+                return
+            }
+            self?.finishPresentation(generation: generation, notifyCompletion: false)
         }
     }
 
     func clear() {
+        presentationGeneration += 1
         sequenceTask?.cancel()
         sequenceTask = nil
         currentStep = nil
@@ -104,8 +188,46 @@ final class VisualGuidanceOverlayController: ObservableObject {
         guardedBundleIdentifier = nil
     }
 
+    private func renderedStep(
+        from step: VisualGuidanceStep,
+        canvas: [CanvasCommand],
+        showCursorLabel: Bool
+    ) -> VisualGuidanceStep {
+        let cursor = step.cursor.map { cursor in
+            CursorCommand(
+                type: cursor.type,
+                x: cursor.x,
+                y: cursor.y,
+                durationMs: cursor.durationMs,
+                label: showCursorLabel ? cursor.label : nil,
+                labelPlacement: cursor.labelPlacement
+            )
+        }
+        return VisualGuidanceStep(
+            narrationCue: step.narrationCue,
+            durationMs: step.durationMs,
+            clearBeforeNext: step.clearBeforeNext,
+            canvas: canvas,
+            cursor: cursor
+        )
+    }
+
+    private func finishPresentation(generation: Int, notifyCompletion: Bool) {
+        guard presentationGeneration == generation else { return }
+        presentationGeneration += 1
+        sequenceTask?.cancel()
+        sequenceTask = nil
+        currentStep = nil
+        panel?.orderOut(nil)
+        stopObservingAppSwitches()
+        guardedBundleIdentifier = nil
+        if notifyCompletion {
+            onSequenceCompleted?()
+        }
+    }
+
     private func screen(for sequence: VisualGuidanceSequence) -> NSScreen? {
-        guard let displayFrame = sequence.displayFrame else { return nil }
+        guard let displayFrame = sequence.displayFrame else { return NSScreen.main }
         if let displayID = displayFrame.displayID,
            let screen = NSScreen.screens.first(where: { screen in
                (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
@@ -114,9 +236,10 @@ final class VisualGuidanceOverlayController: ObservableObject {
         }
 
         let targetFrame = displayFrame.cgRect
-        return NSScreen.screens.max { lhs, rhs in
+        guard let bestMatch = NSScreen.screens.max(by: { lhs, rhs in
             lhs.frame.intersection(targetFrame).area < rhs.frame.intersection(targetFrame).area
-        }
+        }) else { return nil }
+        return bestMatch.frame.intersection(targetFrame).area > 0 ? bestMatch : nil
     }
 
     private func ensurePanel(on screen: NSScreen) {
@@ -149,7 +272,8 @@ final class VisualGuidanceOverlayController: ObservableObject {
                 guard let guardedBundleIdentifier = self.guardedBundleIdentifier else { return }
                 guard app.bundleIdentifier != Bundle.main.bundleIdentifier,
                       app.bundleIdentifier != guardedBundleIdentifier else { return }
-                self.clear()
+                let generation = self.presentationGeneration
+                self.finishPresentation(generation: generation, notifyCompletion: true)
             }
         }
     }

@@ -40,6 +40,20 @@ struct VisualGuidanceCoordinateSpace: Codable {
     }
 }
 
+/// Local-only presentation context. The vision model owns drawing coordinates, while
+/// the app owns the exact display and application identity those coordinates came from.
+struct VisualGuidancePresentation {
+    let sequence: VisualGuidanceSequence
+    let sourceApplicationBundleIdentifier: String?
+    let capturedAt: Date
+}
+
+struct CursorLabelPresentation {
+    let command: CursorCommand
+    let coordinateSpace: VisualGuidanceCoordinateSpace
+    let displayDurationNanoseconds: UInt64
+}
+
 struct VisualGuidanceSequence: Codable {
     let title: String?
     let sourceWidth: Double?
@@ -71,6 +85,27 @@ struct VisualGuidanceSequence: Codable {
     func validated(maxSteps: Int = 12) throws -> VisualGuidanceSequence {
         guard !steps.isEmpty else { throw VisualGuidanceValidationError.emptySequence }
         guard steps.count <= maxSteps else { throw VisualGuidanceValidationError.tooManySteps }
+        if let title {
+            guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  title.count <= 120 else {
+                throw VisualGuidanceValidationError.invalidTitle
+            }
+        }
+        if sourceWidth != nil || sourceHeight != nil {
+            guard let sourceWidth, let sourceHeight,
+                  sourceWidth.isFinite, sourceHeight.isFinite,
+                  sourceWidth > 0, sourceHeight > 0,
+                  sourceWidth <= 16_384, sourceHeight <= 16_384 else {
+                throw VisualGuidanceValidationError.sourceDimensionMismatch
+            }
+        }
+        if let displayFrame {
+            guard displayFrame.x.isFinite, displayFrame.y.isFinite,
+                  displayFrame.width.isFinite, displayFrame.height.isFinite,
+                  displayFrame.width > 0, displayFrame.height > 0 else {
+                throw VisualGuidanceValidationError.invalidDisplayFrame
+            }
+        }
         return VisualGuidanceSequence(
             title: title,
             sourceWidth: sourceWidth,
@@ -106,6 +141,20 @@ struct VisualGuidanceStep: Codable {
     func validated() throws -> VisualGuidanceStep {
         guard !canvas.isEmpty || cursor != nil else { throw VisualGuidanceValidationError.emptyStep }
         guard canvas.count <= Self.maxCanvasCommands else { throw VisualGuidanceValidationError.tooManyCanvasCommands }
+        guard canvas.filter({ $0.type == .spotlight }).count <= 1 else {
+            throw VisualGuidanceValidationError.tooManySpotlights
+        }
+        guard durationMs == nil || (durationMs! >= 4_000 && durationMs! <= 20_000) else {
+            throw VisualGuidanceValidationError.invalidStepDuration
+        }
+        if let narrationCue {
+            guard !narrationCue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw VisualGuidanceValidationError.emptyNarrationCue
+            }
+            guard narrationCue.count <= 240 else {
+                throw VisualGuidanceValidationError.narrationCueTooLong
+            }
+        }
         return VisualGuidanceStep(
             narrationCue: narrationCue,
             durationMs: durationMs,
@@ -164,7 +213,9 @@ struct CanvasCommand: Codable {
         case .label:
             let hasDirectPoint = x?.isFinite == true && y?.isFinite == true
             let hasTarget = targetId?.isEmpty == false
-            guard (hasDirectPoint || hasTarget), let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            guard (hasDirectPoint || hasTarget), let text,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  text.count <= 120 else {
                 throw VisualGuidanceValidationError.invalidCanvasCommand
             }
         case .polygon:
@@ -201,7 +252,7 @@ struct CanvasAnimation: Codable {
     }
 
     var repetitions: Int {
-        min(max(repeatCount ?? 1, 0), 5)
+        min(max(repeatCount ?? 1, 1), 5)
     }
 
     func validated() throws -> CanvasAnimation {
@@ -211,7 +262,7 @@ struct CanvasAnimation: Codable {
         guard delayMs == nil || (delayMs! >= 0 && delayMs! <= 1_500) else {
             throw VisualGuidanceValidationError.invalidAnimation
         }
-        guard repeatCount == nil || (repeatCount! >= 0 && repeatCount! <= 5) else {
+        guard repeatCount == nil || (repeatCount! >= 1 && repeatCount! <= 5) else {
             throw VisualGuidanceValidationError.invalidAnimation
         }
         return self
@@ -224,7 +275,6 @@ enum CanvasAnimationType: String, Codable {
     case scaleIn = "scale_in"
     case pulse
     case draw
-    case travel
     case dashFlow = "dash_flow"
 }
 
@@ -275,8 +325,14 @@ struct CursorCommand: Codable {
 
     func validated() throws -> CursorCommand {
         guard x.isFinite, y.isFinite else { throw VisualGuidanceValidationError.invalidCursorCommand }
-        if let label, label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        guard durationMs == nil || (durationMs! >= 100 && durationMs! <= 2_000) else {
             throw VisualGuidanceValidationError.invalidCursorCommand
+        }
+        if let label {
+            guard !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  label.count <= 80 else {
+                throw VisualGuidanceValidationError.invalidCursorCommand
+            }
         }
         return self
     }
@@ -303,6 +359,12 @@ enum VisualGuidanceValidationError: LocalizedError {
     case tooManySteps
     case emptyStep
     case tooManyCanvasCommands
+    case tooManySpotlights
+    case invalidStepDuration
+    case emptyNarrationCue
+    case narrationCueTooLong
+    case invalidTitle
+    case invalidDisplayFrame
     case invalidCanvasCommand
     case invalidCursorCommand
     case invalidAnimation
@@ -322,6 +384,18 @@ enum VisualGuidanceValidationError: LocalizedError {
             return "visual guidance step has no canvas or cursor action"
         case .tooManyCanvasCommands:
             return "visual guidance step has too many canvas commands"
+        case .tooManySpotlights:
+            return "visual guidance step can contain at most one spotlight"
+        case .invalidStepDuration:
+            return "visual guidance step duration is invalid"
+        case .emptyNarrationCue:
+            return "visual guidance narration cue is empty"
+        case .narrationCueTooLong:
+            return "visual guidance narration cue is too long"
+        case .invalidTitle:
+            return "visual guidance title is invalid"
+        case .invalidDisplayFrame:
+            return "visual guidance display frame is invalid"
         case .invalidCanvasCommand:
             return "visual guidance canvas command is invalid"
         case .invalidCursorCommand:

@@ -27,9 +27,13 @@ on external monitors without a notch it falls back to a full-width floating bar 
 
 the old clicky codebase chains three services: assemblyAI for transcription, claude for thinking, elevenlabs for speech output. works but slow — minimum 1.5-2 seconds before you hear anything. that's not a voice interface, that's a slow chatbot with speakers.
 
-we're replacing the whole chain with GPT-Realtime-2. one websocket, one model, no handoffs. it takes your raw audio directly. it doesn't wait for a transcript — it processes as you speak, starts forming a response before you finish your sentence, and speaks back in 250-500ms. not a pipeline, just a model that hears you and talks back.
+we're replacing the whole voice chain with GPT-Realtime-2.1. one persistent websocket and one realtime voice brain, with no transcription/thinking/speech handoffs. it takes raw audio directly, reasons while you speak, and talks back in 250-500ms.
 
-GPT-Realtime-2 is openAI's first voice model built on GPT-5-class reasoning. it's also the first realtime model with MCP support baked in, image input (it can see your screen), and 128K context across an entire session. this is the right model. not gpt-4o realtime, not a previous generation — GPT-Realtime-2 specifically.
+GPT-Realtime-2.1 builds on GPT-Realtime-2's GPT-5-class reasoning, MCP support, image input (it can see your screen), and 128K context across an entire session. it improves alphanumeric recognition, silence/noise handling, and interruption behavior. this is the right model. not gpt-4o realtime, not a previous generation — GPT-Realtime-2.1 specifically.
+
+precise visual teaching is the one deliberate specialist path: when the realtime model decides the user needs an exact on-screen diagram, the app sends that single on-demand screenshot to GPT-5.6-sol through the Worker. GPT-5.6-sol returns validated top-left screenshot coordinates for highlights, arrows, labels, and pointing. the realtime model remains the voice brain and narrates the guide; the specialist never owns the conversation.
+
+cursor control is a separate local macOS tool, not part of the diagram renderer. it can move, click, double-click, right-click, middle-click, drag, and scroll when the user asks Macky to operate visible UI. coordinate actions always bind to a fresh captured display; generated teaching diagrams only point and never click.
 
 ---
 
@@ -79,7 +83,7 @@ user hovers — notch expands downward. shows current status, what it's doing, l
 
 integrations work through MCP — model context protocol. instead of building custom connectors for every service, MCP servers are plugged in and the model knows how to call them. no custom glue code per integration.
 
-GPT-Realtime-2 handles MCP natively — you pass the server URL into the session config at startup, the API handles all the tool calls automatically. the model calls a tool, the platform executes it, the result comes back, the model keeps talking. nothing interrupts the voice stream.
+GPT-Realtime-2.1 handles MCP natively — you pass the server URL into the session config at startup, the API handles all the tool calls automatically. the model calls a tool, the platform executes it, the result comes back, the model keeps talking. nothing interrupts the voice stream.
 
 ### the context window problem
 
@@ -123,17 +127,17 @@ first launch shows a clean setup screen. user sees each integration listed and c
 
 ### approvals (decision)
 
-**decision (2026-06-20): Composio MCP tools run with `require_approval: "never"`** — there is no per-action confirmation step before an external/irreversible action (sending an email, posting a Slack message) executes. this is a *deliberate* tradeoff in favor of Macky's core promise of voice-in/action-out latency: a voice assistant that says "should i send that? yes or no?" before every send breaks the half-second loop the whole product is built around. the model is instructed to confirm the action *after* doing it in one short clause ("sent it"), not to gate it beforehand.
+**decision (2026-07-11): Composio MCP tools run with `require_approval: "never"` for normal clear commands** — Macky does not add a per-action confirmation step for routine messages, calendar/reminder creation, music, or system controls. this preserves the core voice-in/action-out loop: asking "should i send that?" before every Slack message or email would break the half-second interaction the product is built around. the model confirms ordinary actions after the tool succeeds.
 
-this is recorded here as a made decision, not an oversight, so it is not re-litigated later. the unused `AssistantOperationState.awaitingApproval` case that anticipated a gating UI is intentionally retired as dead code while this decision stands; revisiting it (e.g. gating only a defined set of irreversible actions) is a future product decision, not a bug.
+the narrow exception is materially dangerous work: permanent deletion/discard, payments/purchases/transfers, cancellations, account/security changes, or another action with comparable irreversible harm. the model names the consequence and obtains an explicit voice confirmation before it calls that tool. this is conversational, not a new gating UI; `AssistantOperationState.awaitingApproval` remains retired.
 
 ---
 
 ## the cloudflare worker
 
-all API calls go through a cloudflare worker proxy sitting between the swift app and GPT-Realtime-2. the app never talks to openAI directly. the real API key lives on the worker as a secret, nothing sensitive ships in the binary.
+all API calls go through a cloudflare worker proxy sitting between the swift app and GPT-Realtime-2.1. the app never talks to openAI directly. the real API key lives on the worker as a secret, nothing sensitive ships in the binary.
 
-GPT-Realtime-2 uses a persistent WebSocket, not a request/response. the worker runs as a WebSocket proxy — app connects to worker, worker proxies to openAI's realtime endpoint, bytes flow through without the worker doing compute. this matters because cloudflare workers have a CPU time limit that a persistent socket would otherwise hit. proxying doesn't count as compute.
+GPT-Realtime-2.1 uses a persistent WebSocket, not a request/response. the worker runs as a WebSocket proxy — app connects to worker, worker proxies to openAI's realtime endpoint, bytes flow through without the worker doing compute. this matters because cloudflare workers have a CPU time limit that a persistent socket would otherwise hit. proxying doesn't count as compute.
 
 ---
 
@@ -147,7 +151,7 @@ v1 is: voice in, action out, fast, shows you what it's doing, covers the top int
 
 ## the competition
 
-**heyclicky** — closest thing. same concept, further ahead on integrations. built every connector by hand. we're MCP-native from day one which means we scale faster. they're also on an older voice pipeline. we ship GPT-Realtime-2 from the start.
+**heyclicky** — closest thing. same concept, further ahead on integrations. built every connector by hand. we're MCP-native from day one which means we scale faster. they're also on an older voice pipeline. we ship GPT-Realtime-2.1 from the start.
 
 **perplexity personal computer** — launched april 2026. more focused on local file access and long-horizon tasks. different angle.
 
@@ -155,12 +159,12 @@ v1 is: voice in, action out, fast, shows you what it's doing, covers the top int
 
 **apple intelligence** — slow, narrow, won't meaningfully expand before late 2026.
 
-the gap we're going into: GPT-Realtime-2 latency + MCP-native integrations + claude code-style live transparency on what's happening + a UI that's actually built for macOS. none of the current players have all of that together.
+the gap we're going into: GPT-Realtime-2.1 latency + MCP-native integrations + claude code-style live transparency on what's happening + a UI that's actually built for macOS. none of the current players have all of that together.
 
 ---
 
 ## the codebase
 
-forked from clicky (MIT license). the macOS UI primitives stay — NSPanel, ScreenCaptureKit, CGEvent tap for push-to-talk, OverlayWindow for the notch rendering, the design system tokens. the API layer gets replaced entirely. assemblyAI, elevenlabs, and the claude integration all go. GPT-Realtime-2 WebSocket + composio MCP gateway + LMCP local server come in.
+forked from clicky (MIT license). the macOS UI primitives stay — NSPanel, ScreenCaptureKit, CGEvent tap for push-to-talk, OverlayWindow for the notch rendering, the design system tokens. the API layer gets replaced entirely. assemblyAI, elevenlabs, and the claude integration all go. GPT-Realtime-2.1 WebSocket + composio MCP gateway + LMCP local server come in.
 
 the "leanring" typo in the project directory stays. it's legacy. don't rename it.

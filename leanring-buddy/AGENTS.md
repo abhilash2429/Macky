@@ -82,6 +82,10 @@ to the notch.
 - `SystemControlsIntegration.swift` — AppKit / AppleScript / CGEvent system shortcuts.
 - `AppLauncherIntegration.swift` — `NSWorkspace` app launching.
 - `CompanionScreenCaptureUtility.swift` — ScreenCaptureKit for on-demand screen context.
+- `CursorControlIntegration.swift` — standalone CGEvent cursor movement, clicking, dragging,
+  and scrolling. Visual guidance reuses it for pointing only.
+- `VisualGuidance*` / `VisualScene*` — validated screenshot-coordinate diagrams, overlay
+  rendering, optional Accessibility targets, and cursor labels.
 
 ### Observability
 - `MackyAnalytics.swift` — thin wrapper over the PostHog SDK. No-ops until a
@@ -115,6 +119,11 @@ to the notch.
 - Screen context is **on demand** — the app does not capture or send screenshots on every
   key press, and by default captures only the cursor's display (the `get_screen_context`
   tool's `all_screens` flag opts into every monitor).
+- Coordinate-based cursor actions require a fresh current-turn screen capture. Visual
+  diagrams are generated on demand by GPT-5.6-sol through the authenticated Worker route;
+  the realtime model remains responsible for deciding when to teach and for narration.
+  Multi-display coordinate actions must use the capture's `display_id`, and any standalone
+  cursor action invalidates cached coordinates before the next action.
 
 ---
 

@@ -21,7 +21,7 @@ export interface Env {
   // email (e.g. https://realtime-proxy.speedmac.workers.dev).
   PUBLIC_BASE_URL: string;
   // Azure deployment name for the primary visual-guidance model that generates
-  // coordinates from a screenshot. Defaults to "gpt-5.5" when unset. Runs on the same
+  // coordinates from a screenshot. Defaults to "gpt-5.6-sol" when unset. Runs on the same
   // Azure resource / api-key as the realtime endpoint.
   CANVAS_VISION_MODEL: string;
 }
@@ -631,9 +631,15 @@ async function startPlayback(
 /// the realtime model remains the voice brain that decides when visual guidance is needed.
 ///
 /// Success: { canvas_payload: "<sequence JSON string>", error: null }
-/// Failure: { canvas_payload: null, error: "<reason>" } (HTTP 200 so the app reads the
-///          structured null instead of throwing on a non-2xx status).
+/// Failure: { canvas_payload: null, error: "<reason>" }. Request/auth failures use their
+///          corresponding HTTP status; upstream model/validation failures remain structured.
 async function handleCanvasVision(request: Request, env: Env): Promise<Response> {
+  const session = await resolveSession(request, env);
+  if (!session) {
+    return jsonResponse({ canvas_payload: null, error: "missing or invalid session" }, 401);
+  }
+
+  const requestID = crypto.randomUUID();
   let jpegBase64 = "";
   let transcript = "";
   let logicalWidth = 0;
@@ -646,35 +652,45 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
       logicalHeight?: unknown;
     };
     jpegBase64 = typeof body.jpegBase64 === "string" ? body.jpegBase64 : "";
-    transcript = typeof body.transcript === "string" ? body.transcript : "";
+    transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
     logicalWidth = typeof body.logicalWidth === "number" ? Math.round(body.logicalWidth) : 0;
     logicalHeight = typeof body.logicalHeight === "number" ? Math.round(body.logicalHeight) : 0;
   } catch {
-    return jsonResponse({ error: "invalid JSON body" }, 400);
+    return jsonResponse({ canvas_payload: null, error: "invalid JSON body", request_id: requestID }, 400);
   }
   if (!jpegBase64) {
-    return jsonResponse({ error: "missing jpegBase64" }, 400);
+    return jsonResponse({ canvas_payload: null, error: "missing jpegBase64", request_id: requestID }, 400);
   }
-  if (logicalWidth <= 0 || logicalHeight <= 0) {
-    return jsonResponse({ error: "missing or invalid logical dimensions" }, 400);
+  // Base64 is roughly 4/3 the source size. Keep screenshots below a conservative
+  // per-request application limit so an accidental capture cannot consume excessive memory.
+  if (jpegBase64.length > 11_200_000) {
+    return jsonResponse({ canvas_payload: null, error: "screenshot is too large", request_id: requestID }, 413);
+  }
+  if (transcript.length > 4_000) {
+    return jsonResponse({ canvas_payload: null, error: "guidance request is too long", request_id: requestID }, 400);
+  }
+  if (logicalWidth <= 0 || logicalHeight <= 0 || logicalWidth > 16_384 || logicalHeight > 16_384) {
+    return jsonResponse({ canvas_payload: null, error: "missing or invalid source dimensions", request_id: requestID }, 400);
   }
   console.log("CanvasVisionDiagnostics request", {
+    requestID,
     logicalWidth,
     logicalHeight,
     jpegBase64Length: jpegBase64.length,
     transcriptLength: transcript.length,
   });
 
-  const deployment = env.CANVAS_VISION_MODEL || "gpt-5.5";
-  const azureUrl = "https://abhilashreddymand-0825-resource.services.ai.azure.com";
+  const deployment = env.CANVAS_VISION_MODEL || "gpt-5.6-sol";
+  const azureUrl = "https://abhilashreddymand-0825-resource.services.ai.azure.com/openai/v1/responses";
 
   const systemPrompt = canvasVisionSystemPrompt(logicalWidth, logicalHeight);
-  const userText =
-    (transcript || "Help the user with what's currently on screen.") +
-    `\n\nReturn the visual guide as JSON. Display logical dimensions: ${logicalWidth}x${logicalHeight}`;
+  const userText = transcript || "Teach the user what to do on the visible screen.";
+  const safetyIdentifier = await safetyIdentifierForSession(session);
 
   const buildVisionRequestBody = (imageDetail: "original" | "high") => JSON.stringify({
     model: deployment,
+    store: false,
+    safety_identifier: safetyIdentifier,
     instructions: systemPrompt,
     input: [
       {
@@ -689,9 +705,16 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
         ],
       },
     ],
-    text: { format: { type: "json_object" } },
-    reasoning: { effort: "medium" },
-    max_output_tokens: 2600,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "visual_guidance_sequence",
+        strict: true,
+        schema: canvasVisionOutputSchema(),
+      },
+    },
+    reasoning: { effort: "high" },
+    max_output_tokens: 4_000,
   });
 
   const fetchVisionResponse = (imageDetail: "original" | "high") => fetch(azureUrl, {
@@ -708,71 +731,80 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   try {
     azureResponse = await fetchVisionResponse(usedImageDetail);
   } catch (err) {
-    console.error("Canvas vision fetch failed", err);
-    return jsonResponse({ canvas_payload: null, error: "vision request failed" });
+    console.error("Canvas vision fetch failed", requestID, err);
+    return jsonResponse({ canvas_payload: null, error: "vision request failed", request_id: requestID });
   }
 
   if (!azureResponse.ok && azureResponse.status === 400) {
     const originalDetailError = await azureResponse.text().catch(() => "");
-    console.warn("Canvas vision original detail rejected; retrying with high", originalDetailError);
-    usedImageDetail = "high";
-    try {
-      azureResponse = await fetchVisionResponse(usedImageDetail);
-    } catch (err) {
-      console.error("Canvas vision fallback fetch failed", err);
-      return jsonResponse({ canvas_payload: null, error: "vision request failed" });
+    if (/\bdetail\b|\boriginal\b/i.test(originalDetailError)) {
+      console.warn("Canvas vision original detail rejected; retrying with high", requestID);
+      usedImageDetail = "high";
+      try {
+        azureResponse = await fetchVisionResponse(usedImageDetail);
+      } catch (err) {
+        console.error("Canvas vision fallback fetch failed", requestID, err);
+        return jsonResponse({ canvas_payload: null, error: "vision request failed", request_id: requestID });
+      }
+    } else {
+      console.error("Canvas vision request rejected", requestID, originalDetailError);
+      return jsonResponse({ canvas_payload: null, error: "vision request was rejected", request_id: requestID });
     }
   }
 
   if (!azureResponse.ok) {
     const detail = await azureResponse.text().catch(() => "");
-    console.error("Canvas vision non-OK", azureResponse.status, detail);
+    console.error("Canvas vision non-OK", requestID, azureResponse.status, detail);
     return jsonResponse({
       canvas_payload: null,
       error: `vision model error (status ${azureResponse.status})`,
+      request_id: requestID,
     });
   }
 
   let content = "";
+  let refusal = "";
   try {
     const data = (await azureResponse.json()) as {
       output_text?: unknown;
-      output?: Array<{ content?: Array<{ type?: string; text?: unknown }> }>;
+      output?: Array<{ content?: Array<{ type?: string; text?: unknown; refusal?: unknown }> }>;
     };
     if (typeof data.output_text === "string") {
       content = data.output_text;
     } else {
-      content = (data.output ?? [])
-        .flatMap((item) => item.content ?? [])
+      const outputParts = (data.output ?? []).flatMap((item) => item.content ?? []);
+      content = outputParts
         .filter((part) => part.type === "output_text" && typeof part.text === "string")
         .map((part) => part.text as string)
         .join("\n");
+      refusal = outputParts
+        .filter((part) => part.type === "refusal" && typeof part.refusal === "string")
+        .map((part) => part.refusal as string)
+        .join(" ");
     }
   } catch (err) {
-    console.error("Canvas vision response parse failed", err);
-    return jsonResponse({ canvas_payload: null, error: "vision response unreadable" });
+    console.error("Canvas vision response parse failed", requestID, err);
+    return jsonResponse({ canvas_payload: null, error: "vision response unreadable", request_id: requestID });
+  }
+  if (refusal) {
+    console.warn("Canvas vision refused request", requestID);
+    return jsonResponse({ canvas_payload: null, error: "vision model refused the request", request_id: requestID });
   }
   if (!content) {
-    return jsonResponse({ canvas_payload: null, error: "vision returned empty content" });
+    return jsonResponse({ canvas_payload: null, error: "vision returned empty content", request_id: requestID });
   }
-
-  // Strip any accidental markdown fencing before parsing.
-  const cleaned = content
-    .trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
 
   let sequence: unknown;
   try {
-    sequence = JSON.parse(cleaned);
+    sequence = JSON.parse(content.trim());
   } catch (err) {
-    console.error("Canvas vision JSON.parse failed", err);
-    return jsonResponse({ canvas_payload: null, error: "vision returned invalid JSON" });
+    console.error("Canvas vision JSON.parse failed", requestID, err);
+    return jsonResponse({ canvas_payload: null, error: "vision returned invalid JSON", request_id: requestID });
   }
 
   const validationError = validateCanvasVisionSequence(sequence, logicalWidth, logicalHeight);
   console.log("CanvasVisionDiagnostics response", {
+    requestID,
     logicalWidth,
     logicalHeight,
     imageDetail: usedImageDetail,
@@ -782,27 +814,141 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
     validationError,
   });
   if (validationError) {
-    return jsonResponse({ canvas_payload: null, error: validationError });
+    return jsonResponse({ canvas_payload: null, error: validationError, request_id: requestID });
   }
 
   const guidanceSummary = typeof (sequence as { summary?: unknown }).summary === "string"
     ? (sequence as { summary: string }).summary
     : null;
-  const timeline = Array.isArray((sequence as { timeline?: unknown }).timeline)
-    ? (sequence as { timeline: unknown[] }).timeline
-    : [];
   return jsonResponse({
     canvas_payload: JSON.stringify(sequence),
     guidance_summary: guidanceSummary,
-    timeline,
     image_detail: usedImageDetail,
+    request_id: requestID,
     error: null,
   });
 }
 
-function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, logicalHeight: number): string | null {
+/// Strict Responses API schema. Nullable fields are required so the model cannot silently
+/// omit shape-critical keys; Swift decodes JSON null into its existing optional properties.
+function canvasVisionOutputSchema(): Record<string, unknown> {
+  const nullableNumber = { type: ["number", "null"] };
+  const pointSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["x", "y"],
+    properties: {
+      x: { type: "number" },
+      y: { type: "number" },
+    },
+  };
+  const animationSchema = {
+    anyOf: [
+      { type: "null" },
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "duration_ms", "delay_ms", "repeat", "easing"],
+        properties: {
+          type: { type: "string", enum: ["none", "fade_in", "scale_in", "pulse", "draw", "dash_flow"] },
+          duration_ms: { type: ["integer", "null"], minimum: 100, maximum: 2_500 },
+          delay_ms: { type: ["integer", "null"], minimum: 0, maximum: 1_500 },
+          repeat: { type: ["integer", "null"], minimum: 1, maximum: 5 },
+          easing: {
+            type: ["string", "null"],
+            enum: ["linear", "ease_in", "ease_out", "ease_in_out", null],
+          },
+        },
+      },
+    ],
+  };
+  const commandSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["type", "x", "y", "width", "height", "to_x", "to_y", "points", "text", "animation"],
+    properties: {
+      type: {
+        type: "string",
+        enum: ["highlight", "arrow", "label", "polygon", "circle", "ring", "spotlight", "line", "brace"],
+      },
+      x: nullableNumber,
+      y: nullableNumber,
+      width: nullableNumber,
+      height: nullableNumber,
+      to_x: nullableNumber,
+      to_y: nullableNumber,
+      points: {
+        anyOf: [
+          { type: "null" },
+          { type: "array", minItems: 3, maxItems: 16, items: pointSchema },
+        ],
+      },
+      text: { type: ["string", "null"], minLength: 1, maxLength: 120 },
+      animation: animationSchema,
+    },
+  };
+  const cursorSchema = {
+    anyOf: [
+      { type: "null" },
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "x", "y", "duration_ms", "label", "label_placement"],
+        properties: {
+          type: { type: "string", enum: ["move"] },
+          x: { type: "number" },
+          y: { type: "number" },
+          duration_ms: { type: ["integer", "null"], minimum: 100, maximum: 2_000 },
+          label: { type: ["string", "null"], minLength: 1, maxLength: 80 },
+          label_placement: {
+            type: ["string", "null"],
+            enum: ["above", "below", "left", "right", "above_right", "below_right", "above_left", "below_left", null],
+          },
+        },
+      },
+    ],
+  };
+
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["summary", "title", "source_width", "source_height", "steps"],
+    properties: {
+      summary: { type: "string", minLength: 1, maxLength: 240 },
+      title: { type: ["string", "null"], minLength: 1, maxLength: 120 },
+      source_width: { type: "number" },
+      source_height: { type: "number" },
+      steps: {
+        type: "array",
+        minItems: 1,
+        maxItems: 12,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["narration_cue", "duration_ms", "clear_before_next", "canvas", "cursor"],
+          properties: {
+            narration_cue: { type: ["string", "null"], minLength: 1, maxLength: 240 },
+            duration_ms: { type: "integer", minimum: 4_000, maximum: 20_000 },
+            clear_before_next: { type: "boolean" },
+            canvas: { type: "array", maxItems: 8, items: commandSchema },
+            cursor: cursorSchema,
+          },
+        },
+      },
+    },
+  };
+}
+
+export function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, logicalHeight: number): string | null {
   if (!sequence || typeof sequence !== "object") return "vision returned invalid sequence";
-  const candidate = sequence as { source_width?: unknown; source_height?: unknown; steps?: unknown };
+  const candidate = sequence as { summary?: unknown; title?: unknown; source_width?: unknown; source_height?: unknown; steps?: unknown };
+  if (typeof candidate.summary !== "string" || candidate.summary.trim() === "" || candidate.summary.length > 240) {
+    return "vision returned invalid summary";
+  }
+  if (candidate.title !== null && candidate.title !== undefined
+    && (typeof candidate.title !== "string" || candidate.title.trim() === "" || candidate.title.length > 120)) {
+    return "vision returned invalid title";
+  }
   if (candidate.source_width !== logicalWidth || candidate.source_height !== logicalHeight) {
     return "vision returned mismatched source dimensions";
   }
@@ -814,21 +960,43 @@ function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, l
   }
   for (const [stepIndex, rawStep] of candidate.steps.entries()) {
     if (!rawStep || typeof rawStep !== "object") return `vision returned invalid step ${stepIndex + 1}`;
-    const step = rawStep as { canvas?: unknown; cursor?: unknown; duration_ms?: unknown };
+    const step = rawStep as {
+      narration_cue?: unknown;
+      duration_ms?: unknown;
+      clear_before_next?: unknown;
+      canvas?: unknown;
+      cursor?: unknown;
+    };
+    if (step.narration_cue !== null && step.narration_cue !== undefined
+      && (typeof step.narration_cue !== "string" || step.narration_cue.trim() === "" || step.narration_cue.length > 240)) {
+      return `vision returned invalid narration in step ${stepIndex + 1}`;
+    }
     if (!Array.isArray(step.canvas)) return `vision returned invalid canvas in step ${stepIndex + 1}`;
     if (step.canvas.length > 8) return `vision returned too many canvas commands in step ${stepIndex + 1}`;
-    if (step.duration_ms !== undefined && !integerInRange(step.duration_ms, 4000, 20000)) return `vision returned invalid duration in step ${stepIndex + 1}`;
+    if (!integerInRange(step.duration_ms, 4_000, 20_000)) return `vision returned invalid duration in step ${stepIndex + 1}`;
+    if (typeof step.clear_before_next !== "boolean") return `vision returned invalid clear behavior in step ${stepIndex + 1}`;
+    if (step.canvas.filter((command) => (command as { type?: unknown })?.type === "spotlight").length > 1) {
+      return `vision returned multiple spotlights in step ${stepIndex + 1}`;
+    }
+    if (step.canvas.length === 0 && (step.cursor === null || step.cursor === undefined)) {
+      return `vision returned empty step ${stepIndex + 1}`;
+    }
     for (const [commandIndex, rawCommand] of step.canvas.entries()) {
       const error = validateCanvasVisionCommand(rawCommand, logicalWidth, logicalHeight, `step ${stepIndex + 1} command ${commandIndex + 1}`);
       if (error) return error;
     }
-    if (step.cursor !== undefined) {
+    if (step.cursor !== null && step.cursor !== undefined) {
       const cursor = step.cursor as { type?: unknown; x?: unknown; y?: unknown; duration_ms?: unknown; label?: unknown; label_placement?: unknown };
       if (cursor.type !== "move") return `vision returned unsupported cursor action in step ${stepIndex + 1}`;
       if (!inBounds(cursor.x, cursor.y, logicalWidth, logicalHeight)) return `vision returned cursor out of bounds in step ${stepIndex + 1}`;
-      if (cursor.duration_ms !== undefined && !integerInRange(cursor.duration_ms, 100, 2000)) return `vision returned invalid cursor duration in step ${stepIndex + 1}`;
-      if (cursor.label !== undefined && (typeof cursor.label !== "string" || cursor.label.trim() === "")) return `vision returned invalid cursor label in step ${stepIndex + 1}`;
-      if (cursor.label_placement !== undefined) {
+      if (cursor.duration_ms !== null && cursor.duration_ms !== undefined && !integerInRange(cursor.duration_ms, 100, 2_000)) {
+        return `vision returned invalid cursor duration in step ${stepIndex + 1}`;
+      }
+      if (cursor.label !== null && cursor.label !== undefined
+        && (typeof cursor.label !== "string" || cursor.label.trim() === "" || cursor.label.length > 80)) {
+        return `vision returned invalid cursor label in step ${stepIndex + 1}`;
+      }
+      if (cursor.label_placement !== null && cursor.label_placement !== undefined) {
         const allowedPlacements = new Set(["above", "below", "left", "right", "above_right", "below_right", "above_left", "below_left"]);
         if (typeof cursor.label_placement !== "string" || !allowedPlacements.has(cursor.label_placement)) return `vision returned invalid cursor label placement in step ${stepIndex + 1}`;
       }
@@ -839,7 +1007,7 @@ function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, l
 
 function validateCanvasVisionCommand(command: unknown, logicalWidth: number, logicalHeight: number, label: string): string | null {
   if (!command || typeof command !== "object") return `vision returned invalid ${label}`;
-  const item = command as { type?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown; to_x?: unknown; to_y?: unknown; points?: unknown; animation?: unknown };
+  const item = command as { type?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown; to_x?: unknown; to_y?: unknown; points?: unknown; text?: unknown; animation?: unknown };
   switch (item.type) {
     case "highlight":
     case "circle":
@@ -854,6 +1022,7 @@ function validateCanvasVisionCommand(command: unknown, logicalWidth: number, log
       break;
     case "label":
       if (!inBounds(item.x, item.y, logicalWidth, logicalHeight)) return `vision returned out-of-bounds ${label}`;
+      if (typeof item.text !== "string" || item.text.trim() === "" || item.text.length > 120) return `vision returned invalid text for ${label}`;
       break;
     case "polygon":
       if (!Array.isArray(item.points) || item.points.length < 3 || item.points.length > 16) return `vision returned invalid polygon ${label}`;
@@ -871,15 +1040,15 @@ function validateCanvasVisionCommand(command: unknown, logicalWidth: number, log
 }
 
 function validateCanvasVisionAnimation(animation: unknown, label: string): string | null {
-  if (animation === undefined) return null;
-  if (!animation || typeof animation !== "object") return `vision returned invalid animation for ${label}`;
+  if (animation === null || animation === undefined) return null;
+  if (typeof animation !== "object") return `vision returned invalid animation for ${label}`;
   const item = animation as { type?: unknown; duration_ms?: unknown; delay_ms?: unknown; repeat?: unknown; easing?: unknown };
-  const allowedTypes = new Set(["none", "fade_in", "scale_in", "pulse", "draw", "travel", "dash_flow"]);
+  const allowedTypes = new Set(["none", "fade_in", "scale_in", "pulse", "draw", "dash_flow"]);
   if (typeof item.type !== "string" || !allowedTypes.has(item.type)) return `vision returned unsupported animation for ${label}`;
-  if (item.duration_ms !== undefined && !integerInRange(item.duration_ms, 100, 2500)) return `vision returned invalid animation duration for ${label}`;
-  if (item.delay_ms !== undefined && !integerInRange(item.delay_ms, 0, 1500)) return `vision returned invalid animation delay for ${label}`;
-  if (item.repeat !== undefined && !integerInRange(item.repeat, 0, 5)) return `vision returned invalid animation repeat for ${label}`;
-  if (item.easing !== undefined) {
+  if (item.duration_ms !== null && item.duration_ms !== undefined && !integerInRange(item.duration_ms, 100, 2_500)) return `vision returned invalid animation duration for ${label}`;
+  if (item.delay_ms !== null && item.delay_ms !== undefined && !integerInRange(item.delay_ms, 0, 1_500)) return `vision returned invalid animation delay for ${label}`;
+  if (item.repeat !== null && item.repeat !== undefined && !integerInRange(item.repeat, 1, 5)) return `vision returned invalid animation repeat for ${label}`;
+  if (item.easing !== null && item.easing !== undefined) {
     const allowedEasing = new Set(["linear", "ease_in", "ease_out", "ease_in_out"]);
     if (typeof item.easing !== "string" || !allowedEasing.has(item.easing)) return `vision returned unsupported animation easing for ${label}`;
   }
@@ -898,50 +1067,33 @@ function rectInBounds(x: unknown, y: unknown, width: unknown, height: unknown, l
   return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y) && typeof width === "number" && Number.isFinite(width) && typeof height === "number" && Number.isFinite(height) && width > 0 && height > 0 && x >= 0 && y >= 0 && x + width <= logicalWidth && y + height <= logicalHeight;
 }
 
-/// The system prompt for the canvas vision model. Inlines the VisualGuidanceSequence schema
-/// (mirrors leanring-buddy/VisualGuidanceModels.swift) and states the coordinate contract:
-/// logical points, top-left origin, and the arrow tail/head semantics (Bug 5).
+/// The strict output schema owns field shape. The prompt owns visual judgment and the
+/// screenshot-coordinate contract that determines whether drawings land on real controls.
 function canvasVisionSystemPrompt(logicalWidth: number, logicalHeight: number): string {
   return [
-    "You generate a visual teaching overlay for a macOS screenshot.",
-    "Return ONLY a valid JSON object matching this schema — no markdown fencing, no prose:",
-    "{",
-    '  "summary": string,',
-    '  "title": string (optional),',
-    `  "source_width": number (set to ${logicalWidth}),`,
-    `  "source_height": number (set to ${logicalHeight}),`,
-    '  "timeline": [ { "start_ms": integer, "end_ms": integer, "explanation": string } ],',
-    '  "steps": [ {',
-    '    "narration_cue": string (optional),',
-    '    "duration_ms": integer (optional, 4000-20000),',
-    '    "start_ms": integer (optional),',
-    '    "end_ms": integer (optional),',
-    '    "clear_before_next": boolean (optional, default true),',
-    '    "canvas": [ {',
-    '      "type": "highlight" | "arrow" | "label" | "polygon" | "circle" | "ring" | "spotlight" | "line" | "brace",',
-    '      "x": number, "y": number,',
-    '      "width": number, "height": number,   // highlight rect size',
-    '      "to_x": number, "to_y": number,       // arrow head/tip',
-    '      "text": string,                        // label text',
-    '      "points": [ { "x": number, "y": number } ], // polygon (3-16 points)',
-    '      "animation": { "type": "none" | "fade_in" | "scale_in" | "pulse" | "draw" | "travel" | "dash_flow", "duration_ms": integer, "delay_ms": integer, "repeat": integer, "easing": "linear" | "ease_in" | "ease_out" | "ease_in_out" }',
-    "    } ],",
-    '    "cursor": { "type": "move", "x": number, "y": number, "duration_ms": integer (100-2000), "label": string, "label_placement": "above" | "below" | "left" | "right" | "above_right" | "below_right" | "above_left" | "below_left" } (optional)',
-    "  } ]",
-    "}",
-    "",
-    `Coordinates are in LOGICAL SCREEN POINTS with a TOP-LEFT origin: x in 0..${logicalWidth}, y in 0..${logicalHeight}.`,
+    "You are Macky's visual teacher. Inspect the macOS screenshot and create a short overlay that visibly teaches the requested action.",
+    `The screenshot coordinate space is exactly ${logicalWidth} by ${logicalHeight} IMAGE PIXELS with a TOP-LEFT origin.`,
+    `Every x coordinate must be in 0..${logicalWidth}; every y coordinate must be in 0..${logicalHeight}.`,
+    `Set source_width=${logicalWidth} and source_height=${logicalHeight}.`,
+    "Locate controls from their actual visible boundaries. Do not estimate from generic app layouts or invent hidden controls.",
+    "If the requested target is not visibly identifiable, return the safest nearby visible teaching step instead of fabricating a coordinate.",
     "For an arrow, (x,y) is the TAIL where the arrow starts, and (to_x,to_y) is the HEAD/TIP pointing at the target UI element.",
-    "For a highlight, (x,y) is the top-left corner and width/height size the box around the target.",
-    "Use spotlight only as a background focus layer; the renderer will keep labels and arrows above it.",
-    "For small buttons or controls, prefer a cursor move with a short cursor label instead of a large highlight.",
-    "Use short labels. Prefer 1-5 words so labels fit on screen.",
-    "Use subtle animations only when they clarify the guide: draw/travel for arrows, pulse for a target, fade_in or scale_in for simple emphasis.",
-    "Never output cursor clicks. Use cursor.type=\"move\" only.",
-    "Include a short summary and timeline so the realtime voice model can narrate the guide without reading raw coordinates.",
-    `Always set source_width=${logicalWidth} and source_height=${logicalHeight}.`,
-    "Keep the sequence short and clear. Point precisely at the real on-screen UI elements.",
+    "For a highlight, (x,y) is the top-left corner and width/height tightly bound the visible target.",
+    "Use at most one spotlight per step. Keep it behind all arrows, labels, rings, and highlights.",
+    "For small buttons, icons, menu items, tabs, and compact controls, prefer a cursor move with a 1-5 word label.",
+    "Visual-guidance cursor actions only point; never emit clicks. Macky's separate cursor-control tool owns clicking and dragging.",
+    "Use one teaching idea per step, usually 1-4 steps total. Keep labels concise and narration natural.",
+    "Use draw for arrows/lines, pulse for a target, and fade_in or scale_in for simple emphasis. Avoid decorative animation.",
+    "duration_ms is the total time for the step, including cursor movement.",
   ].join("\n");
+}
+
+async function safetyIdentifierForSession(session: ComposioSession): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(session.composioUserId)
+  );
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -1234,7 +1386,7 @@ async function handleRealtimeProxy(
   }
 
   const azureUrl =
-    "https://abhilashreddymand-0825-resource.services.ai.azure.comm/openai/v1/realtime?model=gpt-realtime-2";
+    "https://abhilashreddymand-0825-resource.services.ai.azure.com/openai/v1/realtime?model=gpt-realtime-2.1";
 
   console.log("Connecting to Azure:", azureUrl);
 

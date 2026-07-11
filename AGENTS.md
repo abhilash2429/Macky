@@ -34,8 +34,9 @@ Core ideas from the brief:
 Macky is a heavily reworked fork of **Clicky** (an open-source MIT-licensed macOS
 assistant). The macOS UI primitives are kept — the `NSPanel`, ScreenCaptureKit usage,
 the CGEvent push-to-talk tap, and the design system. The old API brain (AssemblyAI +
-Claude + ElevenLabs chain) was removed and replaced with a single realtime model plus an
-MCP-based integration layer.
+Claude + ElevenLabs chain) was removed and replaced with one realtime voice model plus an
+MCP-based integration layer. Exact visual teaching is the deliberate exception: the Worker
+uses GPT-5.6-sol on demand to convert one screenshot into validated overlay coordinates.
 
 Do **not** assume old Clicky, Auren, makesomething, or Boring Notch behavior still
 applies unless current files prove it. Treat the product direction in `MACKY.md` and the
@@ -60,7 +61,7 @@ current code as the source of truth.
             │ ScreenCaptureKit, NSWorkspace)                         ▼
             ▼                                          ┌──────────────────────────┐
    macOS-native actions                                │ Azure AI Foundry realtime │
-   (Calendar, Reminders,                               │ endpoint, gpt-realtime-2  │
+   (Calendar, Reminders,                               │ endpoint, gpt-realtime-2.1│
     system controls, apps,                             └──────────────────────────┘
     screen capture)                                    ┌──────────────────────────┐
                                                        │ Composio MCP gateway      │

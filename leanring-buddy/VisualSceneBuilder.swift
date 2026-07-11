@@ -139,8 +139,8 @@ enum VisualSceneBuilder {
         var sizeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success else { return nil }
         guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success else { return nil }
-        guard let positionAXValue = positionValue as! AXValue?,
-              let sizeAXValue = sizeValue as! AXValue? else { return nil }
+        guard let positionAXValue = positionValue as? AXValue,
+              let sizeAXValue = sizeValue as? AXValue else { return nil }
 
         var position = CGPoint.zero
         var size = CGSize.zero
@@ -148,28 +148,19 @@ enum VisualSceneBuilder {
         guard AXValueGetValue(sizeAXValue, .cgSize, &size) else { return nil }
         guard size.width > 0, size.height > 0 else { return nil }
 
-        let frame = screen.frame
-        let screenRect = CGRect(origin: .zero, size: frame.size)
-        let candidateRects = [
-            CGRect(origin: CGPoint(x: position.x - frame.minX, y: position.y - frame.minY), size: size),
-            CGRect(origin: CGPoint(x: position.x - frame.minX, y: position.y), size: size)
-        ]
-
-        let intersections = candidateRects.map { $0.intersection(screenRect) }
-        var intersection: CGRect?
-        for candidate in intersections where !candidate.isNull && candidate.width > 0 && candidate.height > 0 {
-            if let current = intersection {
-                let currentArea = current.width * current.height
-                let candidateArea = candidate.width * candidate.height
-                if candidateArea > currentArea {
-                    intersection = candidate
-                }
-            } else {
-                intersection = candidate
-            }
+        guard let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+            return nil
         }
-
-        guard let intersection else { return nil }
+        let quartzDisplayFrame = CGDisplayBounds(displayID)
+        let screenRect = CGRect(origin: .zero, size: screen.frame.size)
+        let localTopLeftRect = CGRect(
+            x: position.x - quartzDisplayFrame.minX,
+            y: position.y - quartzDisplayFrame.minY,
+            width: size.width,
+            height: size.height
+        )
+        let intersection = localTopLeftRect.intersection(screenRect)
+        guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else { return nil }
 
         let topLeftBox = VisualTargetBox(
             x: Double(intersection.minX),
@@ -177,7 +168,7 @@ enum VisualSceneBuilder {
             width: Double(intersection.width),
             height: Double(intersection.height)
         )
-        return topLeftBox.clamped(to: frame.size)
+        return topLeftBox.clamped(to: screen.frame.size)
     }
 
     private static func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {

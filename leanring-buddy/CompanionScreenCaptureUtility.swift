@@ -14,6 +14,8 @@ struct CompanionScreenCapture {
     let imageData: Data
     let label: String
     let isCursorScreen: Bool
+    let capturedAt: Date
+    let sourceApplicationBundleIdentifier: String?
     let displayID: CGDirectDisplayID
     let displayWidthInPoints: Int
     let displayHeightInPoints: Int
@@ -98,13 +100,19 @@ enum CompanionScreenCaptureUtility {
         var capturedScreens: [CompanionScreenCapture] = []
 
         for (displayIndex, display) in sortedDisplays.enumerated() {
+            let capturedAt = Date()
+            let sourceApplicationBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             // Use NSScreen.frame (AppKit coordinates, bottom-left origin) so
             // displayFrame is in the same coordinate system as NSEvent.mouseLocation
             // and the notch panel's screen frame.
-            let nsScreen = nsScreenByDisplayID[display.displayID]
-            let displayFrame = nsScreen?.frame
-                ?? CGRect(x: display.frame.origin.x, y: display.frame.origin.y,
-                          width: CGFloat(display.width), height: CGFloat(display.height))
+            guard let nsScreen = nsScreenByDisplayID[display.displayID] else {
+                // A Core Graphics display frame cannot be substituted here: its global
+                // top-left coordinates are not interchangeable with AppKit's bottom-left
+                // coordinates used by cursor movement and overlay windows.
+                print("⚠️ CompanionScreenCapture: no NSScreen mapping for display \(display.displayID)")
+                continue
+            }
+            let displayFrame = nsScreen.frame
             let isCursorScreen = displayFrame.contains(mouseLocation)
 
             let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
@@ -129,7 +137,7 @@ enum CompanionScreenCaptureUtility {
                 continue
             }
             let jpegRep = NSBitmapImageRep(data: jpegData)
-            print("🧪 ScreenCaptureDiagnostics displayID=\(display.displayID) cursor=\(isCursorScreen) nsFrame=\(displayFrame.debugDescription) backingScale=\(nsScreen?.backingScaleFactor ?? 0) scFrame=\(display.frame.debugDescription) scSize=\(display.width)x\(display.height) requested=\(configuration.width)x\(configuration.height) cgImage=\(actualScreenshotWidth)x\(actualScreenshotHeight) jpeg=\(jpegRep?.pixelsWide ?? -1)x\(jpegRep?.pixelsHigh ?? -1) mouse=\(mouseLocation.debugDescription)")
+            print("🧪 ScreenCaptureDiagnostics displayID=\(display.displayID) cursor=\(isCursorScreen) nsFrame=\(displayFrame.debugDescription) backingScale=\(nsScreen.backingScaleFactor) scFrame=\(display.frame.debugDescription) scSize=\(display.width)x\(display.height) requested=\(configuration.width)x\(configuration.height) cgImage=\(actualScreenshotWidth)x\(actualScreenshotHeight) jpeg=\(jpegRep?.pixelsWide ?? -1)x\(jpegRep?.pixelsHigh ?? -1) mouse=\(mouseLocation.debugDescription)")
             if actualScreenshotWidth != configuration.width || actualScreenshotHeight != configuration.height {
                 print("⚠️ CompanionScreenCapture: requested \(configuration.width)x\(configuration.height), got \(actualScreenshotWidth)x\(actualScreenshotHeight), display points \(Int(displayFrame.width))x\(Int(displayFrame.height))")
             }
@@ -147,6 +155,8 @@ enum CompanionScreenCaptureUtility {
                 imageData: jpegData,
                 label: screenLabel,
                 isCursorScreen: isCursorScreen,
+                capturedAt: capturedAt,
+                sourceApplicationBundleIdentifier: sourceApplicationBundleIdentifier,
                 displayID: display.displayID,
                 displayWidthInPoints: Int(displayFrame.width),
                 displayHeightInPoints: Int(displayFrame.height),
