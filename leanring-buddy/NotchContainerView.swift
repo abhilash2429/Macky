@@ -28,6 +28,8 @@ struct NotchContainerView: View {
     @State private var isHovering = false
     @State private var isDropTargeted = false
     @State private var collapseTask: Task<Void, Never>?
+    @State private var focusedEditAutoCollapseTask: Task<Void, Never>?
+    @State private var focusedEditAutoPresentationID: UUID?
 
     private let morphAnimation = Animation.timingCurve(
         NotchConstants.morphControlPoints.c0x,
@@ -97,6 +99,9 @@ struct NotchContainerView: View {
             // user is still hovering). The active-state guards in close()/
             // scheduleCollapse() keep the notch live until this fires.
             if !active { scheduleCollapse() }
+        }
+        .onChange(of: companionManager.focusedEditPresentation?.id) { _, _ in
+            presentFocusedEditIfNeeded()
         }
     }
 
@@ -208,11 +213,35 @@ struct NotchContainerView: View {
             guard !Task.isCancelled, !isHovering else { return }
             guard !isDropTargeted else { return }
             guard !setupRequiresPanel else { return }
+            guard focusedEditAutoPresentationID == nil else { return }
             // Stay open while the assistant is listening/thinking/speaking so the
             // notch is live for the whole push-to-talk turn.
             guard !companionManager.isAssistantActive else { return }
             // Keep the panel up while the user is in the middle of attaching files.
             if panelPage == .files && !fileDropURLs.isEmpty { return }
+            close()
+        }
+    }
+
+    /// Focused text edits are a concrete outcome worth showing. They reuse Home
+    /// rather than introducing another panel page, then collapse after a short hold
+    /// unless the user keeps the pointer over the panel.
+    private func presentFocusedEditIfNeeded() {
+        guard let presentation = companionManager.focusedEditPresentation,
+              presentation.shouldAutoExpand else { return }
+        collapseTask?.cancel()
+        focusedEditAutoCollapseTask?.cancel()
+        focusedEditAutoPresentationID = presentation.id
+        panelPage = .home
+        open()
+
+        focusedEditAutoCollapseTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled,
+                  focusedEditAutoPresentationID == presentation.id else { return }
+            focusedEditAutoPresentationID = nil
+            focusedEditAutoCollapseTask = nil
+            guard !isHovering, !companionManager.isAssistantActive else { return }
             close()
         }
     }

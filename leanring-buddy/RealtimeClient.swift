@@ -78,6 +78,9 @@ final class RealtimeClient: ObservableObject {
     var onVisualGuidanceSequenceRequested: (@MainActor (VisualGuidancePresentation) async -> String)?
     var onVisualGuidanceClearRequested: (@MainActor () async -> String)?
     var onCursorLabelRequested: (@MainActor (CursorLabelPresentation) async -> Void)?
+    /// Focused-field edits are performed locally through Accessibility. The app
+    /// coordinator owns the Home-panel receipt/detail presentation.
+    var onFocusedEditPresentation: ((FocusedEditPresentation) -> Void)?
 
     /// Transcript of the current turn's user speech, captured from
     /// `conversation.item.input_audio_transcription.completed`.
@@ -248,6 +251,7 @@ final class RealtimeClient: ObservableObject {
         let handler: ([String: Any]) async throws -> String
     }
     private var registeredTools: [String: RegisteredTool] = [:]
+    private let focusedTextIntegration = FocusedTextIntegration()
 
     // MARK: - Audio Output (model voice playback)
 
@@ -269,6 +273,7 @@ final class RealtimeClient: ObservableObject {
         configuration.waitsForConnectivity = true
         self.urlSession = URLSession(configuration: configuration)
         registerBuiltInTools()
+        registerFocusedTextTools()
         registerVisualGuidanceTools()
         registerCursorControlTool()
         registerSystemControlTools()
@@ -324,6 +329,69 @@ final class RealtimeClient: ObservableObject {
             self.sendScreenContext(captures, visualScene: visualScene)
             return Self.screenCaptureResultJSON(captures, visualScene: visualScene)
         }
+    }
+
+    /// Registers Macky's local focused-field editor. The model inspects a fresh
+    /// Accessibility snapshot before writing, then passes the snapshot ID back to
+    /// apply_focused_text. This prevents a delayed tool call from landing in a field
+    /// the user moved away from while the model was composing the edit.
+    private func registerFocusedTextTools() {
+        registerTool(
+            name: "get_focused_text_context",
+            description: "Inspect the user's currently focused writable text field or supported Terminal prompt before rewriting, drafting, or inserting text. Call proactively when the user's explicit request implies writing into the active app, even if they did not say 'type' or 'paste'. This only returns the selected text needed for the edit, never reads secure fields, and returns a short-lived snapshot_id required by apply_focused_text.",
+            schema: ["type": "object", "properties": [String: Any]()]
+        ) { [weak self] _ in
+            guard let self else { return "{\"error\":\"client unavailable\"}" }
+            do {
+                return try self.focusedTextIntegration.inspectFocusedField().jsonString()
+            } catch {
+                self.onFocusedEditPresentation?(self.focusedTextIntegration.safetyPresentation(for: error))
+                return Self.errorJSON(error.localizedDescription)
+            }
+        }
+
+        registerTool(
+            name: "apply_focused_text",
+            description: "Apply text to a field returned by get_focused_text_context. Always use the current-turn snapshot_id and never reuse an older one. Use replace_selection to rewrite selected text, insert_at_cursor to draft into a focused composer or stage a Terminal command, and replace_field only when the user explicitly asks to replace the complete field. For Terminal, only insert_at_cursor is allowed and it stages the command without pressing Return or executing anything. Do not use this for secure fields, sending messages, or running commands.",
+            schema: [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "snapshot_id": ["type": "string"],
+                    "operation": [
+                        "type": "string",
+                        "enum": ["replace_selection", "insert_at_cursor", "replace_field"]
+                    ],
+                    "text": ["type": "string", "minLength": 1, "maxLength": 12_000]
+                ],
+                "required": ["snapshot_id", "operation", "text"]
+            ]
+        ) { [weak self] arguments in
+            guard let self else { return "{\"error\":\"client unavailable\"}" }
+            guard let snapshotID = arguments["snapshot_id"] as? String,
+                  let rawOperation = arguments["operation"] as? String,
+                  let operation = FocusedTextEditOperation(rawValue: rawOperation),
+                  let text = arguments["text"] as? String else {
+                return Self.errorJSON("Focused text edit is missing required details.")
+            }
+
+            do {
+                let result = try await self.focusedTextIntegration.applyEdit(
+                    snapshotID: snapshotID,
+                    operation: operation,
+                    replacementText: text
+                )
+                self.onFocusedEditPresentation?(result.presentation)
+                return result.toolOutput
+            } catch {
+                self.onFocusedEditPresentation?(self.focusedTextIntegration.safetyPresentation(for: error))
+                return Self.errorJSON(error.localizedDescription)
+            }
+        }
+    }
+
+    func undoFocusedTextEdit() throws -> FocusedEditPresentation {
+        try focusedTextIntegration.undoLastEdit()
     }
 
     /// POSTs the latest screenshot to the authenticated `/canvas-vision` route.
@@ -1998,6 +2066,20 @@ final class RealtimeClient: ObservableObject {
         guess coordinates from memory. Use control_cursor only when the user asks Macky to operate the UI, not merely \
         explain it. If a vague click could delete, discard, pay, cancel, alter account access, or otherwise cause a \
         material change, identify the consequence and ask for clarification before clicking.
+
+        # Focused Text Editing
+        - When the user's explicit request implies writing into the active app — for example rewriting selected text, \
+        drafting a reply, filling a focused composer, or staging a command in Terminal — proactively call \
+        get_focused_text_context even if they did not say "type", "paste", or "replace".
+        - Only call apply_focused_text with the short-lived snapshot_id returned in the same turn. If inspection says \
+        the field changed, is secure, or is not writable, explain briefly and do not try another input path.
+        - Use replace_selection only when the user selected the text to rewrite. Use insert_at_cursor for an empty \
+        focused composer or Terminal prompt. Use replace_field only when the user explicitly wants the whole field \
+        replaced.
+        - For Terminal, stage a command with insert_at_cursor but never press Return, run the command, use sudo, or \
+        claim it installed anything. Say that the command is ready for review and execution by the user.
+        - Drafting text is not sending it. Never send a message, submit a form, or publish content unless the user \
+        explicitly requested that final action and the relevant send tool succeeds.
 
         # Product-Specific Tool Rules
         - To start a specific song, artist, album, or playlist by name, use play_spotify_track. For transport on \

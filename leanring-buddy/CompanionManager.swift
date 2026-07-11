@@ -79,6 +79,9 @@ final class CompanionManager: ObservableObject {
 
     @Published private(set) var recentInteractions: [Interaction] = []
     @Published private(set) var historyLog: [HistoryEntry] = []
+    /// The most recent focused-field operation. The existing Home panel renders it
+    /// as a transient action card and opens automatically when a text edit finishes.
+    @Published private(set) var focusedEditPresentation: FocusedEditPresentation?
     @Published var pendingFileContext: [String] = []
     @Published var pendingImageContext: [Data] = []
     @Published var pendingDroppedFiles: [URL] = []
@@ -640,6 +643,10 @@ final class CompanionManager: ObservableObject {
             self.pendingConnections.append(PendingConnection(toolkit: toolkit, redirectURL: url))
         }
 
+        realtimeClient.onFocusedEditPresentation = { [weak self] presentation in
+            self?.focusedEditPresentation = presentation
+        }
+
         realtimeClient.onTurnCompleted = { [weak self] userPhrase, modelText in
             guard let self else { return }
             self.recordInteraction(userPhrase: userPhrase, modelText: modelText)
@@ -666,6 +673,21 @@ final class CompanionManager: ObservableObject {
                 }
             }
             .store(in: &realtimeActivityCancellables)
+    }
+
+    func undoFocusedEdit() {
+        do {
+            focusedEditPresentation = try realtimeClient.undoFocusedTextEdit()
+        } catch {
+            focusedEditPresentation = FocusedEditPresentation(
+                kind: .safetyNotice,
+                applicationName: NSWorkspace.shared.frontmostApplication?.localizedName ?? "the focused app",
+                summary: "Macky did not undo the edit",
+                detail: error.localizedDescription,
+                canUndo: false,
+                shouldAutoExpand: true
+            )
+        }
     }
 
     private func startPendingVisualGuidanceIfNeeded() {
