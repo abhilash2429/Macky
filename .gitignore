@@ -11,3 +11,5 @@ boring.notch/
 .wrangler
 .playwright-mcp
 *.pbxproj
+.vscode
+json/
