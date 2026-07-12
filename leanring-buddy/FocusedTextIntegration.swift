@@ -170,7 +170,7 @@ final class FocusedTextIntegration {
             windowTitle: snapshot.windowTitle,
             fieldRole: snapshot.role,
             selectedText: snapshot.selectedText,
-            canReplaceSelection: !snapshot.isTerminal && selectedRangeHasSelection(snapshot.selectedRange),
+            canReplaceSelection: !snapshot.isTerminal && Self.selectedRangeHasSelection(snapshot.selectedRange),
             canInsertAtCursor: true,
             isTerminal: snapshot.isTerminal
         )
@@ -212,7 +212,7 @@ final class FocusedTextIntegration {
             guard operation != .replaceField else {
                 throw FocusedTextIntegrationError.fieldIsNotWritable
             }
-            if operation == .replaceSelection, !selectedRangeHasSelection(snapshot.selectedRange) {
+            if operation == .replaceSelection, !Self.selectedRangeHasSelection(snapshot.selectedRange) {
                 throw FocusedTextIntegrationError.selectionUnavailable
             }
             try await pasteText(replacementText, into: snapshot, expectedValue: nil)
@@ -349,7 +349,7 @@ final class FocusedTextIntegration {
 
         let role = Self.stringAttribute(kAXRoleAttribute, from: element) ?? "unknown"
         let subrole = Self.stringAttribute(kAXSubroleAttribute, from: element) ?? ""
-        guard !isSecureField(role: role, subrole: subrole) else {
+        guard !Self.isSecureField(role: role, subrole: subrole) else {
             throw FocusedTextIntegrationError.secureField
         }
 
@@ -363,7 +363,7 @@ final class FocusedTextIntegration {
         let selectedText = Self.stringAttribute(kAXSelectedTextAttribute, from: element)
             .map { String($0.prefix(Self.maxSelectedTextLength)) }
         let isTextRole = [kAXTextFieldRole as String, kAXTextAreaRole as String, kAXComboBoxRole as String].contains(role)
-        let editable = Self.boolAttribute(kAXEditableAttribute, from: element) ?? isTextRole
+        let editable = Self.boolAttribute(kAXIsEditableAttribute, from: element) ?? isTextRole
         guard editable || isTerminal else {
             throw FocusedTextIntegrationError.fieldIsNotWritable
         }
@@ -520,7 +520,8 @@ final class FocusedTextIntegration {
     }
 
     private static func isSecureField(role: String, subrole: String) -> Bool {
-        role == kAXSecureTextFieldRole as String || subrole.localizedCaseInsensitiveContains("secure")
+        (role == kAXTextFieldRole as String && subrole == kAXSecureTextFieldSubrole as String)
+            || subrole.localizedCaseInsensitiveContains("secure")
     }
 
     private static func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
@@ -540,13 +541,13 @@ final class FocusedTextIntegration {
     private static func elementAttribute(_ attribute: String, from element: AXUIElement) -> AXUIElement? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value as? AXUIElement
+        return value as! AXUIElement
     }
 
     private static func selectedRange(from element: AXUIElement) -> CFRange? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
-              let axValue = value as? AXValue else { return nil }
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success else { return nil }
+        let axValue = value as! AXValue
         var range = CFRange(location: kCFNotFound, length: 0)
         guard AXValueGetValue(axValue, .cfRange, &range) else { return nil }
         return range
@@ -556,9 +557,9 @@ final class FocusedTextIntegration {
         var positionValue: CFTypeRef?
         var sizeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
-              let positionAXValue = positionValue as? AXValue,
-              let sizeAXValue = sizeValue as? AXValue else { return nil }
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success else { return nil }
+        let positionAXValue = positionValue as! AXValue
+        let sizeAXValue = sizeValue as! AXValue
         var position = CGPoint.zero
         var size = CGSize.zero
         guard AXValueGetValue(positionAXValue, .cgPoint, &position),

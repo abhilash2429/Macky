@@ -139,9 +139,8 @@ enum VisualSceneBuilder {
         var sizeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success else { return nil }
         guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success else { return nil }
-        guard let positionAXValue = positionValue as? AXValue,
-              let sizeAXValue = sizeValue as? AXValue else { return nil }
-
+        let positionAXValue = positionValue as! AXValue
+        let sizeAXValue = sizeValue as! AXValue
         var position = CGPoint.zero
         var size = CGSize.zero
         guard AXValueGetValue(positionAXValue, .cgPoint, &position) else { return nil }
