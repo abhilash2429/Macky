@@ -24,6 +24,9 @@ export interface Env {
   // coordinates from a screenshot. Defaults to "gpt-5.6-sol" when unset. Runs on the same
   // Azure resource / api-key as the realtime endpoint.
   CANVAS_VISION_MODEL: string;
+  // Reasoning effort for the canvas-vision model. "medium" balances coordinate
+  // precision against the 15-45s latency of "high"; unset/invalid falls back to "medium".
+  CANVAS_VISION_REASONING_EFFORT?: string;
 }
 
 const DEFAULT_SESSION_ID = "default";
@@ -644,17 +647,20 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   let transcript = "";
   let logicalWidth = 0;
   let logicalHeight = 0;
+  let rawTargets: unknown;
   try {
     const body = (await request.json()) as {
       jpegBase64?: unknown;
       transcript?: unknown;
       logicalWidth?: unknown;
       logicalHeight?: unknown;
+      targets?: unknown;
     };
     jpegBase64 = typeof body.jpegBase64 === "string" ? body.jpegBase64 : "";
     transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
     logicalWidth = typeof body.logicalWidth === "number" ? Math.round(body.logicalWidth) : 0;
     logicalHeight = typeof body.logicalHeight === "number" ? Math.round(body.logicalHeight) : 0;
+    rawTargets = body.targets;
   } catch {
     return jsonResponse({ canvas_payload: null, error: "invalid JSON body", request_id: requestID }, 400);
   }
@@ -672,12 +678,15 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   if (logicalWidth <= 0 || logicalHeight <= 0 || logicalWidth > 16_384 || logicalHeight > 16_384) {
     return jsonResponse({ canvas_payload: null, error: "missing or invalid source dimensions", request_id: requestID }, 400);
   }
+  const targets = sanitizeCanvasVisionTargets(rawTargets, logicalWidth, logicalHeight);
+  const allowedTargetIds: ReadonlySet<string> = new Set(targets.map((target) => target.id));
   console.log("CanvasVisionDiagnostics request", {
     requestID,
     logicalWidth,
     logicalHeight,
     jpegBase64Length: jpegBase64.length,
     transcriptLength: transcript.length,
+    targets: targets.length,
   });
 
   const deployment = env.CANVAS_VISION_MODEL || "gpt-5.6-sol";
@@ -686,8 +695,25 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   const systemPrompt = canvasVisionSystemPrompt(logicalWidth, logicalHeight);
   const userText = transcript || "Teach the user what to do on the visible screen.";
   const safetyIdentifier = await safetyIdentifierForSession(session);
+  const allowedEfforts = new Set(["minimal", "low", "medium", "high"]);
+  const requestedEffort = env.CANVAS_VISION_REASONING_EFFORT ?? "";
+  const reasoningEffort = allowedEfforts.has(requestedEffort) ? requestedEffort : "medium";
 
-  const buildVisionRequestBody = (imageDetail: "original" | "high") => JSON.stringify({
+  const userContent: Array<Record<string, unknown>> = [{ type: "input_text", text: userText }];
+  if (targets.length > 0) {
+    userContent.push({
+      type: "input_text",
+      text: "UI accessibility targets in screenshot pixel coordinates (id, role, label, x, y, width, height): "
+        + JSON.stringify(targets),
+    });
+  }
+  userContent.push({
+    type: "input_image",
+    image_url: `data:image/jpeg;base64,${jpegBase64}`,
+    detail: "high",
+  });
+
+  const visionRequestBody = JSON.stringify({
     model: deployment,
     store: false,
     safety_identifier: safetyIdentifier,
@@ -695,14 +721,7 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
     input: [
       {
         role: "user",
-        content: [
-          { type: "input_text", text: userText },
-          {
-            type: "input_image",
-            image_url: `data:image/jpeg;base64,${jpegBase64}`,
-            detail: imageDetail,
-          },
-        ],
+        content: userContent,
       },
     ],
     text: {
@@ -713,43 +732,23 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
         schema: canvasVisionOutputSchema(),
       },
     },
-    reasoning: { effort: "high" },
+    reasoning: { effort: reasoningEffort },
     max_output_tokens: 4_000,
   });
 
-  const fetchVisionResponse = (imageDetail: "original" | "high") => fetch(azureUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "api-key": env.AZURE_OPENAI_API_KEY,
-    },
-    body: buildVisionRequestBody(imageDetail),
-  });
-
   let azureResponse: Response;
-  let usedImageDetail: "original" | "high" = "original";
   try {
-    azureResponse = await fetchVisionResponse(usedImageDetail);
+    azureResponse = await fetch(azureUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": env.AZURE_OPENAI_API_KEY,
+      },
+      body: visionRequestBody,
+    });
   } catch (err) {
     console.error("Canvas vision fetch failed", requestID, err);
     return jsonResponse({ canvas_payload: null, error: "vision request failed", request_id: requestID });
-  }
-
-  if (!azureResponse.ok && azureResponse.status === 400) {
-    const originalDetailError = await azureResponse.text().catch(() => "");
-    if (/\bdetail\b|\boriginal\b/i.test(originalDetailError)) {
-      console.warn("Canvas vision original detail rejected; retrying with high", requestID);
-      usedImageDetail = "high";
-      try {
-        azureResponse = await fetchVisionResponse(usedImageDetail);
-      } catch (err) {
-        console.error("Canvas vision fallback fetch failed", requestID, err);
-        return jsonResponse({ canvas_payload: null, error: "vision request failed", request_id: requestID });
-      }
-    } else {
-      console.error("Canvas vision request rejected", requestID, originalDetailError);
-      return jsonResponse({ canvas_payload: null, error: "vision request was rejected", request_id: requestID });
-    }
   }
 
   if (!azureResponse.ok) {
@@ -802,12 +801,12 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
     return jsonResponse({ canvas_payload: null, error: "vision returned invalid JSON", request_id: requestID });
   }
 
-  const validationError = validateCanvasVisionSequence(sequence, logicalWidth, logicalHeight);
+  const validationError = validateCanvasVisionSequence(sequence, logicalWidth, logicalHeight, allowedTargetIds);
   console.log("CanvasVisionDiagnostics response", {
     requestID,
     logicalWidth,
     logicalHeight,
-    imageDetail: usedImageDetail,
+    imageDetail: "high",
     sourceWidth: (sequence as { source_width?: unknown } | null)?.source_width,
     sourceHeight: (sequence as { source_height?: unknown } | null)?.source_height,
     steps: Array.isArray((sequence as { steps?: unknown } | null)?.steps) ? ((sequence as { steps?: unknown[] }).steps?.length ?? 0) : -1,
@@ -823,10 +822,53 @@ async function handleCanvasVision(request: Request, env: Env): Promise<Response>
   return jsonResponse({
     canvas_payload: JSON.stringify(sequence),
     guidance_summary: guidanceSummary,
-    image_detail: usedImageDetail,
+    image_detail: "high",
     request_id: requestID,
     error: null,
   });
+}
+
+interface CanvasVisionTarget {
+  id: string;
+  role: string;
+  label: string | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/// Accessibility target hints from the app, already scaled to screenshot pixel space.
+/// Invalid entries are dropped silently — targets are optional hints, not a contract —
+/// and the serialized list is capped so a huge AX tree cannot blow up the vision prompt.
+export function sanitizeCanvasVisionTargets(rawTargets: unknown, logicalWidth: number, logicalHeight: number): CanvasVisionTarget[] {
+  if (!Array.isArray(rawTargets)) return [];
+  const maxSerializedLength = 8_000;
+  const sanitized: CanvasVisionTarget[] = [];
+  let serializedLength = 0;
+  const seenIds = new Set<string>();
+  for (const rawTarget of rawTargets.slice(0, 100)) {
+    if (!rawTarget || typeof rawTarget !== "object") continue;
+    const item = rawTarget as { id?: unknown; role?: unknown; label?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown };
+    if (typeof item.id !== "string" || item.id.length === 0 || item.id.length > 64 || seenIds.has(item.id)) continue;
+    if (typeof item.role !== "string" || item.role.length === 0 || item.role.length > 40) continue;
+    if (!rectInBounds(item.x, item.y, item.width, item.height, logicalWidth, logicalHeight)) continue;
+    const label = typeof item.label === "string" && item.label.length > 0 ? item.label.slice(0, 120) : null;
+    const target: CanvasVisionTarget = {
+      id: item.id,
+      role: item.role,
+      label,
+      x: Math.round(item.x as number),
+      y: Math.round(item.y as number),
+      width: Math.round(item.width as number),
+      height: Math.round(item.height as number),
+    };
+    serializedLength += JSON.stringify(target).length + 1;
+    if (serializedLength > maxSerializedLength) break;
+    seenIds.add(target.id);
+    sanitized.push(target);
+  }
+  return sanitized;
 }
 
 /// Strict Responses API schema. Nullable fields are required so the model cannot silently
@@ -862,10 +904,11 @@ function canvasVisionOutputSchema(): Record<string, unknown> {
       },
     ],
   };
+  const nullableTargetId = { type: ["string", "null"], maxLength: 64 };
   const commandSchema = {
     type: "object",
     additionalProperties: false,
-    required: ["type", "x", "y", "width", "height", "to_x", "to_y", "points", "text", "animation"],
+    required: ["type", "x", "y", "width", "height", "to_x", "to_y", "points", "text", "target_id", "from_target_id", "to_target_id", "animation"],
     properties: {
       type: {
         type: "string",
@@ -884,6 +927,9 @@ function canvasVisionOutputSchema(): Record<string, unknown> {
         ],
       },
       text: { type: ["string", "null"], minLength: 1, maxLength: 120 },
+      target_id: nullableTargetId,
+      from_target_id: nullableTargetId,
+      to_target_id: nullableTargetId,
       animation: animationSchema,
     },
   };
@@ -912,12 +958,13 @@ function canvasVisionOutputSchema(): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["summary", "title", "source_width", "source_height", "steps"],
+    required: ["summary", "title", "source_width", "source_height", "continue_after_user_action", "steps"],
     properties: {
       summary: { type: "string", minLength: 1, maxLength: 240 },
       title: { type: ["string", "null"], minLength: 1, maxLength: 120 },
       source_width: { type: "number" },
       source_height: { type: "number" },
+      continue_after_user_action: { type: "boolean" },
       steps: {
         type: "array",
         minItems: 1,
@@ -925,11 +972,12 @@ function canvasVisionOutputSchema(): Record<string, unknown> {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["narration_cue", "duration_ms", "clear_before_next", "canvas", "cursor"],
+          required: ["narration_cue", "duration_ms", "clear_before_next", "advance", "canvas", "cursor"],
           properties: {
             narration_cue: { type: ["string", "null"], minLength: 1, maxLength: 240 },
             duration_ms: { type: "integer", minimum: 4_000, maximum: 20_000 },
             clear_before_next: { type: "boolean" },
+            advance: { type: "string", enum: ["timed", "on_user_action"] },
             canvas: { type: "array", maxItems: 8, items: commandSchema },
             cursor: cursorSchema,
           },
@@ -939,9 +987,9 @@ function canvasVisionOutputSchema(): Record<string, unknown> {
   };
 }
 
-export function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, logicalHeight: number): string | null {
+export function validateCanvasVisionSequence(sequence: unknown, logicalWidth: number, logicalHeight: number, allowedTargetIds?: ReadonlySet<string>): string | null {
   if (!sequence || typeof sequence !== "object") return "vision returned invalid sequence";
-  const candidate = sequence as { summary?: unknown; title?: unknown; source_width?: unknown; source_height?: unknown; steps?: unknown };
+  const candidate = sequence as { summary?: unknown; title?: unknown; source_width?: unknown; source_height?: unknown; continue_after_user_action?: unknown; steps?: unknown };
   if (typeof candidate.summary !== "string" || candidate.summary.trim() === "" || candidate.summary.length > 240) {
     return "vision returned invalid summary";
   }
@@ -949,9 +997,19 @@ export function validateCanvasVisionSequence(sequence: unknown, logicalWidth: nu
     && (typeof candidate.title !== "string" || candidate.title.trim() === "" || candidate.title.length > 120)) {
     return "vision returned invalid title";
   }
-  if (candidate.source_width !== logicalWidth || candidate.source_height !== logicalHeight) {
+  // ±1 tolerance matches the Swift-side check; the strict schema cannot force exact
+  // numbers, and models occasionally round the dimensions they were told.
+  if (typeof candidate.source_width !== "number" || !Number.isFinite(candidate.source_width)
+    || typeof candidate.source_height !== "number" || !Number.isFinite(candidate.source_height)
+    || Math.abs(candidate.source_width - logicalWidth) > 1
+    || Math.abs(candidate.source_height - logicalHeight) > 1) {
     return "vision returned mismatched source dimensions";
   }
+  if (candidate.continue_after_user_action !== null && candidate.continue_after_user_action !== undefined
+    && typeof candidate.continue_after_user_action !== "boolean") {
+    return "vision returned invalid continue_after_user_action";
+  }
+  const continueAfterUserAction = candidate.continue_after_user_action === true;
   if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) {
     return "vision returned no steps";
   }
@@ -964,6 +1022,7 @@ export function validateCanvasVisionSequence(sequence: unknown, logicalWidth: nu
       narration_cue?: unknown;
       duration_ms?: unknown;
       clear_before_next?: unknown;
+      advance?: unknown;
       canvas?: unknown;
       cursor?: unknown;
     };
@@ -975,6 +1034,16 @@ export function validateCanvasVisionSequence(sequence: unknown, logicalWidth: nu
     if (step.canvas.length > 8) return `vision returned too many canvas commands in step ${stepIndex + 1}`;
     if (!integerInRange(step.duration_ms, 4_000, 20_000)) return `vision returned invalid duration in step ${stepIndex + 1}`;
     if (typeof step.clear_before_next !== "boolean") return `vision returned invalid clear behavior in step ${stepIndex + 1}`;
+    const advance = step.advance === null || step.advance === undefined ? "timed" : step.advance;
+    if (advance !== "timed" && advance !== "on_user_action") {
+      return `vision returned invalid advance in step ${stepIndex + 1}`;
+    }
+    // Interactive waits are only allowed on the final step, so the overlay loop stays
+    // "play steps, then wait once for the user"; anything richer must come through
+    // the continuation loop with a fresh screenshot.
+    if (advance === "on_user_action" && stepIndex !== candidate.steps.length - 1) {
+      return `vision returned on_user_action on non-final step ${stepIndex + 1}`;
+    }
     if (step.canvas.filter((command) => (command as { type?: unknown })?.type === "spotlight").length > 1) {
       return `vision returned multiple spotlights in step ${stepIndex + 1}`;
     }
@@ -982,7 +1051,7 @@ export function validateCanvasVisionSequence(sequence: unknown, logicalWidth: nu
       return `vision returned empty step ${stepIndex + 1}`;
     }
     for (const [commandIndex, rawCommand] of step.canvas.entries()) {
-      const error = validateCanvasVisionCommand(rawCommand, logicalWidth, logicalHeight, `step ${stepIndex + 1} command ${commandIndex + 1}`);
+      const error = validateCanvasVisionCommand(rawCommand, logicalWidth, logicalHeight, `step ${stepIndex + 1} command ${commandIndex + 1}`, allowedTargetIds);
       if (error) return error;
     }
     if (step.cursor !== null && step.cursor !== undefined) {
@@ -1002,26 +1071,50 @@ export function validateCanvasVisionSequence(sequence: unknown, logicalWidth: nu
       }
     }
   }
+  if (continueAfterUserAction) {
+    const lastStep = candidate.steps[candidate.steps.length - 1] as { advance?: unknown };
+    if (lastStep.advance !== "on_user_action") {
+      return "vision set continue_after_user_action without a final on_user_action step";
+    }
+  }
   return null;
 }
 
-function validateCanvasVisionCommand(command: unknown, logicalWidth: number, logicalHeight: number, label: string): string | null {
+function validateCanvasVisionCommand(command: unknown, logicalWidth: number, logicalHeight: number, label: string, allowedTargetIds?: ReadonlySet<string>): string | null {
   if (!command || typeof command !== "object") return `vision returned invalid ${label}`;
-  const item = command as { type?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown; to_x?: unknown; to_y?: unknown; points?: unknown; text?: unknown; animation?: unknown };
+  const item = command as { type?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown; to_x?: unknown; to_y?: unknown; points?: unknown; text?: unknown; target_id?: unknown; from_target_id?: unknown; to_target_id?: unknown; animation?: unknown };
+  const resolvableTargetId = (value: unknown): value is string =>
+    typeof value === "string" && value.length > 0 && allowedTargetIds?.has(value) === true;
+  const presentTargetId = (value: unknown): boolean =>
+    value !== null && value !== undefined && value !== "";
   switch (item.type) {
     case "highlight":
     case "circle":
     case "ring":
     case "spotlight":
     case "brace":
-      if (!rectInBounds(item.x, item.y, item.width, item.height, logicalWidth, logicalHeight)) return `vision returned out-of-bounds ${label}`;
+      if (presentTargetId(item.target_id)) {
+        if (!resolvableTargetId(item.target_id)) return `vision referenced unknown target in ${label}`;
+      } else if (!rectInBounds(item.x, item.y, item.width, item.height, logicalWidth, logicalHeight)) {
+        return `vision returned out-of-bounds ${label}`;
+      }
       break;
     case "arrow":
     case "line":
-      if (!inBounds(item.x, item.y, logicalWidth, logicalHeight) || !inBounds(item.to_x, item.to_y, logicalWidth, logicalHeight)) return `vision returned out-of-bounds ${label}`;
+      if (presentTargetId(item.from_target_id) || presentTargetId(item.to_target_id)) {
+        if (!resolvableTargetId(item.from_target_id) || !resolvableTargetId(item.to_target_id)) {
+          return `vision referenced unknown target in ${label}`;
+        }
+      } else if (!inBounds(item.x, item.y, logicalWidth, logicalHeight) || !inBounds(item.to_x, item.to_y, logicalWidth, logicalHeight)) {
+        return `vision returned out-of-bounds ${label}`;
+      }
       break;
     case "label":
-      if (!inBounds(item.x, item.y, logicalWidth, logicalHeight)) return `vision returned out-of-bounds ${label}`;
+      if (presentTargetId(item.target_id)) {
+        if (!resolvableTargetId(item.target_id)) return `vision referenced unknown target in ${label}`;
+      } else if (!inBounds(item.x, item.y, logicalWidth, logicalHeight)) {
+        return `vision returned out-of-bounds ${label}`;
+      }
       if (typeof item.text !== "string" || item.text.trim() === "" || item.text.length > 120) return `vision returned invalid text for ${label}`;
       break;
     case "polygon":
@@ -1076,6 +1169,7 @@ function canvasVisionSystemPrompt(logicalWidth: number, logicalHeight: number): 
     `Every x coordinate must be in 0..${logicalWidth}; every y coordinate must be in 0..${logicalHeight}.`,
     `Set source_width=${logicalWidth} and source_height=${logicalHeight}.`,
     "Locate controls from their actual visible boundaries. Do not estimate from generic app layouts or invent hidden controls.",
+    "When UI accessibility targets are provided, prefer setting target_id (or from_target_id and to_target_id for arrows/lines) to a clearly matching target instead of raw coordinates; the app resolves the exact box. Only reference provided target ids, and fall back to raw pixel coordinates when no target matches.",
     "If the requested target is not visibly identifiable, return the safest nearby visible teaching step instead of fabricating a coordinate.",
     "For an arrow, (x,y) is the TAIL where the arrow starts, and (to_x,to_y) is the HEAD/TIP pointing at the target UI element.",
     "For a highlight, (x,y) is the top-left corner and width/height tightly bound the visible target.",
@@ -1085,6 +1179,9 @@ function canvasVisionSystemPrompt(logicalWidth: number, logicalHeight: number): 
     "Use one teaching idea per step, usually 1-4 steps total. Keep labels concise and narration natural.",
     "Use draw for arrows/lines, pulse for a target, and fade_in or scale_in for simple emphasis. Avoid decorative animation.",
     "duration_ms is the total time for the step, including cursor movement.",
+    "Each step has advance: 'timed' steps auto-advance after duration_ms; an 'on_user_action' step waits for the user to click the indicated control (duration_ms is ignored while waiting). Only the FINAL step may use on_user_action.",
+    "For multi-stage tasks where the UI changes after the user acts (opening menus, navigating pages, dialogs), teach ONLY the next single action: 1-2 steps, the final step advance='on_user_action' marking exactly the one control to click, and set continue_after_user_action=true so Macky re-captures the screen and continues after the click.",
+    "For purely explanatory diagrams and single-stage teaching, use advance='timed' on every step and set continue_after_user_action=false.",
   ].join("\n");
 }
 

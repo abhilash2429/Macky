@@ -383,7 +383,7 @@ enum CursorControlError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .accessibilityPermissionRequired:
-            return "cursor control requires Accessibility permission"
+            return "cursor control needs Accessibility permission. Tell the user to enable Macky in System Settings, Privacy & Security, Accessibility, then try again."
         case .noScreen:
             return "no screen is available for cursor control"
         case .missingCoordinates:

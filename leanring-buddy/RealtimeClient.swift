@@ -170,6 +170,11 @@ final class RealtimeClient: ObservableObject {
     private var currentResponseID: String?
     /// A response.create that must wait for the server to finish/cancel the active response.
     private var pendingResponseCreate: (reason: String, callID: String?)?
+
+    /// Model-initiated guide continuations since the last real user turn. Bounded so a
+    /// looping vision output can't chain responses forever without the user speaking.
+    private var visualGuidanceContinuationCount = 0
+    private static let maxVisualGuidanceContinuationsPerTurn = 6
     /// True after response.cancel is sent until the server confirms the response is done.
     private var isResponseCancelPending = false
     /// Monotonic user turn number. Visual guidance must use a capture from the same turn.
@@ -304,15 +309,11 @@ final class RealtimeClient: ObservableObject {
             guard let self else { return "{\"error\": \"client unavailable\"}" }
             let allScreens = arguments["all_screens"] as? Bool ?? false
             let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(cursorScreenOnly: !allScreens, mainScreenOnly: false)
-            let visualScene = (!allScreens && captures.first.map(Self.isMainDisplayCapture) == true)
-                ? VisualSceneBuilder.buildMainDisplayScene()
-                : nil
+            let visualScene = Self.buildVisualScene(for: captures)
             if let visualScene {
                 print("🧭 RealtimeClient: visual scene built — \(visualScene.targets.count) optional targets")
-            } else if allScreens {
-                print("🧭 RealtimeClient: visual scene skipped — all_screens requested")
-            } else if captures.first.map(Self.isMainDisplayCapture) != true {
-                print("🧭 RealtimeClient: visual scene skipped — cursor display is not main display")
+            } else if captures.count != 1 {
+                print("🧭 RealtimeClient: visual scene skipped — multiple displays captured")
             } else {
                 print("⚠️ RealtimeClient: visual scene unavailable; raw coordinates still allowed")
             }
@@ -395,11 +396,15 @@ final class RealtimeClient: ObservableObject {
     }
 
     /// POSTs the latest screenshot to the authenticated `/canvas-vision` route.
+    /// A 401 means the Worker no longer recognizes the stored session token (its
+    /// session store was wiped or migrated), so the call refreshes the session once
+    /// and retries rather than failing every visual guide until reinstall.
     private func callCanvasVision(
         jpegBase64: String,
         transcript: String,
         logicalWidth: Int,
-        logicalHeight: Int
+        logicalHeight: Int,
+        targets: [[String: Any]]?
     ) async throws -> [String: Any] {
         guard let sessionToken = await AuthManager.shared.ensureSessionToken() else {
             throw NSError(
@@ -408,18 +413,38 @@ final class RealtimeClient: ObservableObject {
                 userInfo: [NSLocalizedDescriptionKey: "No Worker session is available"]
             )
         }
-        var request = URLRequest(url: WorkerEndpoints.canvasVisionURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 45
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "jpegBase64": jpegBase64,
             "transcript": transcript,
             "logicalWidth": logicalWidth,
             "logicalHeight": logicalHeight
         ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        if let targets, !targets.isEmpty {
+            body["targets"] = targets
+        }
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+
+        let (payload, statusCode) = try await sendCanvasVisionRequest(bodyData: bodyData, sessionToken: sessionToken)
+        if statusCode == 401,
+           let freshToken = await AuthManager.shared.refreshSessionToken(rejecting: sessionToken),
+           freshToken != sessionToken {
+            print("🔁 RealtimeClient: retrying canvas-vision with a refreshed session")
+            let (retryPayload, retryStatus) = try await sendCanvasVisionRequest(bodyData: bodyData, sessionToken: freshToken)
+            return try Self.canvasVisionPayload(retryPayload, statusCode: retryStatus)
+        }
+        return try Self.canvasVisionPayload(payload, statusCode: statusCode)
+    }
+
+    private func sendCanvasVisionRequest(
+        bodyData: Data,
+        sessionToken: String
+    ) async throws -> ([String: Any]?, Int) {
+        var request = URLRequest(url: WorkerEndpoints.canvasVisionURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 60
+        request.httpBody = bodyData
 
         let (data, response) = try await urlSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -430,11 +455,15 @@ final class RealtimeClient: ObservableObject {
             )
         }
         let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        guard (200...299).contains(httpResponse.statusCode) else {
+        return (payload, httpResponse.statusCode)
+    }
+
+    private static func canvasVisionPayload(_ payload: [String: Any]?, statusCode: Int) throws -> [String: Any] {
+        guard (200...299).contains(statusCode) else {
             let serverMessage = payload?["error"] as? String ?? "Canvas vision request failed"
             throw NSError(
                 domain: "CanvasVision",
-                code: httpResponse.statusCode,
+                code: statusCode,
                 userInfo: [NSLocalizedDescriptionKey: serverMessage]
             )
         }
@@ -576,7 +605,7 @@ final class RealtimeClient: ObservableObject {
             }
             let capture: CompanionScreenCapture?
             if usesScreenshotCoordinates {
-                capture = try self.captureForCursorControl(displayID: displayID)
+                capture = try await self.captureForCursorControl(displayID: displayID)
             } else {
                 capture = nil
             }
@@ -649,27 +678,77 @@ final class RealtimeClient: ObservableObject {
         canvasVisionTask = nil
     }
 
+    /// Continues a multi-stage visual guide after the user performed the awaited click.
+    /// Injects a user-role notice and asks for a response so the realtime model
+    /// re-captures the changed screen and generates the next single-action guide.
+    func continueVisualGuidanceAfterUserAction() {
+        guard webSocketTask != nil else { return }
+        // Each continuation is a model-initiated response without a fresh user turn, so
+        // cap the chain; a task needing more stages should re-engage the user anyway.
+        guard visualGuidanceContinuationCount < Self.maxVisualGuidanceContinuationsPerTurn else {
+            print("⚠️ RealtimeClient: visual guidance continuation cap reached; waiting for the user")
+            return
+        }
+        // pendingResponseCreate is a single slot shared with MCP continuations; losing
+        // one silently is worse than skipping this ping, so bail if it's occupied.
+        guard pendingResponseCreate == nil else {
+            print("⚠️ RealtimeClient: visual guidance continuation skipped — another response is queued")
+            return
+        }
+        visualGuidanceContinuationCount += 1
+        // The click changed the UI. Without this, generate_visual_guidance's cache path
+        // would happily reuse the pre-click screenshot for up to 15s.
+        invalidateScreenContext()
+        sendJSON([
+            "type": "conversation.item.create",
+            "item": [
+                "type": "message",
+                "role": "user",
+                "content": [[
+                    "type": "input_text",
+                    "text": "The user just clicked the highlighted control from your visual guide. The screen may have changed. Capture it again with get_screen_context, then either call generate_visual_guidance for the next single action or briefly confirm the task is complete."
+                ]]
+            ]
+        ])
+        sendResponseCreate(reason: "visual_guidance_user_action", callID: nil)
+    }
+
     func cancelCursorControlWork() {
         cursorControlWorkGeneration += 1
         cursorControlTask?.cancel()
         cursorControlTask = nil
     }
 
-    private func captureForCursorControl(displayID: CGDirectDisplayID?) throws -> CompanionScreenCapture {
-        guard latestScreenCaptureTurnGeneration == userTurnGeneration else {
-            throw VisualGuidanceValidationError.staleScreenCapture
+    /// Resolves the screenshot a coordinate-based cursor action maps against. The model
+    /// usually captures, the user (or the model) acts, then a click follows — by which
+    /// point the cached capture may be from an earlier turn, stale, or from before an
+    /// app switch. Rather than failing (which the model paraphrases to the user as "I
+    /// can't access your cursor"), recapture the target display in place so the click
+    /// lands against current pixels. Only a hard, unrecoverable failure throws.
+    private func captureForCursorControl(displayID: CGDirectDisplayID?) async throws -> CompanionScreenCapture {
+        if let cached = Self.selectedCapture(from: latestScreenCaptures, displayID: displayID),
+           latestScreenCaptureTurnGeneration == userTurnGeneration,
+           Self.isFreshScreenCapture(cached),
+           captureStillMatchesFrontmostApplication(cached) {
+            if displayID == nil, latestScreenCaptures.count > 1 {
+                throw CursorControlError.displayIDRequired
+            }
+            return cached
         }
-        if displayID == nil, latestScreenCaptures.count > 1 {
+
+        // Cache is missing/stale/app-changed: recapture now so the click maps against
+        // what's actually on screen. Cursor-screen only unless a specific display was asked for.
+        let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(
+            cursorScreenOnly: displayID == nil,
+            mainScreenOnly: false
+        )
+        latestScreenCaptures = captures
+        latestVisualScene = Self.buildVisualScene(for: captures)
+        latestScreenCaptureTurnGeneration = userTurnGeneration
+        if displayID == nil, captures.count > 1 {
             throw CursorControlError.displayIDRequired
         }
-        let capture: CompanionScreenCapture?
-        if let displayID {
-            capture = latestScreenCaptures.first(where: { $0.displayID == displayID })
-        } else {
-            capture = latestScreenCaptures.first(where: { $0.isCursorScreen }) ?? latestScreenCaptures.first
-        }
-        guard let capture else { throw VisualGuidanceValidationError.staleScreenCapture }
-        guard Self.isFreshScreenCapture(capture) else {
+        guard let capture = Self.selectedCapture(from: captures, displayID: displayID) else {
             throw VisualGuidanceValidationError.staleScreenCapture
         }
         guard captureStillMatchesFrontmostApplication(capture) else {
@@ -725,15 +804,18 @@ final class RealtimeClient: ObservableObject {
 
     private func resolvedVisualGuidancePresentation(
         _ sequence: VisualGuidanceSequence,
-        capture: CompanionScreenCapture
+        capture: CompanionScreenCapture,
+        visualScene: VisualScene?
     ) throws -> VisualGuidancePresentation {
         logVisualGuidanceCommands(sequence, label: "raw")
-        guard latestScreenCaptureTurnGeneration == userTurnGeneration else {
-            print("⚠️ RealtimeClient: visual guidance rejected — screenshot is stale or missing for current turn")
-            throw VisualGuidanceValidationError.staleScreenCapture
-        }
-        guard captureStillMatchesFrontmostApplication(capture) else {
-            print("⚠️ RealtimeClient: visual guidance rejected — frontmost application changed after capture")
+        // Freshness and frontmost-app were validated when this request started
+        // (generateVisualGuidancePayload entry), and the overlay controller re-checks
+        // the frontmost app at presentation time. Re-checking turn generation here —
+        // after the long vision call — discarded finished guides whenever the user
+        // spoke or focus flickered during the wait. Only a hard age bound remains:
+        // 60s request timeout plus scheduling slack.
+        guard Date().timeIntervalSince(capture.capturedAt) <= 90 else {
+            print("⚠️ RealtimeClient: visual guidance rejected — capture is older than 90s")
             throw VisualGuidanceValidationError.staleScreenCapture
         }
         guard let sourceWidth = sequence.sourceWidth,
@@ -747,7 +829,7 @@ final class RealtimeClient: ObservableObject {
             throw VisualGuidanceValidationError.sourceDimensionMismatch
         }
 
-        let targets = latestVisualScene?.targetByID
+        let targets = visualScene?.targetByID
         if targets == nil && sequence.usesTargetReferences {
             print("⚠️ RealtimeClient: visual guidance rejected — target IDs require visual_scene; use raw screenshot coordinates")
             throw VisualGuidanceValidationError.visualSceneUnavailable
@@ -759,7 +841,8 @@ final class RealtimeClient: ObservableObject {
                 narrationCue: step.narrationCue,
                 durationMs: step.durationMs,
                 clearBeforeNext: step.clearBeforeNext,
-                canvas: try step.canvas.map { try resolvedCanvasCommand($0, targets: targets, sourceSize: sourceSize) },
+                advance: step.advance,
+                canvas: try step.canvas.map { try resolvedCanvasCommand($0, targets: targets, visualScene: visualScene, sourceSize: sourceSize) },
                 cursor: step.cursor
             )
         }
@@ -771,6 +854,7 @@ final class RealtimeClient: ObservableObject {
             // Display placement is trusted only from the local capture. The model never
             // gets to select a monitor or global frame for cursor automation.
             displayFrame: capture.visualGuidanceDisplayFrame,
+            continueAfterUserAction: sequence.continueAfterUserAction,
             steps: resolvedSteps
         ).validated()
         print("🧪 VisualGuidanceSequenceDiagnostics source=\(sourceWidth)x\(sourceHeight) matchedCaptureDisplayID=\(capture.displayID) captureDisplayPoints=\(capture.displayWidthInPoints)x\(capture.displayHeightInPoints) captureScreenshot=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) displayFrame=\(capture.visualGuidanceDisplayFrame.cgRect.debugDescription) steps=\(resolvedSequence.steps.count)")
@@ -796,13 +880,18 @@ final class RealtimeClient: ObservableObject {
         }
     }
 
-    private func resolvedCanvasCommand(_ command: CanvasCommand, targets: [String: VisualTarget]?, sourceSize: CGSize) throws -> CanvasCommand {
+    private func resolvedCanvasCommand(_ command: CanvasCommand, targets: [String: VisualTarget]?, visualScene: VisualScene?, sourceSize: CGSize) throws -> CanvasCommand {
         switch command.type {
         case .highlight, .circle, .ring, .spotlight, .brace:
             guard let targetId = command.targetId else { return command }
             guard let targets else { throw VisualGuidanceValidationError.visualSceneUnavailable }
+            // Scale to screenshot space first, then outset: outsetting in scene points
+            // doubled the 4pt breathing room on 2x screenshots and shrank it on
+            // downscaled ones.
             guard let target = targets[targetId],
-                  let box = visualTargetBoxInSourceSpace(target.box.insetBy(dx: 4, dy: 4), sourceSize: sourceSize) else {
+                  let box = Self.scaledTargetBox(target.box, scene: visualScene, sourceSize: sourceSize)?
+                    .insetBy(dx: 4, dy: 4)
+                    .clamped(to: sourceSize) else {
                 print("⚠️ RealtimeClient: visual guidance target not found: \(targetId)")
                 throw VisualGuidanceValidationError.missingVisualTarget(targetId)
             }
@@ -825,7 +914,7 @@ final class RealtimeClient: ObservableObject {
             guard let targetId = command.targetId else { return command }
             guard let targets else { throw VisualGuidanceValidationError.visualSceneUnavailable }
             guard let target = targets[targetId],
-                  let box = visualTargetBoxInSourceSpace(target.box, sourceSize: sourceSize) else {
+                  let box = Self.scaledTargetBox(target.box, scene: visualScene, sourceSize: sourceSize) else {
                 print("⚠️ RealtimeClient: visual guidance target not found: \(targetId)")
                 throw VisualGuidanceValidationError.missingVisualTarget(targetId)
             }
@@ -855,8 +944,8 @@ final class RealtimeClient: ObservableObject {
                 print("⚠️ RealtimeClient: visual guidance target not found: \(toTargetId)")
                 throw VisualGuidanceValidationError.missingVisualTarget(toTargetId)
             }
-            let from = try visualTargetCenterInSourceSpace(fromTarget.box, sourceSize: sourceSize)
-            let to = try visualTargetCenterInSourceSpace(toTarget.box, sourceSize: sourceSize)
+            let from = try Self.scaledTargetCenter(fromTarget.box, scene: visualScene, sourceSize: sourceSize)
+            let to = try Self.scaledTargetCenter(toTarget.box, scene: visualScene, sourceSize: sourceSize)
             return CanvasCommand(
                 type: command.type,
                 x: Double(from.x),
@@ -877,16 +966,18 @@ final class RealtimeClient: ObservableObject {
         }
     }
 
-    private func visualTargetBoxInSourceSpace(_ box: VisualTargetBox, sourceSize: CGSize) -> VisualTargetBox? {
-        guard let visualScene = latestVisualScene else {
+    /// Maps a target box from the visual scene's logical-point space into the
+    /// screenshot's pixel space. Identity when the two spaces already match.
+    private static func scaledTargetBox(_ box: VisualTargetBox, scene: VisualScene?, sourceSize: CGSize) -> VisualTargetBox? {
+        guard let scene else {
             return box.clamped(to: sourceSize)
         }
-        guard abs(Double(sourceSize.width) - visualScene.screenWidth) > 1
-                || abs(Double(sourceSize.height) - visualScene.screenHeight) > 1 else {
+        guard abs(Double(sourceSize.width) - scene.screenWidth) > 1
+                || abs(Double(sourceSize.height) - scene.screenHeight) > 1 else {
             return box.clamped(to: sourceSize)
         }
-        let scaleX = Double(sourceSize.width) / max(1, visualScene.screenWidth)
-        let scaleY = Double(sourceSize.height) / max(1, visualScene.screenHeight)
+        let scaleX = Double(sourceSize.width) / max(1, scene.screenWidth)
+        let scaleY = Double(sourceSize.height) / max(1, scene.screenHeight)
         let scaled = VisualTargetBox(
             x: box.x * scaleX,
             y: box.y * scaleY,
@@ -896,8 +987,8 @@ final class RealtimeClient: ObservableObject {
         return scaled.clamped(to: sourceSize)
     }
 
-    private func visualTargetCenterInSourceSpace(_ box: VisualTargetBox, sourceSize: CGSize) throws -> CGPoint {
-        guard let sourceBox = visualTargetBoxInSourceSpace(box, sourceSize: sourceSize) else {
+    private static func scaledTargetCenter(_ box: VisualTargetBox, scene: VisualScene?, sourceSize: CGSize) throws -> CGPoint {
+        guard let sourceBox = scaledTargetBox(box, scene: scene, sourceSize: sourceSize) else {
             throw VisualGuidanceValidationError.invalidCanvasCommand
         }
         return CGPoint(x: CGFloat(sourceBox.x + sourceBox.width / 2), y: CGFloat(sourceBox.y + sourceBox.height / 2))
@@ -976,11 +1067,23 @@ final class RealtimeClient: ObservableObject {
         }
     }
 
-    private static func isMainDisplayCapture(_ capture: CompanionScreenCapture) -> Bool {
-        guard let mainDisplayID = NSScreen.main?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
-            return false
+    private static func screen(forDisplayID displayID: CGDirectDisplayID) -> NSScreen? {
+        NSScreen.screens.first { screen in
+            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
         }
-        return capture.displayID == mainDisplayID
+    }
+
+    /// Builds the Accessibility target map for a single-display capture. Skipped for
+    /// multi-display captures: the scene is bound to one screen's coordinate space and
+    /// a wrong-display target map is worse than none.
+    private static func buildVisualScene(for captures: [CompanionScreenCapture]) -> VisualScene? {
+        guard captures.count == 1, let capture = captures.first else { return nil }
+        return buildVisualScene(for: capture)
+    }
+
+    private static func buildVisualScene(for capture: CompanionScreenCapture) -> VisualScene? {
+        guard let screen = screen(forDisplayID: capture.displayID) else { return nil }
+        return VisualSceneBuilder.buildScene(for: screen)
     }
 
     private static func errorJSON(_ message: String) -> String {
@@ -1025,9 +1128,7 @@ final class RealtimeClient: ObservableObject {
                     mainScreenOnly: false
                 )
                 let selectedCapture = Self.selectedCapture(from: captures, displayID: displayID)
-                let visualScene = selectedCapture.map(Self.isMainDisplayCapture) == true
-                    ? VisualSceneBuilder.buildMainDisplayScene()
-                    : nil
+                let visualScene = selectedCapture.flatMap { Self.buildVisualScene(for: $0) }
                 latestScreenCaptures = captures
                 latestVisualScene = visualScene
                 latestScreenCaptureTurnGeneration = userTurnGeneration
@@ -1057,6 +1158,11 @@ final class RealtimeClient: ObservableObject {
                 ? "Help the user with what's currently on screen."
                 : pendingUserPhrase)
 
+        // Snapshot the scene now so resolution after the long vision call uses the
+        // scene that matches this capture, not whatever a later capture installed.
+        let sceneForCapture = latestVisualScene
+        let visionTargets = Self.canvasVisionTargetsPayload(scene: sceneForCapture, capture: capture)
+
         cancelVisualGuidanceWork()
         let workGeneration = visualGuidanceWorkGeneration
         let requestTask = Task { @MainActor [weak self] () throws -> [String: Any] in
@@ -1067,7 +1173,8 @@ final class RealtimeClient: ObservableObject {
                 jpegBase64: capture.imageData.base64EncodedString(),
                 transcript: requestText,
                 logicalWidth: capture.screenshotWidthInPixels,
-                logicalHeight: capture.screenshotHeightInPixels
+                logicalHeight: capture.screenshotHeightInPixels,
+                targets: visionTargets
             )
         }
         canvasVisionTask = requestTask
@@ -1106,19 +1213,22 @@ final class RealtimeClient: ObservableObject {
         }
 
         do {
-            let presentation = try resolvedVisualGuidancePresentation(sequence, capture: capture)
+            let presentation = try resolvedVisualGuidancePresentation(sequence, capture: capture, visualScene: sceneForCapture)
             guard let callback = onVisualGuidanceSequenceRequested else {
                 return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"overlay unavailable\"}"
             }
             let callbackResult = await callback(presentation)
             let summary = (payload["guidance_summary"] as? String) ?? (sequence.title ?? "Visual guide ready.")
             let timeline = Self.visualGuidanceNarrationTimeline(from: presentation.sequence)
+            let waitsForUserClick = presentation.sequence.steps.last?.advanceMode == .onUserAction
             let response: [String: Any] = [
                 "status": "visual_guidance_queued",
                 "summary": summary,
                 "speech_owner": "realtime",
                 "diagram_owner": "queued_overlay_renderer",
                 "overlay_start": "with_next_realtime_audio",
+                "interaction_mode": waitsForUserClick ? "waits_for_user_click" : "timed",
+                "continues_after_user_action": presentation.sequence.continueAfterUserAction == true,
                 "timeline": timeline,
                 "overlay_result": callbackResult
             ]
@@ -1127,6 +1237,36 @@ final class RealtimeClient: ObservableObject {
             print("⚠️ RealtimeClient: canvas-vision sequence was invalid: \(error.localizedDescription)")
             return "{\"status\": \"visual_guidance_unavailable\", \"error\": \"visual guidance was invalid\"}"
         }
+    }
+
+    /// Compact target list for the vision model, scaled from the scene's logical points
+    /// into the screenshot's pixel space so the model and validator share one
+    /// coordinate space.
+    private static func canvasVisionTargetsPayload(
+        scene: VisualScene?,
+        capture: CompanionScreenCapture
+    ) -> [[String: Any]]? {
+        guard let scene else { return nil }
+        let sourceSize = CGSize(
+            width: CGFloat(capture.screenshotWidthInPixels),
+            height: CGFloat(capture.screenshotHeightInPixels)
+        )
+        let targets: [[String: Any]] = scene.targets.compactMap { target in
+            guard let box = scaledTargetBox(target.box, scene: scene, sourceSize: sourceSize) else { return nil }
+            var payload: [String: Any] = [
+                "id": target.id,
+                "role": target.role,
+                "x": box.x.rounded(),
+                "y": box.y.rounded(),
+                "width": box.width.rounded(),
+                "height": box.height.rounded()
+            ]
+            if let label = target.label, !label.isEmpty {
+                payload["label"] = label
+            }
+            return payload
+        }
+        return targets.isEmpty ? nil : targets
     }
 
     private static func visualGuidanceNarrationTimeline(from sequence: VisualGuidanceSequence) -> [[String: Any]] {
@@ -1525,7 +1665,17 @@ final class RealtimeClient: ObservableObject {
         request.timeoutInterval = 5
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         do {
-            let (data, response) = try await urlSession.data(for: request)
+            var (data, response) = try await urlSession.data(for: request)
+            // A 401 means the Worker's session store no longer knows this token
+            // (wiped/migrated store). Refresh the session once and retry so MCP
+            // connectors aren't silently missing for the entire session.
+            if let http = response as? HTTPURLResponse, http.statusCode == 401,
+               let freshToken = await AuthManager.shared.refreshSessionToken(rejecting: sessionToken),
+               freshToken != sessionToken {
+                print("🔁 RealtimeClient: retrying composio-config with a refreshed session")
+                request.setValue("Bearer \(freshToken)", forHTTPHeaderField: "Authorization")
+                (data, response) = try await urlSession.data(for: request)
+            }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let url = json["url"] as? String,
@@ -2049,6 +2199,10 @@ final class RealtimeClient: ObservableObject {
         turn before answering or acting. Use all_screens only when the user explicitly asks about multiple displays.
         - Do not claim to see the screen until get_screen_context has returned and attached the screenshot. Use it for \
         verbal screen-aware answers, UI explanations, and next-step guidance.
+        - Choose the right tool by intent. If the user wants the task DONE ("open my history", "click that", "do it"), \
+        use control_cursor to click it yourself (see Cursor Control). If the user wants to be SHOWN or TAUGHT ("show \
+        me where", "how do I", "explain this diagram", "point to it"), use generate_visual_guidance to draw an overlay. \
+        When unsure, pick doing it over merely pointing.
         - For visual teaching, diagrams, coordinate-specific help, or "show me where," call \
         generate_visual_guidance after a fresh capture. It creates and validates the overlay; never author overlay \
         coordinates or canvas commands yourself. If multiple displays were captured, pass the display_id containing \
@@ -2056,16 +2210,36 @@ final class RealtimeClient: ObservableObject {
         - Use the generator's summary and timeline only for plain spoken guidance while the overlay appears. Keep one \
         idea per step, say what is highlighted while it is visible, and do not say "drawing complete." If visual \
         guidance is unavailable, explain the steps verbally instead.
+        - For multi-stage tasks where the screen changes after each user action (opening menus, navigating pages, \
+        dialogs), guide one action at a time: ask generate_visual_guidance for only the next single click. When its \
+        result says interaction_mode is waits_for_user_click, the overlay stays up until the user clicks — the user \
+        always performs the click, never you. Tell the user what to click and wait.
+        - When you receive a message that the user just clicked during a visual guide, capture the screen again with \
+        get_screen_context and generate the next single-action guide, or briefly confirm completion. Never ask the \
+        user to say "continue."
         - Visual-guidance cursor actions only point and never click. If the user says stop, cancel, clear the overlay, \
         or never mind, call clear_visual_guidance and stop.
 
-        # Cursor Control
-        control_cursor operates visible UI and is separate from visual teaching. Before every coordinate-based action, \
-        call get_screen_context in the same turn and use its display_id and screenshot coordinate space. After every \
-        cursor action, capture the screen again before a later coordinate action because the UI may have changed. Never \
-        guess coordinates from memory. Use control_cursor only when the user asks Macky to operate the UI, not merely \
-        explain it. If a vague click could delete, discard, pay, cancel, alter account access, or otherwise cause a \
-        material change, identify the consequence and ask for clarification before clicking.
+        # Cursor Control (Macky operates the UI)
+        control_cursor moves the real cursor and clicks, double-clicks, right-clicks, drags, and scrolls. Use it \
+        whenever the user asks Macky to DO something in a visible app — "open my history", "click that", "close this \
+        tab", "open settings" — not just explain where it is. This is the path for actually performing the action; \
+        prefer it over visual teaching when the user wants the task done rather than shown.
+        - Before every coordinate-based action, call get_screen_context in the same turn, read the target's position \
+        from the returned screenshot, and pass those top-left screenshot coordinates plus display_id. Never guess \
+        coordinates from memory.
+        - Multi-step UI (e.g. open a menu, then click an item) changes the screen after each click. After each cursor \
+        action, call get_screen_context again to see the new state, then locate and click the next target. Do not \
+        reuse old coordinates across a UI change.
+        - If a cursor tool returns an error saying the screenshot was stale or the app changed, just call \
+        get_screen_context again and retry the click with fresh coordinates — do not tell the user you lack cursor or \
+        screen access. If it returns an error about Accessibility permission, tell the user to enable Macky under \
+        System Settings, Privacy & Security, Accessibility, then retry.
+        - Confirm first only when a click could delete, discard, pay, purchase, send a message, cancel a service, or \
+        change account/security access — state the consequence and wait for a clear yes. Ordinary navigation (menus, \
+        tabs, links, buttons, opening pages or history) does not need confirmation; just do it.
+        - Example — "open history in Chrome": get_screen_context, click the Chrome menu (three dots), get_screen_context \
+        again to see the opened menu, then click History.
 
         # Focused Text Editing
         - When the user's explicit request implies writing into the active app — for example rewriting selected text, \
@@ -2369,8 +2543,9 @@ final class RealtimeClient: ObservableObject {
                 ]
             ] as [String: Any]
             screen["display_id"] = capture.displayID
+            // The scene is only ever built for a single-display capture, so a size match
+            // is enough to know it describes this screen.
             if let visualScene,
-               isMainDisplayCapture(capture),
                capture.displayWidthInPoints == Int(visualScene.screenWidth),
                capture.displayHeightInPoints == Int(visualScene.screenHeight) {
                 screen["visual_scene"] = visualScene.jsonObject
@@ -2603,6 +2778,7 @@ final class RealtimeClient: ObservableObject {
     func requestResponse() {
         userTurnGeneration += 1
         hasUnfinalizedUserTurn = true
+        visualGuidanceContinuationCount = 0
         sendResponseCreate(reason: "user_request", callID: nil)
     }
 

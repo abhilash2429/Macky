@@ -47,11 +47,13 @@ final class VisualGuidanceTests: XCTestCase {
             sourceWidth: 1_000,
             sourceHeight: 800,
             displayFrame: nil,
+            continueAfterUserAction: nil,
             steps: [
                 VisualGuidanceStep(
                     narrationCue: "Show the target.",
                     durationMs: 4_000,
                     clearBeforeNext: true,
+                    advance: nil,
                     canvas: [spotlight, spotlight],
                     cursor: nil
                 )
@@ -72,11 +74,13 @@ final class VisualGuidanceTests: XCTestCase {
             sourceWidth: 1_000,
             sourceHeight: 800,
             displayFrame: nil,
+            continueAfterUserAction: nil,
             steps: [
                 VisualGuidanceStep(
                     narrationCue: String(repeating: "a", count: 241),
                     durationMs: 4_000,
                     clearBeforeNext: true,
+                    advance: nil,
                     canvas: [],
                     cursor: CursorCommand(
                         type: .move,
@@ -96,5 +100,88 @@ final class VisualGuidanceTests: XCTestCase {
                 return XCTFail("Unexpected error: \(error)")
             }
         }
+    }
+
+    func testSequenceRejectsNonFinalOnUserActionStep() {
+        let step = VisualGuidanceStep(
+            narrationCue: nil,
+            durationMs: 4_000,
+            clearBeforeNext: true,
+            advance: .onUserAction,
+            canvas: [],
+            cursor: CursorCommand(type: .move, x: 100, y: 100, durationMs: 250, label: nil, labelPlacement: nil)
+        )
+        let timedStep = VisualGuidanceStep(
+            narrationCue: nil,
+            durationMs: 4_000,
+            clearBeforeNext: true,
+            advance: .timed,
+            canvas: [],
+            cursor: CursorCommand(type: .move, x: 100, y: 100, durationMs: 250, label: nil, labelPlacement: nil)
+        )
+        let sequence = VisualGuidanceSequence(
+            title: nil,
+            sourceWidth: 1_000,
+            sourceHeight: 800,
+            displayFrame: nil,
+            continueAfterUserAction: nil,
+            steps: [step, timedStep]
+        )
+
+        XCTAssertThrowsError(try sequence.validated()) { error in
+            guard let validationError = error as? VisualGuidanceValidationError,
+                  case .invalidInteractiveStep = validationError else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testSequenceRejectsContinuationWithoutFinalUserActionStep() {
+        let sequence = VisualGuidanceSequence(
+            title: nil,
+            sourceWidth: 1_000,
+            sourceHeight: 800,
+            displayFrame: nil,
+            continueAfterUserAction: true,
+            steps: [
+                VisualGuidanceStep(
+                    narrationCue: nil,
+                    durationMs: 4_000,
+                    clearBeforeNext: true,
+                    advance: .timed,
+                    canvas: [],
+                    cursor: CursorCommand(type: .move, x: 100, y: 100, durationMs: 250, label: nil, labelPlacement: nil)
+                )
+            ]
+        )
+
+        XCTAssertThrowsError(try sequence.validated()) { error in
+            guard let validationError = error as? VisualGuidanceValidationError,
+                  case .invalidInteractiveStep = validationError else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testSequenceAcceptsFinalOnUserActionStepWithContinuation() throws {
+        let sequence = VisualGuidanceSequence(
+            title: nil,
+            sourceWidth: 1_000,
+            sourceHeight: 800,
+            displayFrame: nil,
+            continueAfterUserAction: true,
+            steps: [
+                VisualGuidanceStep(
+                    narrationCue: "Click the highlighted button.",
+                    durationMs: 4_000,
+                    clearBeforeNext: true,
+                    advance: .onUserAction,
+                    canvas: [],
+                    cursor: CursorCommand(type: .move, x: 100, y: 100, durationMs: 250, label: "Click here", labelPlacement: nil)
+                )
+            ]
+        )
+
+        XCTAssertNoThrow(try sequence.validated())
     }
 }

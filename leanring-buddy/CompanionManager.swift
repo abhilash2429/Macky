@@ -143,6 +143,9 @@ final class CompanionManager: ObservableObject {
     private var turnUsedTool = false
     private var activeToolCount = 0
     private var pendingVisualGuidancePresentation: VisualGuidancePresentation?
+    /// Fallback that starts a queued overlay when the narration audio it normally
+    /// waits for never arrives (cancelled or audio-less response).
+    private var pendingVisualGuidanceStartTask: Task<Void, Never>?
 
     var allPermissionsGranted: Bool {
         hasAccessibilityPermission
@@ -570,14 +573,35 @@ final class CompanionManager: ObservableObject {
             self?.subAgentProgressController.hide()
         }
 
+        visualGuidanceOverlayController.onSequenceCompletedByUserAction = { [weak self] in
+            guard let self else { return }
+            self.subAgentProgressController.hide()
+            self.realtimeClient.continueVisualGuidanceAfterUserAction()
+        }
+
         realtimeClient.onVisualGuidanceSequenceRequested = { [weak self] presentation in
             guard let self else { return "{\"error\": \"app unavailable\"}" }
             self.pendingVisualGuidancePresentation = presentation
+            // The overlay normally starts with the model's narration audio. If that
+            // response never produces audio (cancelled, text-only, or lost), this
+            // fallback starts the overlay anyway instead of stranding it to pop up
+            // stale during a later, unrelated response.
+            self.pendingVisualGuidanceStartTask?.cancel()
+            self.pendingVisualGuidanceStartTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard !Task.isCancelled else { return }
+                self?.startPendingVisualGuidanceIfNeeded()
+            }
             return "{\"status\": \"visual guidance queued for narration\"}"
         }
 
         realtimeClient.onCursorLabelRequested = { [weak self] presentation in
-            self?.visualGuidanceOverlayController.showCursorLabel(presentation)
+            guard let self else { return }
+            // A transient cursor label must not tear down a live or queued guide:
+            // showCursorLabel() clears the overlay before presenting.
+            guard self.pendingVisualGuidancePresentation == nil,
+                  !self.visualGuidanceOverlayController.isRunningGuidanceSequence else { return }
+            self.visualGuidanceOverlayController.showCursorLabel(presentation)
         }
 
         realtimeClient.onVisualGuidanceClearRequested = { [weak self] in
@@ -691,12 +715,16 @@ final class CompanionManager: ObservableObject {
     }
 
     private func startPendingVisualGuidanceIfNeeded() {
+        pendingVisualGuidanceStartTask?.cancel()
+        pendingVisualGuidanceStartTask = nil
         guard let presentation = pendingVisualGuidancePresentation else { return }
         pendingVisualGuidancePresentation = nil
         visualGuidanceOverlayController.run(presentation: presentation)
     }
 
     private func cancelVisualGuidance() {
+        pendingVisualGuidanceStartTask?.cancel()
+        pendingVisualGuidanceStartTask = nil
         pendingVisualGuidancePresentation = nil
         realtimeClient.cancelVisualGuidanceWork()
         visualGuidanceOverlayController.clear()

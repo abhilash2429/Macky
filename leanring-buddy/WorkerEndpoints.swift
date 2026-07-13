@@ -12,7 +12,7 @@ import Foundation
 enum WorkerEndpoints {
     /// The Worker host (no scheme, no trailing slash). The single value to change when
     /// self-hosting the backend.
-    static let baseHost = "realtime-proxy.winky-secrets.workers.dev"
+    static let baseHost = "realtime-proxy.speedmac.workers.dev"
 
     /// `https://<host>` — base for the REST routes (auth + Composio connect/connections/config).
     static let httpsBase = "https://\(baseHost)"

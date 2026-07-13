@@ -59,6 +59,9 @@ struct VisualGuidanceSequence: Codable {
     let sourceWidth: Double?
     let sourceHeight: Double?
     let displayFrame: VisualGuidanceDisplayFrame?
+    /// When true, the app pings the realtime model after the user performs the final
+    /// on_user_action step, so it can re-capture the changed screen and continue the guide.
+    let continueAfterUserAction: Bool?
     let steps: [VisualGuidanceStep]
 
     enum CodingKeys: String, CodingKey {
@@ -66,6 +69,7 @@ struct VisualGuidanceSequence: Codable {
         case sourceWidth = "source_width"
         case sourceHeight = "source_height"
         case displayFrame = "display_frame"
+        case continueAfterUserAction = "continue_after_user_action"
         case steps
     }
 
@@ -106,20 +110,42 @@ struct VisualGuidanceSequence: Codable {
                 throw VisualGuidanceValidationError.invalidDisplayFrame
             }
         }
+        // Interactive waits are only allowed as the final step so playback stays
+        // "show steps, then wait once for the user's click"; richer interaction goes
+        // through the continuation loop with a fresh screenshot. Mirrors the Worker rule.
+        let interactiveStepIndices = steps.indices.filter { steps[$0].advanceMode == .onUserAction }
+        guard interactiveStepIndices.count <= 1,
+              interactiveStepIndices.first.map({ $0 == steps.count - 1 }) ?? true else {
+            throw VisualGuidanceValidationError.invalidInteractiveStep
+        }
+        if continueAfterUserAction == true {
+            guard steps.last?.advanceMode == .onUserAction else {
+                throw VisualGuidanceValidationError.invalidInteractiveStep
+            }
+        }
         return VisualGuidanceSequence(
             title: title,
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
             displayFrame: displayFrame,
+            continueAfterUserAction: continueAfterUserAction,
             steps: try steps.map { try $0.validated() }
         )
     }
+}
+
+/// How a step yields to the next one: on a timer, or when the user performs the
+/// indicated action (a click detected by a global event monitor).
+enum VisualGuidanceStepAdvance: String, Codable {
+    case timed
+    case onUserAction = "on_user_action"
 }
 
 struct VisualGuidanceStep: Codable {
     let narrationCue: String?
     let durationMs: Int?
     let clearBeforeNext: Bool?
+    let advance: VisualGuidanceStepAdvance?
     let canvas: [CanvasCommand]
     let cursor: CursorCommand?
 
@@ -129,9 +155,12 @@ struct VisualGuidanceStep: Codable {
         case narrationCue = "narration_cue"
         case durationMs = "duration_ms"
         case clearBeforeNext = "clear_before_next"
+        case advance
         case canvas
         case cursor
     }
+
+    var advanceMode: VisualGuidanceStepAdvance { advance ?? .timed }
 
     var displayDurationNanoseconds: UInt64 {
         let clampedMs = min(max(durationMs ?? 5_500, 4_000), 20_000)
@@ -159,6 +188,7 @@ struct VisualGuidanceStep: Codable {
             narrationCue: narrationCue,
             durationMs: durationMs,
             clearBeforeNext: clearBeforeNext,
+            advance: advance,
             canvas: try canvas.map { try $0.validated() },
             cursor: try cursor?.validated()
         )
@@ -361,6 +391,7 @@ enum VisualGuidanceValidationError: LocalizedError {
     case tooManyCanvasCommands
     case tooManySpotlights
     case invalidStepDuration
+    case invalidInteractiveStep
     case emptyNarrationCue
     case narrationCueTooLong
     case invalidTitle
@@ -388,6 +419,8 @@ enum VisualGuidanceValidationError: LocalizedError {
             return "visual guidance step can contain at most one spotlight"
         case .invalidStepDuration:
             return "visual guidance step duration is invalid"
+        case .invalidInteractiveStep:
+            return "visual guidance allows at most one on_user_action step, only as the final step, and continue_after_user_action requires it"
         case .emptyNarrationCue:
             return "visual guidance narration cue is empty"
         case .narrationCueTooLong:

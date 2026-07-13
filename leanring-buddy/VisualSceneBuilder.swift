@@ -2,7 +2,8 @@
 //  VisualSceneBuilder.swift
 //  leanring-buddy
 //
-//  Builds a conservative main-display Accessibility target map for visual guidance.
+//  Builds a conservative Accessibility target map of the captured display for
+//  visual guidance.
 //
 
 import AppKit
@@ -11,13 +12,16 @@ import CoreGraphics
 
 @MainActor
 enum VisualSceneBuilder {
-    private static let coordinateSpace = "top_left_logical_screen_points_main_display"
-    private static let maxAccessibilityTargets = 50
-    private static let maxTraversalDepth = 4
+    private static let coordinateSpace = "top_left_logical_points_captured_display"
+    private static let maxAccessibilityTargets = 80
+    private static let maxTraversalDepth = 10
+    private static let maxChildrenPerElement = 50
+    // Every AXUIElementCopyAttributeValue call is a synchronous IPC round trip on the
+    // main thread, so the traversal is bounded by visited elements, not just kept targets.
+    private static let maxVisitedElements = 1_500
 
-    static func buildMainDisplayScene() -> VisualScene? {
-        guard let screen = NSScreen.main else { return nil }
-        let targets = accessibilityTargets(on: screen, remaining: maxAccessibilityTargets)
+    static func buildScene(for screen: NSScreen) -> VisualScene? {
+        let targets = accessibilityTargets(on: screen, limit: maxAccessibilityTargets)
 
         return VisualScene(
             screenWidth: Double(screen.frame.width),
@@ -27,61 +31,74 @@ enum VisualSceneBuilder {
         )
     }
 
-    private static func accessibilityTargets(on screen: NSScreen, remaining: Int) -> [VisualTarget] {
-        guard AXIsProcessTrusted(), remaining > 0 else { return [] }
+    private static func accessibilityTargets(on screen: NSScreen, limit: Int) -> [VisualTarget] {
+        guard AXIsProcessTrusted(), limit > 0 else { return [] }
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.bundleIdentifier != Bundle.main.bundleIdentifier else { return [] }
 
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
-        var targets: [VisualTarget] = []
-        var markerIndex = 1
+        var windowTargets: [VisualTarget] = []
+        var priorityTargets: [VisualTarget] = []
+        var labeledFallbackTargets: [VisualTarget] = []
+        var visitedElements = 0
+
         var windowsValue: CFTypeRef?
         if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue) == .success,
            let windows = windowsValue as? [AXUIElement] {
             for (windowIndex, window) in windows.prefix(3).enumerated() {
-                guard targets.count < remaining else { break }
-                if let target = target(from: window, id: "app_window_\(windowIndex + 1)", marker: "\(markerIndex)", kind: .appWindow, fallbackRole: "window", screen: screen, confidence: 0.86) {
-                    targets.append(target)
-                    markerIndex += 1
+                if let target = target(from: window, id: "app_window_\(windowIndex + 1)", marker: nil, kind: .appWindow, fallbackRole: "window", screen: screen, confidence: 0.86) {
+                    windowTargets.append(target)
                 }
-                collectTargets(from: window, prefix: "ax_\(windowIndex + 1)", depth: 0, screen: screen, into: &targets, markerIndex: &markerIndex, limit: remaining)
+                // Breadth-first so shallow controls (toolbars, tab strips) are found before
+                // the visit budget is spent deep inside one branch, and collect-then-filter
+                // so real controls are not crowded out by containers encountered first.
+                var queue: [(element: AXUIElement, depth: Int)] = [(window, 0)]
+                var queueIndex = 0
+                while queueIndex < queue.count, visitedElements < maxVisitedElements {
+                    let (element, depth) = queue[queueIndex]
+                    queueIndex += 1
+                    visitedElements += 1
+
+                    if depth > 0, let target = target(
+                        from: element,
+                        id: "ax_\(windowIndex + 1)_\(visitedElements)",
+                        marker: nil,
+                        kind: .accessibilityElement,
+                        fallbackRole: "control",
+                        screen: screen,
+                        confidence: 0.72
+                    ) {
+                        if isPriorityTarget(target) {
+                            priorityTargets.append(target)
+                        } else if isLabeledFallback(target) {
+                            labeledFallbackTargets.append(target)
+                        }
+                    }
+
+                    guard depth < maxTraversalDepth else { continue }
+                    var childrenValue: CFTypeRef?
+                    guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+                          let children = childrenValue as? [AXUIElement] else { continue }
+                    for child in children.prefix(maxChildrenPerElement) {
+                        queue.append((child, depth + 1))
+                    }
+                }
             }
         }
-        return targets
-    }
 
-    private static func collectTargets(
-        from element: AXUIElement,
-        prefix: String,
-        depth: Int,
-        screen: NSScreen,
-        into targets: inout [VisualTarget],
-        markerIndex: inout Int,
-        limit: Int
-    ) {
-        guard depth <= maxTraversalDepth, targets.count < limit else { return }
-
-        if let target = target(
-            from: element,
-            id: "\(prefix)_\(targets.count + 1)",
-            marker: "\(markerIndex)",
-            kind: .accessibilityElement,
-            fallbackRole: "control",
-            screen: screen,
-            confidence: 0.72
-        ), shouldKeepAccessibilityTarget(target) {
-            targets.append(target)
-            markerIndex += 1
-        }
-
-        guard targets.count < limit else { return }
-        var childrenValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-              let children = childrenValue as? [AXUIElement] else { return }
-
-        for child in children.prefix(30) {
-            guard targets.count < limit else { break }
-            collectTargets(from: child, prefix: prefix, depth: depth + 1, screen: screen, into: &targets, markerIndex: &markerIndex, limit: limit)
+        let selected = Array((windowTargets + priorityTargets + labeledFallbackTargets).prefix(limit))
+        // Markers are assigned after selection so they stay dense (1, 2, 3, …) even
+        // though the traversal skipped elements.
+        return selected.enumerated().map { index, target in
+            VisualTarget(
+                id: target.id,
+                kind: target.kind,
+                role: target.role,
+                label: target.label,
+                marker: "\(index + 1)",
+                box: target.box,
+                confidence: target.confidence
+            )
         }
     }
 
@@ -115,22 +132,26 @@ enum VisualSceneBuilder {
         )
     }
 
-    private static func shouldKeepAccessibilityTarget(_ target: VisualTarget) -> Bool {
+    private static let priorityRoles: Set<String> = [
+        kAXButtonRole as String,
+        kAXCheckBoxRole as String,
+        kAXRadioButtonRole as String,
+        kAXTextFieldRole as String,
+        kAXTextAreaRole as String,
+        kAXPopUpButtonRole as String,
+        kAXMenuButtonRole as String,
+        kAXMenuItemRole as String,
+        kAXTabGroupRole as String,
+        "AXLink"
+    ]
+
+    private static func isPriorityTarget(_ target: VisualTarget) -> Bool {
         guard target.box.width >= 8, target.box.height >= 8 else { return false }
-        let usefulRoles = [
-            kAXButtonRole as String,
-            kAXCheckBoxRole as String,
-            kAXRadioButtonRole as String,
-            kAXTextFieldRole as String,
-            kAXTextAreaRole as String,
-            kAXPopUpButtonRole as String,
-            kAXMenuButtonRole as String,
-            kAXMenuItemRole as String,
-            kAXTabGroupRole as String,
-            "AXLink",
-            kAXWindowRole as String
-        ]
-        if usefulRoles.contains(target.role) { return true }
+        return priorityRoles.contains(target.role)
+    }
+
+    private static func isLabeledFallback(_ target: VisualTarget) -> Bool {
+        guard target.box.width >= 8, target.box.height >= 8 else { return false }
         return target.label?.isEmpty == false && target.box.width >= 24 && target.box.height >= 16
     }
 

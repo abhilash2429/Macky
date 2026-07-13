@@ -121,6 +121,27 @@ final class AuthManager: ObservableObject {
         return token
     }
 
+    /// Recovers from a Worker 401 on an authed route. The cached token no longer exists
+    /// in the Worker's session store (typically because the store was migrated or wiped),
+    /// so returning it forever would leave every authed feature broken with no way out.
+    /// Discards the rejected token and mints a fresh anonymous session. State is only
+    /// dropped when the rejected token is still the current one, so a caller holding an
+    /// old token can't wipe a session that was already refreshed by someone else.
+    /// Unlike `clearSession()`, this does not reset the UI auth `phase` — the user isn't
+    /// signing out; their server-side session just vanished.
+    func refreshSessionToken(rejecting rejectedToken: String) async -> String? {
+        if sessionToken == rejectedToken {
+            print("⚠️ AuthManager: Worker rejected the stored session token; minting a fresh anonymous session")
+            SecItemDelete([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: Self.keychainService
+            ] as CFDictionary)
+            sessionToken = nil
+            composioUserId = nil
+        }
+        return await ensureSessionToken()
+    }
+
     private func bootstrapAnonymousSession() async -> String? {
         do {
             let response: SessionResponse = try await post(path: "/auth/anonymous", body: [:])
