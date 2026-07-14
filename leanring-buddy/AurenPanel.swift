@@ -480,10 +480,11 @@ private struct SettingsPanel: View {
 
     private var shortcutsSection: some View {
         VStack(alignment: .leading, spacing: 9) {
-            PanelTitle("Shortcuts", subtitle: "Push-to-talk listens globally while Macky is running.")
+            PanelTitle("Shortcuts", subtitle: "Assistant push-to-talk and dictation share one global event tap.")
             HotkeySettingsView(companionManager: companionManager)
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .secondarySystemFill)))
+            DictationSettingsView(companionManager: companionManager)
         }
     }
 

@@ -92,6 +92,7 @@ struct FocusedEditCompletionBar: View {
     @EnvironmentObject var notch: NotchUIModel
     let presentation: FocusedEditPresentation
     let onUndo: () -> Void
+    let onCopy: () -> Void
 
     private var isFailure: Bool {
         presentation.kind == .safetyNotice
@@ -103,6 +104,8 @@ struct FocusedEditCompletionBar: View {
             return "Restored"
         case .safetyNotice:
             return "Couldn't edit"
+        case .copyAvailable:
+            return "Copy ready"
         case .textEdit, .terminalCommand:
             return "Done"
         }
@@ -132,7 +135,20 @@ struct FocusedEditCompletionBar: View {
                 .frame(width: metrics.bridgeWidth)
 
             Group {
-                if presentation.canUndo {
+                if presentation.canCopy {
+                    Button(action: onCopy) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: DS.Typography.compactStatus, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .frame(
+                                width: NotchConstants.focusedEditUndoButtonSize,
+                                height: NotchConstants.focusedEditUndoButtonSize
+                            )
+                            .background(Circle().fill(Color.white.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Copy dictated text")
+                } else if presentation.canUndo {
                     Button(action: onUndo) {
                         Image(systemName: "arrow.uturn.backward")
                             .font(.system(size: DS.Typography.compactStatus, weight: .semibold))

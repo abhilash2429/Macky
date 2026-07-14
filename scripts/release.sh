@@ -107,6 +107,20 @@ TAG="v${MARKETING_VERSION}"
 
 # ── Safety checks ────────────────────────────────────────────────────────────
 
+# Dictation release privacy is an AssemblyAI account-level configuration and
+# cannot be inferred from the app archive. Require the release operator to
+# explicitly attest that the production Worker is using the paid account with
+# streaming zero retention enabled before this script can publish a build.
+if [[ "${MACKY_DICTATION_RELEASE_PRIVACY_CONFIRMED:-}" != "true" ]]; then
+    echo ""
+    echo "❌ Dictation release privacy is not confirmed."
+    echo "   Enable AssemblyAI streaming zero-retention on the paid production account,"
+    echo "   deploy the Worker with DICTATION_PRIVACY_MODE=production and"
+    echo "   DICTATION_ZERO_RETENTION_CONFIRMED=true, then rerun with:"
+    echo "   MACKY_DICTATION_RELEASE_PRIVACY_CONFIRMED=true ./scripts/release.sh"
+    exit 1
+fi
+
 # Check if this tag already exists on GitHub to prevent accidental duplicates
 if gh release view "${TAG}" --repo "${GITHUB_REPO}" &>/dev/null; then
     echo ""

@@ -20,6 +20,7 @@ struct HotkeySettingsView: View {
     @State private var displayConfig: HotkeyConfiguration
     /// Largest set of modifiers held during the current recording session.
     @State private var capturedModifiers: NSEvent.ModifierFlags = []
+    @State private var recordingError: String?
     /// The local NSEvent monitor active only while recording.
     @State private var flagsMonitor: Any?
 
@@ -55,6 +56,10 @@ struct HotkeySettingsView: View {
 
             if isRecording {
                 recordingHint
+            } else if let recordingError {
+                Text(recordingError)
+                    .font(.system(size: DS.PanelTypography.size(10)))
+                    .foregroundColor(.red.opacity(0.9))
             }
         }
         .padding(.vertical, 4)
@@ -107,7 +112,7 @@ struct HotkeySettingsView: View {
     }
 
     private var recordingHint: some View {
-        Text("Hold a modifier combo (e.g. ctrl + option), then release to save.")
+        Text("Hold a modifier combo (e.g. ctrl + option), then release to save. ctrl + fn is reserved for dictation.")
             .font(.system(size: DS.PanelTypography.size(10)))
             .foregroundColor(DS.Colors.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
@@ -122,6 +127,7 @@ struct HotkeySettingsView: View {
     private func startRecording() {
         guard flagsMonitor == nil else { return }
         capturedModifiers = []
+        recordingError = nil
         isRecording = true
 
         // Local monitor: fires while the panel is the key window. We watch only
@@ -157,6 +163,10 @@ struct HotkeySettingsView: View {
 
         let newConfiguration = HotkeyConfiguration(modifierFlags: captured)
         guard !newConfiguration.modifierFlags.isEmpty else { return }
+        guard !HotkeyConfiguration.conflictsWithReservedDictationShortcut(newConfiguration.modifierFlags) else {
+            recordingError = "This chord conflicts with ctrl + fn dictation. Choose another assistant shortcut."
+            return
+        }
 
         newConfiguration.save()
         displayConfig = newConfiguration

@@ -128,6 +128,9 @@ final class CompanionManager: ObservableObject {
     )
 
     let buddyDictationManager = BuddyDictationManager()
+    /// Separate from the assistant audio session: Ctrl + Fn dictation captures a
+    /// target-safe text result and never asks RealtimeClient for a response.
+    let dictationCoordinator = DictationCoordinator()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let realtimeClient = RealtimeClient()
     let visualGuidanceOverlayController = VisualGuidanceOverlayController()
@@ -166,7 +169,7 @@ final class CompanionManager: ObservableObject {
     }
 
     var isAssistantActive: Bool {
-        voiceState != .idle || toolCallActive || operationState != .idle
+        voiceState != .idle || toolCallActive || operationState != .idle || dictationCoordinator.isActive
     }
 
     var activeStatusText: String {
@@ -202,6 +205,7 @@ final class CompanionManager: ObservableObject {
         observeAppActivation()
         observeConnectorConnected()
         bindAudioPowerLevel()
+        bindDictationCoordinator()
         bindShortcutTransitions()
         bindRealtimeClient()
         realtimeClient.connect()
@@ -210,6 +214,7 @@ final class CompanionManager: ObservableObject {
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
+        dictationCoordinator.cancel()
         realtimeClient.disconnect()
         pendingKeyboardShortcutStartTask?.cancel()
         shortcutTransitionCancellable?.cancel()
@@ -731,6 +736,26 @@ final class CompanionManager: ObservableObject {
         focusedEditPresentation = nil
     }
 
+    /// Copies a withheld dictation result only after the user explicitly presses
+    /// Copy in the notch. This is deliberately separate from insertion so a
+    /// focus change can never replace the new field or silently overwrite the
+    /// user's clipboard.
+    func copyFocusedEditText() {
+        guard let presentation = focusedEditPresentation,
+              presentation.canCopy,
+              let text = presentation.insertedText,
+              !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(text, forType: .string) else { return }
+        focusedEditPresentation = FocusedEditPresentation(
+            kind: .copyAvailable,
+            applicationName: presentation.applicationName,
+            summary: "Copied dictated text",
+            detail: "Paste it where you intend to use it.",
+            canUndo: false
+        )
+    }
+
     private func startPendingVisualGuidanceIfNeeded() {
         pendingVisualGuidanceStartTask?.cancel()
         pendingVisualGuidanceStartTask = nil
@@ -819,8 +844,30 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable = buddyDictationManager.$currentAudioPowerLevel
             .receive(on: DispatchQueue.main)
             .sink { [weak self] powerLevel in
-                self?.currentAudioPowerLevel = powerLevel
+                guard let self, !self.dictationCoordinator.isActive else { return }
+                self.currentAudioPowerLevel = powerLevel
             }
+    }
+
+    private func bindDictationCoordinator() {
+        dictationCoordinator.onFocusedEditPresentation = { [weak self] presentation in
+            self?.focusedEditPresentation = presentation
+        }
+
+        dictationCoordinator.$currentAudioPowerLevel
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] powerLevel in
+                guard let self, self.dictationCoordinator.isActive else { return }
+                self.currentAudioPowerLevel = powerLevel
+            }
+            .store(in: &realtimeActivityCancellables)
+
+        dictationCoordinator.$lifecycle
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] lifecycle in
+                self?.handleDictationLifecycle(lifecycle)
+            }
+            .store(in: &realtimeActivityCancellables)
     }
 
     private func bindShortcutTransitions() {
@@ -833,10 +880,11 @@ final class CompanionManager: ObservableObject {
 
     }
 
-    private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
+    private func handleShortcutTransition(_ transition: GlobalShortcutTransition) {
         switch transition {
-        case .pressed:
+        case .pressed(.assistant):
             guard !buddyDictationManager.isDictationInProgress else { return }
+            guard !dictationCoordinator.isActive else { return }
             foregroundAppContextForCurrentTurn = isForegroundAppContextEnabled
                 ? ForegroundAppContextProvider.capture()
                 : nil
@@ -864,7 +912,7 @@ final class CompanionManager: ObservableObject {
                     self.operationState = .error(error.localizedDescription)
                 }
             }
-        case .released:
+        case .released(.assistant):
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             if buddyDictationManager.stopRealtimeAudioStreaming() {
@@ -904,8 +952,37 @@ final class CompanionManager: ObservableObject {
                     operationState = .idle
                 }
             }
-        case .none:
-            break
+        case .pressed(.dictation):
+            guard !buddyDictationManager.isDictationInProgress,
+                  !dictationCoordinator.isActive else { return }
+            // Dictation never emits assistant speech or tool calls. Stop a prior
+            // response before microphone capture so speaker audio cannot bleed
+            // into this one-shot transcription path.
+            realtimeClient.interruptPlayback()
+            dictationCoordinator.begin()
+
+        case .released(.dictation):
+            dictationCoordinator.finish()
+        }
+    }
+
+    private func handleDictationLifecycle(_ lifecycle: DictationLifecycle) {
+        switch lifecycle {
+        case .preparingTarget, .connecting, .listening:
+            voiceState = .listening
+            operationState = .listening
+        case .finalizing:
+            voiceState = .processing
+            operationState = .thinking
+        case .error(let detail):
+            voiceState = .idle
+            operationState = .error(detail)
+        case .idle:
+            guard !buddyDictationManager.isDictationInProgress,
+                  !realtimeClient.isPlayingResponseAudio,
+                  !toolCallActive else { return }
+            voiceState = .idle
+            operationState = .idle
         }
     }
 

@@ -1,0 +1,812 @@
+//
+//  DictationCoordinator.swift
+//  leanring-buddy
+//
+//  Ctrl + Fn dictation is intentionally independent from the realtime assistant:
+//  it performs one target-safe ASR pass and one final insertion, never streams
+//  partial text into another app, invokes tools, or produces spoken output.
+//
+
+import AppKit
+import AVFoundation
+import Combine
+import Foundation
+
+enum DictationLifecycle: Equatable {
+    case idle
+    case preparingTarget
+    case connecting
+    case listening
+    case finalizing
+    case error(String)
+}
+
+@MainActor
+final class DictationCoordinator: ObservableObject {
+    private static let formattingModeDefaultsKey = "macky.dictation.formattingMode"
+    private static let glossaryDefaultsKey = "macky.dictation.glossary"
+    private static let maximumPreconnectionAudioBytes = 16_000 // 500 ms at PCM16 16 kHz mono.
+
+    @Published private(set) var lifecycle: DictationLifecycle = .idle
+    @Published private(set) var currentAudioPowerLevel: CGFloat = 0
+    @Published private(set) var lastErrorMessage: String?
+    @Published var formattingMode: DictationFormattingMode {
+        didSet { UserDefaults.standard.set(formattingMode.rawValue, forKey: Self.formattingModeDefaultsKey) }
+    }
+    @Published var glossaryText: String {
+        didSet { UserDefaults.standard.set(glossaryText, forKey: Self.glossaryDefaultsKey) }
+    }
+
+    var isActive: Bool {
+        switch lifecycle {
+        case .idle, .error: return false
+        case .preparingTarget, .connecting, .listening, .finalizing: return true
+        }
+    }
+
+    var statusText: String {
+        switch lifecycle {
+        case .idle: return ""
+        case .preparingTarget: return "Checking field"
+        case .connecting: return "Connecting dictation"
+        case .listening: return "Dictating"
+        case .finalizing: return "Finalizing dictation"
+        case .error: return "Dictation needs attention"
+        }
+    }
+
+    var onFocusedEditPresentation: ((FocusedEditPresentation) -> Void)?
+
+    private let targetIntegration: DictationTargetIntegration
+    private let audioCapture: DictationAudioCapture
+    private let transcriber: DictationTranscriber
+    private let urlSession: URLSession
+
+    private var preparedTarget: DictationTargetPreparation?
+    private var startTask: Task<Void, Never>?
+    private var connectionTask: Task<Void, Never>?
+    private var finalizationTask: Task<Void, Never>?
+    private var bufferedAudioChunks: [Data] = []
+    private var bufferedAudioByteCount = 0
+    private var capturedAudioByteCount = 0
+    private var didDetectAudibleSpeech = false
+    private var transcriberReady = false
+    private var releaseRequested = false
+    private var releaseDate: Date?
+    /// Every asynchronous path carries this identifier. Cancelling a dictation
+    /// must never let a late socket or audio error alter the next held shortcut.
+    private var activeDictationID: UUID?
+
+    init(
+        targetIntegration: DictationTargetIntegration = DictationTargetIntegration(),
+        audioCapture: DictationAudioCapture = DictationAudioCapture(),
+        transcriber: DictationTranscriber = AssemblyAIDictationTranscriber()
+    ) {
+        self.targetIntegration = targetIntegration
+        self.audioCapture = audioCapture
+        self.transcriber = transcriber
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = true
+        self.urlSession = URLSession(configuration: configuration)
+        self.formattingMode = DictationFormattingMode(
+            rawValue: UserDefaults.standard.string(forKey: Self.formattingModeDefaultsKey) ?? ""
+        ) ?? .literal
+        self.glossaryText = UserDefaults.standard.string(forKey: Self.glossaryDefaultsKey) ?? ""
+    }
+
+    func begin() {
+        guard lifecycle == .idle else { return }
+        let dictationID = UUID()
+        activeDictationID = dictationID
+        lastErrorMessage = nil
+        lifecycle = .preparingTarget
+        releaseRequested = false
+        releaseDate = nil
+        bufferedAudioChunks = []
+        bufferedAudioByteCount = 0
+        capturedAudioByteCount = 0
+        didDetectAudibleSpeech = false
+        transcriberReady = false
+
+        startTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let target = try await self.targetIntegration.prepareTarget()
+                guard !Task.isCancelled,
+                      self.isCurrentDictation(dictationID),
+                      self.lifecycle == .preparingTarget else { return }
+                self.preparedTarget = target
+                try await self.audioCapture.start(
+                    onPCM16Chunk: { [weak self] data in
+                        DispatchQueue.main.async {
+                            guard let self, self.isCurrentDictation(dictationID) else { return }
+                            self.handleCapturedAudio(data)
+                        }
+                    },
+                    onAudioPower: { [weak self] power in
+                        DispatchQueue.main.async {
+                            guard let self, self.isCurrentDictation(dictationID) else { return }
+                            self.currentAudioPowerLevel = power
+                            if power >= 0.015 { self.didDetectAudibleSpeech = true }
+                        }
+                    }
+                )
+                guard !Task.isCancelled, self.isCurrentDictation(dictationID) else { return }
+                self.lifecycle = .connecting
+                self.openTranscriptionConnection(for: target, dictationID: dictationID)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, self.isCurrentDictation(dictationID) else { return }
+                self.finishWithError(error.localizedDescription, offerCopyText: nil, dictationID: dictationID)
+            }
+        }
+    }
+
+    func finish() {
+        guard lifecycle != .idle else { return }
+        guard let dictationID = activeDictationID else {
+            cancel()
+            return
+        }
+        releaseRequested = true
+        releaseDate = Date()
+        _ = audioCapture.stop()
+        currentAudioPowerLevel = 0
+
+        if lifecycle == .preparingTarget {
+            // No target was validated, so no audio can have started. Cancel before
+            // any provider connection is opened.
+            cancel()
+            return
+        }
+        guard capturedAudioByteCount > 0, didDetectAudibleSpeech else {
+            connectionTask?.cancel()
+            transcriber.cancel()
+            targetIntegration.discardPreparation()
+            finishWithoutInsertion(dictationID: dictationID)
+            return
+        }
+        guard transcriberReady else {
+            // Audio is never forwarded after Ctrl + Fn is released. If the
+            // on-demand provider handshake did not finish while held, discard the
+            // local preconnection buffer rather than sending delayed microphone data.
+            connectionTask?.cancel()
+            transcriber.cancel()
+            targetIntegration.discardPreparation()
+            finishWithoutInsertion(dictationID: dictationID)
+            return
+        }
+        finalizeTranscription(dictationID: dictationID)
+    }
+
+    func cancel() {
+        // Invalidate first so cancellation continuations from this dictation
+        // cannot publish an error into a later one.
+        activeDictationID = nil
+        startTask?.cancel()
+        connectionTask?.cancel()
+        finalizationTask?.cancel()
+        startTask = nil
+        connectionTask = nil
+        finalizationTask = nil
+        _ = audioCapture.stop()
+        transcriber.cancel()
+        targetIntegration.discardPreparation()
+        finishWithoutInsertion()
+    }
+
+    private func openTranscriptionConnection(
+        for target: DictationTargetPreparation,
+        dictationID: UUID
+    ) {
+        let configuration = DictationTranscriptionConfiguration(
+            keyterms: DictationGlossary.keyterms(from: glossaryText),
+            surfaceKind: target.surfaceKind,
+            formattingMode: formattingMode
+        )
+        connectionTask?.cancel()
+        connectionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.transcriber.start(configuration: configuration)
+                guard !Task.isCancelled,
+                      self.isCurrentDictation(dictationID),
+                      self.preparedTarget == target else { return }
+                self.transcriberReady = true
+                self.flushBufferedAudio()
+                if self.releaseRequested {
+                    self.finalizeTranscription(dictationID: dictationID)
+                } else {
+                    self.lifecycle = .listening
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, self.isCurrentDictation(dictationID) else { return }
+                self.finishWithError(error.localizedDescription, offerCopyText: nil, dictationID: dictationID)
+            }
+        }
+    }
+
+    private func handleCapturedAudio(_ pcm16Chunk: Data) {
+        guard lifecycle == .connecting || lifecycle == .listening || lifecycle == .finalizing else { return }
+        guard !pcm16Chunk.isEmpty else { return }
+        capturedAudioByteCount += pcm16Chunk.count
+        if transcriberReady {
+            transcriber.sendAudio(pcm16Chunk)
+        } else {
+            bufferedAudioChunks.append(pcm16Chunk)
+            bufferedAudioByteCount += pcm16Chunk.count
+            while bufferedAudioByteCount > Self.maximumPreconnectionAudioBytes,
+                  let discarded = bufferedAudioChunks.first {
+                bufferedAudioChunks.removeFirst()
+                bufferedAudioByteCount -= discarded.count
+            }
+        }
+    }
+
+    private func flushBufferedAudio() {
+        for chunk in bufferedAudioChunks {
+            transcriber.sendAudio(chunk)
+        }
+        bufferedAudioChunks = []
+        bufferedAudioByteCount = 0
+    }
+
+    private func finalizeTranscription(dictationID: UUID) {
+        guard finalizationTask == nil, isCurrentDictation(dictationID) else { return }
+        lifecycle = .finalizing
+        finalizationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let transcription = try await self.transcriber.finish()
+                guard !Task.isCancelled,
+                      self.isCurrentDictation(dictationID),
+                      let target = self.preparedTarget else { return }
+                try await self.insertFinalTranscription(
+                    transcription,
+                    into: target,
+                    dictationID: dictationID
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, self.isCurrentDictation(dictationID) else { return }
+                self.finishWithError(error.localizedDescription, offerCopyText: nil, dictationID: dictationID)
+            }
+        }
+    }
+
+    private func insertFinalTranscription(
+        _ transcription: DictationTranscription,
+        into target: DictationTargetPreparation,
+        dictationID: UUID
+    ) async throws {
+        guard isCurrentDictation(dictationID) else { return }
+        let polishStartedAt = Date()
+        let insertionText: String
+        if formattingMode == .smart {
+            do {
+                insertionText = try await requestSmartPolish(transcription.text, target: target)
+                guard isCurrentDictation(dictationID) else { return }
+            } catch {
+                guard !Task.isCancelled, isCurrentDictation(dictationID) else { return }
+                finishWithError(
+                    "Smart dictation polish failed. Macky did not insert text.",
+                    offerCopyText: transcription.text,
+                    dictationID: dictationID
+                )
+                return
+            }
+        } else {
+            insertionText = LocalDictationFormatter.format(
+                transcript: transcription.text,
+                mode: formattingMode,
+                surfaceKind: target.surfaceKind
+            )
+        }
+        let polishMilliseconds = formattingMode == .smart
+            ? Int(Date().timeIntervalSince(polishStartedAt) * 1_000)
+            : 0
+        guard isCurrentDictation(dictationID) else { return }
+        guard !insertionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            finishWithError("Macky did not hear text to insert.", offerCopyText: nil, dictationID: dictationID)
+            return
+        }
+
+        let insertionStartedAt = Date()
+        do {
+            let presentation = try await targetIntegration.insertFinalText(insertionText)
+            guard isCurrentDictation(dictationID) else { return }
+            let insertionMilliseconds = Int(Date().timeIntervalSince(insertionStartedAt) * 1_000)
+            let totalMilliseconds = releaseDate.map { Int(Date().timeIntervalSince($0) * 1_000) } ?? 0
+            MackyAnalytics.dictationOutcome(
+                surfaceKind: target.surfaceKind,
+                formattingMode: formattingMode,
+                outcome: "inserted"
+            )
+            MackyAnalytics.dictationTiming(
+                asrFinalizationMilliseconds: transcription.asrFinalizationMilliseconds,
+                workerConnectionMilliseconds: transcription.workerConnectionMilliseconds,
+                polishMilliseconds: polishMilliseconds,
+                insertionMilliseconds: insertionMilliseconds,
+                totalMilliseconds: totalMilliseconds
+            )
+            onFocusedEditPresentation?(presentation)
+            finishWithoutInsertion(dictationID: dictationID)
+        } catch {
+            guard !Task.isCancelled, isCurrentDictation(dictationID) else { return }
+            MackyAnalytics.dictationOutcome(
+                surfaceKind: target.surfaceKind,
+                formattingMode: formattingMode,
+                outcome: "copy_offered"
+            )
+            finishWithError(error.localizedDescription, offerCopyText: insertionText, dictationID: dictationID)
+        }
+    }
+
+    private func requestSmartPolish(
+        _ transcript: String,
+        target: DictationTargetPreparation
+    ) async throws -> String {
+        guard let sessionToken = await AuthManager.shared.ensureSessionToken() else {
+            throw DictationCoordinatorError.noWorkerSession
+        }
+        let requestBody = try JSONSerialization.data(withJSONObject: [
+            "transcript": transcript,
+            "surface_kind": target.surfaceKind.rawValue,
+            "formatting_mode": DictationFormattingMode.smart.rawValue,
+            "has_selection": target.hasSelection,
+            "is_terminal": target.isTerminal,
+        ])
+        let (payload, statusCode) = try await sendSmartPolishRequest(requestBody, sessionToken: sessionToken)
+        if statusCode == 401,
+           let refreshedToken = await AuthManager.shared.refreshSessionToken(rejecting: sessionToken),
+           refreshedToken != sessionToken {
+            let retry = try await sendSmartPolishRequest(requestBody, sessionToken: refreshedToken)
+            return try smartPolishText(from: retry.payload, statusCode: retry.statusCode)
+        }
+        return try smartPolishText(from: payload, statusCode: statusCode)
+    }
+
+    private func sendSmartPolishRequest(
+        _ body: Data,
+        sessionToken: String
+    ) async throws -> (payload: [String: Any]?, statusCode: Int) {
+        var request = URLRequest(url: WorkerEndpoints.dictationPolishURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 12
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = body
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw DictationCoordinatorError.invalidWorkerResponse
+        }
+        return ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any], httpResponse.statusCode)
+    }
+
+    private func smartPolishText(from payload: [String: Any]?, statusCode: Int) throws -> String {
+        guard (200...299).contains(statusCode),
+              let text = payload?["text"] as? String,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DictationCoordinatorError.smartPolishUnavailable
+        }
+        return text
+    }
+
+    private func finishWithError(
+        _ detail: String,
+        offerCopyText: String?,
+        dictationID: UUID? = nil
+    ) {
+        if let dictationID, !isCurrentDictation(dictationID) { return }
+        let errorDictationID = activeDictationID
+        let presentation: FocusedEditPresentation
+        if let offerCopyText, !offerCopyText.isEmpty {
+            presentation = FocusedEditPresentation(
+                kind: .copyAvailable,
+                applicationName: preparedTarget?.applicationName ?? "the previous focused app",
+                insertedText: offerCopyText,
+                summary: "Dictation is ready to copy",
+                detail: "\(detail) Macky did not change the newly focused field.",
+                canUndo: false,
+                canCopy: true
+            )
+        } else {
+            presentation = FocusedEditPresentation(
+                kind: .safetyNotice,
+                applicationName: preparedTarget?.applicationName ?? "the focused app",
+                summary: "Macky did not type anything",
+                detail: detail,
+                canUndo: false
+            )
+        }
+        MackyAnalytics.dictationOutcome(
+            surfaceKind: preparedTarget?.surfaceKind ?? .generic,
+            formattingMode: formattingMode,
+            outcome: offerCopyText == nil ? "failed" : "copy_offered"
+        )
+        onFocusedEditPresentation?(presentation)
+        lastErrorMessage = detail
+        targetIntegration.discardPreparation()
+        transcriber.cancel()
+        lifecycle = .error(detail)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self,
+                  let errorDictationID,
+                  self.isCurrentDictation(errorDictationID),
+                  case .error = self.lifecycle else { return }
+            self.finishWithoutInsertion(dictationID: errorDictationID)
+        }
+    }
+
+    private func finishWithoutInsertion(dictationID: UUID? = nil) {
+        if let dictationID, !isCurrentDictation(dictationID) { return }
+        startTask = nil
+        connectionTask = nil
+        finalizationTask = nil
+        preparedTarget = nil
+        bufferedAudioChunks = []
+        bufferedAudioByteCount = 0
+        capturedAudioByteCount = 0
+        didDetectAudibleSpeech = false
+        transcriberReady = false
+        releaseRequested = false
+        releaseDate = nil
+        currentAudioPowerLevel = 0
+        activeDictationID = nil
+        lifecycle = .idle
+    }
+
+    private func isCurrentDictation(_ dictationID: UUID) -> Bool {
+        activeDictationID == dictationID
+    }
+}
+
+@MainActor
+final class AssemblyAIDictationTranscriber: DictationTranscriber {
+    private let urlSession: URLSession
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var receiveTask: Task<Void, Never>?
+    private var beginContinuation: CheckedContinuation<Void, Error>?
+    private var finishContinuation: CheckedContinuation<DictationTranscription, Error>?
+    private var finalTurns: [Int: String] = [:]
+    private var workerConnectionStartedAt: Date?
+    private var workerConnectionMilliseconds = 0
+    private var finalizationStartedAt: Date?
+    private var didRequestTermination = false
+    private var didReceiveBegin = false
+    private var terminalResult: Result<DictationTranscription, Error>?
+    private var audioSendTail: Task<Void, Never>?
+    private var acceptsAudio = false
+
+    init() {
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = true
+        self.urlSession = URLSession(configuration: configuration)
+    }
+
+    func start(configuration: DictationTranscriptionConfiguration) async throws {
+        guard webSocketTask == nil else { throw DictationCoordinatorError.transcriberAlreadyStarted }
+        guard let sessionToken = await AuthManager.shared.ensureSessionToken() else {
+            throw DictationCoordinatorError.noWorkerSession
+        }
+
+        finalTurns = [:]
+        workerConnectionMilliseconds = 0
+        finalizationStartedAt = nil
+        didRequestTermination = false
+        didReceiveBegin = false
+        terminalResult = nil
+        acceptsAudio = false
+        audioSendTail = nil
+
+        var request = URLRequest(url: WorkerEndpoints.dictationAssemblyAIURL)
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        let task = urlSession.webSocketTask(with: request)
+        webSocketTask = task
+        workerConnectionStartedAt = Date()
+        task.resume()
+        receiveTask = Task { [weak self] in
+            guard let self else { return }
+            await self.receiveMessages()
+        }
+
+        let startMessage = try JSONSerialization.data(withJSONObject: [
+            "type": "dictation.start",
+            "keyterms": configuration.keyterms,
+            "surface_kind": configuration.surfaceKind.rawValue,
+            "formatting_mode": configuration.formattingMode.rawValue,
+        ])
+        guard let startText = String(data: startMessage, encoding: .utf8) else {
+            throw DictationCoordinatorError.invalidWorkerResponse
+        }
+        try await task.send(.string(startText))
+        try await awaitBegin()
+        acceptsAudio = true
+    }
+
+    func sendAudio(_ pcm16Chunk: Data) {
+        guard let webSocketTask, acceptsAudio, !didRequestTermination, !pcm16Chunk.isEmpty else { return }
+        let previousTail = audioSendTail
+        audioSendTail = Task { [weak self] in
+            _ = await previousTail?.value
+            guard let self, self.acceptsAudio, !self.didRequestTermination else { return }
+            do {
+                try await webSocketTask.send(.data(pcm16Chunk))
+            } catch {
+                self.fail(error)
+            }
+        }
+    }
+
+    func finish() async throws -> DictationTranscription {
+        guard let webSocketTask else { throw DictationCoordinatorError.transcriberUnavailable }
+        guard !didRequestTermination else { throw DictationCoordinatorError.transcriberAlreadyFinalizing }
+        acceptsAudio = false
+        if let audioSendTail {
+            await audioSendTail.value
+        }
+        didRequestTermination = true
+        finalizationStartedAt = Date()
+        try await webSocketTask.send(.string("{\"type\":\"Terminate\"}"))
+        return try await awaitTermination()
+    }
+
+    func cancel() {
+        acceptsAudio = false
+        audioSendTail?.cancel()
+        audioSendTail = nil
+        if let webSocketTask, !didRequestTermination {
+            didRequestTermination = true
+            Task { try? await webSocketTask.send(.string("{\"type\":\"Terminate\"}")) }
+        }
+        receiveTask?.cancel()
+        receiveTask = nil
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        beginContinuation?.resume(throwing: CancellationError())
+        finishContinuation?.resume(throwing: CancellationError())
+        beginContinuation = nil
+        finishContinuation = nil
+        finalTurns = [:]
+        didRequestTermination = false
+        didReceiveBegin = false
+        terminalResult = .failure(CancellationError())
+    }
+
+    private func awaitBegin() async throws {
+        if didReceiveBegin { return }
+        if let terminalResult {
+            _ = try terminalResult.get()
+            return
+        }
+        try await withCheckedThrowingContinuation { continuation in
+            beginContinuation = continuation
+        }
+    }
+
+    private func awaitTermination() async throws -> DictationTranscription {
+        if let terminalResult {
+            return try terminalResult.get()
+        }
+        try await withCheckedThrowingContinuation { continuation in
+            finishContinuation = continuation
+        }
+    }
+
+    private func receiveMessages() async {
+        do {
+            while let webSocketTask {
+                let message = try await webSocketTask.receive()
+                switch message {
+                case .string(let text): handleProviderMessage(text)
+                case .data: continue
+                @unknown default: continue
+                }
+            }
+        } catch {
+            fail(error)
+        }
+    }
+
+    private func handleProviderMessage(_ text: String) {
+        guard let data = text.data(using: .utf8),
+              let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = message["type"] as? String else {
+            fail(DictationCoordinatorError.invalidWorkerResponse)
+            return
+        }
+
+        switch type {
+        case "Begin":
+            let configuredModel = ((message["configuration"] as? [String: Any])?["model"] as? String) ?? ""
+            guard configuredModel == "universal-3-5-pro" else {
+                fail(DictationCoordinatorError.unexpectedTranscriptionModel)
+                return
+            }
+            if let workerConnectionStartedAt {
+                workerConnectionMilliseconds = Int(Date().timeIntervalSince(workerConnectionStartedAt) * 1_000)
+            }
+            didReceiveBegin = true
+            beginContinuation?.resume()
+            beginContinuation = nil
+
+        case "Turn":
+            let isFinal = message["end_of_turn"] as? Bool ?? false
+            let isFormatted = message["turn_is_formatted"] as? Bool ?? false
+            guard isFinal, isFormatted,
+                  let turnOrder = (message["turn_order"] as? NSNumber)?.intValue,
+                  let transcript = message["transcript"] as? String,
+                  !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            finalTurns[turnOrder] = transcript
+
+        case "Termination":
+            let finalText = finalTurns
+                .sorted { $0.key < $1.key }
+                .map(\.value)
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !finalText.isEmpty else {
+                fail(DictationCoordinatorError.emptyTranscription)
+                return
+            }
+            let finalizationMilliseconds = finalizationStartedAt.map {
+                Int(Date().timeIntervalSince($0) * 1_000)
+            } ?? 0
+            let providerSessionMilliseconds = (message["session_duration_seconds"] as? NSNumber)
+                .map { $0.intValue * 1_000 }
+            let transcription = DictationTranscription(
+                text: finalText,
+                asrFinalizationMilliseconds: finalizationMilliseconds,
+                workerConnectionMilliseconds: workerConnectionMilliseconds,
+                providerSessionMilliseconds: providerSessionMilliseconds
+            )
+            terminalResult = .success(transcription)
+            acceptsAudio = false
+            finishContinuation?.resume(returning: transcription)
+            finishContinuation = nil
+            webSocketTask = nil
+
+        case "Error":
+            fail(DictationCoordinatorError.transcriptionFailed)
+
+        default:
+            break
+        }
+    }
+
+    private func fail(_ error: Error) {
+        guard terminalResult == nil else { return }
+        terminalResult = .failure(error)
+        acceptsAudio = false
+        audioSendTail?.cancel()
+        audioSendTail = nil
+        beginContinuation?.resume(throwing: error)
+        finishContinuation?.resume(throwing: error)
+        beginContinuation = nil
+        finishContinuation = nil
+        receiveTask?.cancel()
+        receiveTask = nil
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+    }
+}
+
+@MainActor
+final class DictationAudioCapture {
+    private let audioEngine = AVAudioEngine()
+    private var converter: BuddyPCM16AudioConverter?
+    private var onPCM16Chunk: ((Data) -> Void)?
+    private var onAudioPower: ((CGFloat) -> Void)?
+
+    func start(
+        onPCM16Chunk: @escaping (Data) -> Void,
+        onAudioPower: @escaping (CGFloat) -> Void
+    ) async throws {
+        guard self.onPCM16Chunk == nil else { return }
+        guard await requestMicrophonePermissionIfNeeded() else {
+            throw DictationCoordinatorError.microphonePermissionDenied
+        }
+        self.onPCM16Chunk = onPCM16Chunk
+        self.onAudioPower = onAudioPower
+        let converter = BuddyPCM16AudioConverter(targetSampleRate: 16_000)
+        self.converter = converter
+
+        let inputNode = audioEngine.inputNode
+        do {
+            try inputNode.setVoiceProcessingEnabled(true)
+        } catch {
+            // Voice processing is best-effort. Some devices/routes reject it;
+            // dictation still uses raw mono PCM16 rather than failing capture.
+        }
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+        inputNode.removeTap(onBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 800, format: inputFormat) { [weak self] buffer, _ in
+            guard let self else { return }
+            if let data = converter.convertToPCM16Data(from: buffer), !data.isEmpty {
+                self.onPCM16Chunk?(data)
+            }
+            self.onAudioPower?(Self.audioPower(from: buffer))
+        }
+        audioEngine.prepare()
+        try audioEngine.start()
+    }
+
+    @discardableResult
+    func stop() -> Bool {
+        guard onPCM16Chunk != nil else { return false }
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        onPCM16Chunk = nil
+        onAudioPower = nil
+        converter = nil
+        return true
+    }
+
+    private func requestMicrophonePermissionIfNeeded() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                AVCaptureDevice.requestAccess(for: .audio) { continuation.resume(returning: $0) }
+            }
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private static func audioPower(from buffer: AVAudioPCMBuffer) -> CGFloat {
+        guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
+        var sum: Float = 0
+        for index in 0..<Int(buffer.frameLength) {
+            sum += samples[index] * samples[index]
+        }
+        return min(max(CGFloat(sqrt(sum / Float(buffer.frameLength)) * 10), 0), 1)
+    }
+}
+
+private enum DictationCoordinatorError: LocalizedError {
+    case noWorkerSession
+    case invalidWorkerResponse
+    case smartPolishUnavailable
+    case transcriberAlreadyStarted
+    case transcriberUnavailable
+    case transcriberAlreadyFinalizing
+    case unexpectedTranscriptionModel
+    case transcriptionFailed
+    case emptyTranscription
+    case microphonePermissionDenied
+
+    var errorDescription: String? {
+        switch self {
+        case .noWorkerSession:
+            return "Macky could not start its authenticated dictation session."
+        case .invalidWorkerResponse:
+            return "The dictation service returned an invalid response."
+        case .smartPolishUnavailable:
+            return "Smart dictation polish is unavailable."
+        case .transcriberAlreadyStarted:
+            return "A dictation transcription session is already running."
+        case .transcriberUnavailable:
+            return "The dictation transcription session did not start."
+        case .transcriberAlreadyFinalizing:
+            return "Dictation is already finalizing."
+        case .unexpectedTranscriptionModel:
+            return "The dictation provider did not start the requested accuracy model."
+        case .transcriptionFailed:
+            return "Dictation transcription failed before a final result was available."
+        case .emptyTranscription:
+            return "Macky did not hear text to insert."
+        case .microphonePermissionDenied:
+            return "Microphone permission is required for dictation."
+        }
+    }
+}

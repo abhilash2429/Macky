@@ -1,5 +1,9 @@
 export interface Env {
   AZURE_OPENAI_API_KEY: string;
+  // Used only by the on-demand AssemblyAI dictation proxy. This secret never
+  // reaches the macOS app; each held Ctrl + Fn dictation opens one short-lived
+  // upstream streaming session and explicitly terminates it on release.
+  ASSEMBLYAI_API_KEY: string;
   COMPOSIO_API_KEY: string;
   // Pending magic-link tokens: token -> email, 15-minute TTL.
   AUTH_TOKENS: KVNamespace;
@@ -27,6 +31,14 @@ export interface Env {
   // Reasoning effort for the canvas-vision model. "medium" balances coordinate
   // precision against the 15-45s latency of "high"; unset/invalid falls back to "medium".
   CANVAS_VISION_REASONING_EFFORT?: string;
+  // Azure deployment used only when the user explicitly selects Smart dictation
+  // polishing. Literal and Clean modes never call Azure.
+  DICTATION_POLISH_MODEL?: string;
+  // Development-only acknowledgement. AssemblyAI zero retention is an account
+  // setting, not an API request option; production deployment must flip this
+  // flag only after the paid-account opt-out is configured.
+  DICTATION_PRIVACY_MODE?: string;
+  DICTATION_ZERO_RETENTION_CONFIRMED?: string;
 }
 
 const DEFAULT_SESSION_ID = "default";
@@ -180,6 +192,14 @@ export default {
 
     if (url.pathname === "/canvas-vision" && request.method === "POST") {
       return handleCanvasVision(request, env);
+    }
+
+    if (url.pathname === "/dictation/assemblyai") {
+      return handleAssemblyAIDictationProxy(request, env);
+    }
+
+    if (url.pathname === "/dictation/polish" && request.method === "POST") {
+      return handleDictationPolish(request, env);
     }
 
     if (url.pathname === "/session/state" && request.method === "GET") {
@@ -636,6 +656,385 @@ async function startPlayback(
 /// Success: { canvas_payload: "<sequence JSON string>", error: null }
 /// Failure: { canvas_payload: null, error: "<reason>" }. Request/auth failures use their
 ///          corresponding HTTP status; upstream model/validation failures remain structured.
+type DictationSurfaceKind = "email" | "chat" | "document" | "code" | "terminal" | "generic";
+
+interface DictationStartMessage {
+  type: "dictation.start";
+  keyterms: string[];
+  surfaceKind: DictationSurfaceKind;
+  formattingMode: "literal" | "clean" | "smart";
+}
+
+const assemblyAIStreamingTokenLifetimeSeconds = 60;
+const assemblyAIDictationMaximumSessionSeconds = 120;
+
+/// Opens one AssemblyAI session per held dictation. `/realtime` deliberately stays
+/// a byte-forwarding Azure proxy; this separate route owns the explicit
+/// `Terminate` lifecycle required by AssemblyAI's per-open-session billing.
+async function handleAssemblyAIDictationProxy(request: Request, env: Env): Promise<Response> {
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return new Response("Expected WebSocket upgrade", { status: 426 });
+  }
+  if (!env.ASSEMBLYAI_API_KEY) {
+    return new Response("Dictation transcription is not configured", { status: 503 });
+  }
+  if (env.DICTATION_PRIVACY_MODE === "production" && env.DICTATION_ZERO_RETENTION_CONFIRMED !== "true") {
+    // Zero retention is configured at the AssemblyAI account level. This route
+    // refuses a production label until a deployment operator has performed that
+    // account-level release check instead of implying an API flag can enforce it.
+    return new Response("AssemblyAI production privacy configuration is not verified", { status: 503 });
+  }
+  if (!(await resolveSession(request, env))) {
+    return new Response("Missing or invalid session", { status: 401 });
+  }
+
+  const pair = new (globalThis as any).WebSocketPair();
+  const clientSocket = pair[0] as WebSocket;
+  const workerSocket = pair[1] as WebSocket;
+  workerSocket.accept();
+
+  let upstreamSocket: WebSocket | undefined;
+  let isStarting = false;
+  let isClosed = false;
+  let isTerminationRequested = false;
+  let isTerminationForwarded = false;
+  let startDeadline: ReturnType<typeof setTimeout> | undefined;
+  let terminationDeadline: ReturnType<typeof setTimeout> | undefined;
+
+  const clearDeadlines = () => {
+    if (startDeadline) clearTimeout(startDeadline);
+    if (terminationDeadline) clearTimeout(terminationDeadline);
+    startDeadline = undefined;
+    terminationDeadline = undefined;
+  };
+
+  const closeBoth = (code = 1000, reason = "") => {
+    if (isClosed) return;
+    isClosed = true;
+    clearDeadlines();
+    try { workerSocket.close(code, reason); } catch {}
+    try { upstreamSocket?.close(code, reason); } catch {}
+  };
+
+  const sendWorkerError = (error: string) => {
+    if (isClosed) return;
+    try { workerSocket.send(JSON.stringify({ type: "Error", error })); } catch {}
+  };
+
+  const terminateUpstream = () => {
+    if (!upstreamSocket || isTerminationForwarded || isClosed) {
+      closeBoth();
+      return;
+    }
+    isTerminationForwarded = true;
+    try {
+      upstreamSocket.send(JSON.stringify({ type: "Terminate" }));
+    } catch {
+      closeBoth();
+      return;
+    }
+
+    // The provider normally follows `Terminate` with final Turn data and a
+    // `Termination` message. Do not leave a session billable if that exchange is
+    // interrupted; without a verified final transcript the macOS client inserts
+    // nothing and offers its safe Copy path instead.
+    terminationDeadline = setTimeout(() => closeBoth(1001, "dictation termination timed out"), 4_000);
+  };
+
+  const openUpstream = async (start: DictationStartMessage) => {
+    try {
+      if (!isAssemblyAIUpstreamOpeningAllowed(isClosed, isTerminationRequested)) {
+        closeBoth();
+        return;
+      }
+      const streamingToken = await createAssemblyAIStreamingToken(env);
+      // Release can arrive while the temporary-token request is in flight. Do
+      // not open an upstream socket after that release: AssemblyAI bills from
+      // socket open time, including silence.
+      if (!isAssemblyAIUpstreamOpeningAllowed(isClosed, isTerminationRequested)) {
+        closeBoth();
+        return;
+      }
+
+      const upstreamURL = new URL("https://streaming.assemblyai.com/v3/ws");
+      upstreamURL.searchParams.set("sample_rate", "16000");
+      upstreamURL.searchParams.set("speech_model", "universal-3-5-pro");
+      upstreamURL.searchParams.set("mode", "balanced");
+      upstreamURL.searchParams.set("token", streamingToken);
+      upstreamURL.searchParams.set("prompt", assemblyAIDictationPrompt(start.surfaceKind));
+      if (start.keyterms.length > 0) {
+        upstreamURL.searchParams.set("keyterms_prompt", JSON.stringify(start.keyterms));
+      }
+
+      const upstreamResponse = await fetch(upstreamURL.toString(), {
+        headers: { Upgrade: "websocket" },
+      });
+      if (upstreamResponse.status !== 101) {
+        sendWorkerError("AssemblyAI streaming connection was rejected");
+        closeBoth(1011, "AssemblyAI streaming connection rejected");
+        return;
+      }
+
+      const socket = (upstreamResponse as any).webSocket as WebSocket | undefined;
+      if (!socket) {
+        sendWorkerError("AssemblyAI did not return a streaming socket");
+        closeBoth(1011, "AssemblyAI streaming socket unavailable");
+        return;
+      }
+
+      upstreamSocket = socket;
+      socket.accept();
+      socket.addEventListener("message", (event: MessageEvent) => {
+        try {
+          // The Worker never parses or logs transcript content. It forwards the
+          // provider's text/binary frames unchanged to the authenticated app.
+          workerSocket.send(event.data);
+        } catch {
+          terminateUpstream();
+        }
+      });
+      socket.addEventListener("close", (event: CloseEvent) => closeBoth(event.code, event.reason));
+      socket.addEventListener("error", () => {
+        sendWorkerError("AssemblyAI streaming connection failed");
+        closeBoth(1011, "AssemblyAI streaming connection failed");
+      });
+
+      if (isTerminationRequested) terminateUpstream();
+    } catch {
+      if (isTerminationRequested) {
+        closeBoth();
+        return;
+      }
+      sendWorkerError("AssemblyAI streaming connection failed");
+      closeBoth(1011, "AssemblyAI streaming connection failed");
+    }
+  };
+
+  workerSocket.addEventListener("message", (event: MessageEvent) => {
+    if (isClosed) return;
+
+    if (!isStarting) {
+      const start = parseDictationStartMessage(event.data);
+      if (!start) {
+        sendWorkerError("Dictation must begin with valid local configuration");
+        closeBoth(1008, "invalid dictation configuration");
+        return;
+      }
+      isStarting = true;
+      if (startDeadline) clearTimeout(startDeadline);
+      void openUpstream(start);
+      return;
+    }
+
+    if (!upstreamSocket) {
+      if (isTerminateMessage(event.data)) isTerminationRequested = true;
+      return;
+    }
+
+    if (isTerminateMessage(event.data)) {
+      isTerminationRequested = true;
+      terminateUpstream();
+      return;
+    }
+    try {
+      upstreamSocket.send(event.data);
+    } catch {
+      closeBoth(1011, "could not forward dictation audio");
+    }
+  });
+
+  workerSocket.addEventListener("close", () => terminateUpstream());
+  workerSocket.addEventListener("error", () => terminateUpstream());
+
+  // A client that opens the route but never sends a local target-safe start
+  // message never creates an AssemblyAI session and therefore never incurs ASR cost.
+  startDeadline = setTimeout(() => closeBoth(1008, "dictation start timed out"), 5_000);
+
+  return new Response(null, { status: 101, webSocket: clientSocket } as any);
+}
+
+export function isAssemblyAIUpstreamOpeningAllowed(
+  isClosed: boolean,
+  isTerminationRequested: boolean,
+): boolean {
+  return !isClosed && !isTerminationRequested;
+}
+
+async function createAssemblyAIStreamingToken(env: Env): Promise<string> {
+  const tokenURL = new URL("https://streaming.assemblyai.com/v3/token");
+  tokenURL.searchParams.set("expires_in_seconds", String(assemblyAIStreamingTokenLifetimeSeconds));
+  tokenURL.searchParams.set("max_session_duration_seconds", String(assemblyAIDictationMaximumSessionSeconds));
+  const response = await fetch(tokenURL.toString(), {
+    headers: { Authorization: env.ASSEMBLYAI_API_KEY },
+  });
+  if (!response.ok) throw new Error("AssemblyAI temporary-token request failed");
+  const body = (await response.json()) as { token?: unknown };
+  if (typeof body.token !== "string" || !body.token) {
+    throw new Error("AssemblyAI temporary-token response was invalid");
+  }
+  return body.token;
+}
+
+export function parseDictationStartMessage(value: unknown): DictationStartMessage | null {
+  if (typeof value !== "string") return null;
+  let body: { type?: unknown; keyterms?: unknown; surface_kind?: unknown; formatting_mode?: unknown };
+  try {
+    body = JSON.parse(value) as typeof body;
+  } catch {
+    return null;
+  }
+  if (body.type !== "dictation.start" || !isDictationSurfaceKind(body.surface_kind)) return null;
+  if (body.formatting_mode !== "literal" && body.formatting_mode !== "clean" && body.formatting_mode !== "smart") return null;
+  return {
+    type: "dictation.start",
+    keyterms: sanitizeDictationKeyterms(body.keyterms),
+    surfaceKind: body.surface_kind,
+    formattingMode: body.formatting_mode,
+  };
+}
+
+export function sanitizeDictationKeyterms(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set<string>();
+  for (const term of value) {
+    if (typeof term !== "string") continue;
+    const trimmed = term.trim();
+    if (!trimmed || trimmed.length > 50) continue;
+    unique.add(trimmed);
+    if (unique.size === 100) break;
+  }
+  return [...unique];
+}
+
+function isDictationSurfaceKind(value: unknown): value is DictationSurfaceKind {
+  return value === "email" || value === "chat" || value === "document" || value === "code" || value === "terminal" || value === "generic";
+}
+
+function isTerminateMessage(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    return (JSON.parse(value) as { type?: unknown }).type === "Terminate";
+  } catch {
+    return false;
+  }
+}
+
+function assemblyAIDictationPrompt(surfaceKind: DictationSurfaceKind): string {
+  switch (surfaceKind) {
+  case "email": return "Short desktop email dictation.";
+  case "chat": return "Short desktop chat dictation.";
+  case "document": return "Desktop document dictation.";
+  case "code": return "Desktop software-development dictation.";
+  case "terminal": return "Desktop terminal command dictation.";
+  case "generic": return "Short desktop dictation.";
+  }
+}
+
+async function handleDictationPolish(request: Request, env: Env): Promise<Response> {
+  const session = await resolveSession(request, env);
+  if (!session) return jsonResponse({ error: "missing or invalid session" }, 401);
+
+  let body: {
+    transcript?: unknown;
+    surface_kind?: unknown;
+    formatting_mode?: unknown;
+    has_selection?: unknown;
+    is_terminal?: unknown;
+  };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+
+  const transcript = typeof body.transcript === "string" ? body.transcript : "";
+  if (!transcript.trim() || transcript.length > 16_000) {
+    return jsonResponse({ error: "missing or invalid transcript" }, 400);
+  }
+  if (!isDictationSurfaceKind(body.surface_kind) || body.formatting_mode !== "smart") {
+    return jsonResponse({ error: "invalid dictation formatting request" }, 400);
+  }
+  if (typeof body.has_selection !== "boolean" || typeof body.is_terminal !== "boolean") {
+    return jsonResponse({ error: "invalid dictation safety flags" }, 400);
+  }
+
+  const safetyIdentifier = await safetyIdentifierForSession(session);
+  const response = await fetch("https://abhilashreddymand-0825-resource.services.ai.azure.com/openai/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": env.AZURE_OPENAI_API_KEY,
+    },
+    body: JSON.stringify({
+      model: env.DICTATION_POLISH_MODEL || "gpt-5.6-luna",
+      store: false,
+      safety_identifier: safetyIdentifier,
+      instructions: dictationPolishInstructions(body.surface_kind, body.is_terminal),
+      input: transcript,
+      text: {
+        verbosity: "low",
+        format: {
+          type: "json_schema",
+          name: "dictation_polish",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: { text: { type: "string" } },
+            required: ["text"],
+          },
+        },
+      },
+      reasoning: { effort: "none" },
+      max_output_tokens: 2_000,
+    }),
+  });
+  if (!response.ok) return jsonResponse({ error: "dictation polish failed" }, 502);
+
+  let outputText = "";
+  try {
+    const payload = (await response.json()) as {
+      output_text?: unknown;
+      output?: Array<{ content?: Array<{ type?: unknown; text?: unknown; refusal?: unknown }> }>;
+    };
+    if (typeof payload.output_text === "string") {
+      outputText = payload.output_text;
+    } else {
+      outputText = (payload.output ?? [])
+        .flatMap((item) => item.content ?? [])
+        .filter((part) => part.type === "output_text" && typeof part.text === "string")
+        .map((part) => part.text as string)
+        .join("\n");
+    }
+  } catch {
+    return jsonResponse({ error: "dictation polish response was unreadable" }, 502);
+  }
+
+  let polished: { text?: unknown };
+  try {
+    polished = JSON.parse(outputText) as typeof polished;
+  } catch {
+    return jsonResponse({ error: "dictation polish returned invalid structured output" }, 502);
+  }
+  if (typeof polished.text !== "string" || !polished.text.trim() || polished.text.length > 20_000) {
+    return jsonResponse({ error: "dictation polish returned invalid text" }, 502);
+  }
+  return jsonResponse({ text: polished.text });
+}
+
+function dictationPolishInstructions(surfaceKind: DictationSurfaceKind, isTerminal: boolean): string {
+  const surfaceRule = isTerminal || surfaceKind === "terminal" || surfaceKind === "code"
+    ? "Use literal-first formatting. Preserve syntax, identifiers, punctuation, whitespace commands, and code exactly."
+    : surfaceKind === "email"
+      ? "Use polished email paragraphs, but never invent a subject, recipient, greeting, or sign-off."
+      : surfaceKind === "chat"
+        ? "Use concise conversational prose."
+        : surfaceKind === "document"
+          ? "Use paragraphs and bullets only when explicitly spoken."
+          : "Use natural punctuation and remove only unmistakable disfluencies or false starts. Never remove a meaningful word such as like.";
+  return `Return only JSON matching the schema. Polish this one dictated result without adding actions or commentary. Never invent, remove, or alter facts, names, numbers, dates, URLs, email addresses, code, recipients, greetings, or sign-offs. Render explicit spoken commands such as new paragraph, new line, bullet, comma, and period when they are clearly commands. ${surfaceRule}`;
+}
+
 async function handleCanvasVision(request: Request, env: Env): Promise<Response> {
   const session = await resolveSession(request, env);
   if (!session) {

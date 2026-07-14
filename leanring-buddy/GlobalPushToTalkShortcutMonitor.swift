@@ -30,6 +30,15 @@ struct HotkeyConfiguration: Equatable {
     static let modifierOnlyKeyCode = -1
 
     static let `default` = HotkeyConfiguration(modifierFlags: [.control, .option])
+    /// Reserved for dictation and therefore never valid as the configurable
+    /// assistant chord. One event tap owns both modes, so allowing the same
+    /// chord would make routing ambiguous.
+    static let reservedDictationModifierFlags: NSEvent.ModifierFlags = [.control, .function]
+
+    static func conflictsWithReservedDictationShortcut(_ modifierFlags: NSEvent.ModifierFlags) -> Bool {
+        reservedDictationModifierFlags.contains(modifierFlags)
+            || modifierFlags.contains(reservedDictationModifierFlags)
+    }
 
     init(modifierFlags: NSEvent.ModifierFlags) {
         self.modifierFlags = modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -56,18 +65,30 @@ struct HotkeyConfiguration: Equatable {
         }
         let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(storedNumber.uint64Value))
             .intersection(.deviceIndependentFlagsMask)
-        guard !modifierFlags.isEmpty else { return .default }
+        guard !modifierFlags.isEmpty,
+              !conflictsWithReservedDictationShortcut(modifierFlags) else { return .default }
         return HotkeyConfiguration(modifierFlags: modifierFlags)
     }
 
     func save(to defaults: UserDefaults = .standard) {
+        guard !Self.conflictsWithReservedDictationShortcut(modifierFlags) else { return }
         defaults.set(UInt64(modifierFlags.rawValue), forKey: Self.userDefaultsModifiersKey)
         defaults.set(Self.modifierOnlyKeyCode, forKey: Self.userDefaultsKeyCodeKey)
     }
 }
 
+enum GlobalShortcutMode {
+    case assistant
+    case dictation
+}
+
+enum GlobalShortcutTransition {
+    case pressed(GlobalShortcutMode)
+    case released(GlobalShortcutMode)
+}
+
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
-    let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
+    let shortcutTransitionPublisher = PassthroughSubject<GlobalShortcutTransition, Never>()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -76,11 +97,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Published so the overlay can hide immediately on key release without
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
+    @Published private(set) var isDictationShortcutCurrentlyPressed = false
 
     /// The combo the tap currently watches for. Loaded from UserDefaults on init;
     /// call `refreshHotkey()` after the user saves a new shortcut so the running
     /// tap starts matching it without a relaunch.
     private(set) var currentHotkey: HotkeyConfiguration = .load()
+    private var activeShortcutMode: GlobalShortcutMode?
 
     deinit {
         stop()
@@ -150,6 +173,8 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     func stop() {
         isShortcutCurrentlyPressed = false
+        isDictationShortcutCurrentlyPressed = false
+        activeShortcutMode = nil
         if let globalEventTapRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
             self.globalEventTapRunLoopSource = nil
@@ -172,26 +197,54 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
-        let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
-            for: eventType,
-            keyCode: eventKeyCode,
-            modifierFlagsRawValue: event.flags.rawValue,
-            wasShortcutPreviouslyPressed: isShortcutCurrentlyPressed,
-            hotkey: currentHotkey
-        )
+        guard eventType == .flagsChanged else { return Unmanaged.passUnretained(event) }
+        let activeModifiers = NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue))
+            .intersection(.deviceIndependentFlagsMask)
 
-        switch shortcutTransition {
-        case .none:
-            break
-        case .pressed:
-            isShortcutCurrentlyPressed = true
-            shortcutTransitionPublisher.send(.pressed)
-        case .released:
-            isShortcutCurrentlyPressed = false
-            shortcutTransitionPublisher.send(.released)
+        if let activeShortcutMode {
+            let remainsHeld: Bool
+            switch activeShortcutMode {
+            case .assistant:
+                remainsHeld = activeModifiers.contains(currentHotkey.modifierFlags)
+            case .dictation:
+                remainsHeld = activeModifiers.contains(HotkeyConfiguration.reservedDictationModifierFlags)
+            }
+            guard !remainsHeld else { return Unmanaged.passUnretained(event) }
+            release(activeShortcutMode)
+            // Do not switch modes within a held chord. Requiring a fresh modifier
+            // transition prevents Ctrl+Option assistant capture from becoming
+            // dictation if Fn is pressed midway through the gesture.
+            return Unmanaged.passUnretained(event)
+        }
+
+        if activeModifiers.contains(HotkeyConfiguration.reservedDictationModifierFlags) {
+            press(.dictation)
+        } else if activeModifiers.contains(currentHotkey.modifierFlags) {
+            press(.assistant)
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    private func press(_ mode: GlobalShortcutMode) {
+        activeShortcutMode = mode
+        switch mode {
+        case .assistant:
+            isShortcutCurrentlyPressed = true
+        case .dictation:
+            isDictationShortcutCurrentlyPressed = true
+        }
+        shortcutTransitionPublisher.send(.pressed(mode))
+    }
+
+    private func release(_ mode: GlobalShortcutMode) {
+        activeShortcutMode = nil
+        switch mode {
+        case .assistant:
+            isShortcutCurrentlyPressed = false
+        case .dictation:
+            isDictationShortcutCurrentlyPressed = false
+        }
+        shortcutTransitionPublisher.send(.released(mode))
     }
 }

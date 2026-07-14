@@ -35,6 +35,11 @@ enum MackyAnalytics {
         static let mcpToolCall = "mcp_tool_call"
         /// Connector-connect funnel steps (see `ConnectStep`).
         static let connectorConnect = "connector_connect"
+        /// Anonymous dictation completion/failure category. Never includes text,
+        /// field metadata, app titles, URLs, or glossary terms.
+        static let dictationOutcome = "dictation_outcome"
+        /// Stage timings from Ctrl + Fn release to final insertion/copy fallback.
+        static let dictationTiming = "dictation_timing"
     }
 
     /// Steps in the connector-connect funnel, sent as the `step` property on
@@ -112,6 +117,39 @@ enum MackyAnalytics {
         capture(Event.connectorConnect, [
             "step": step.rawValue,
             "toolkit": toolkit
+        ])
+    }
+
+    /// Emits only categorical dictation metadata. Surface kind and formatting mode
+    /// are coarse product settings, not user content.
+    static func dictationOutcome(
+        surfaceKind: DictationSurfaceKind,
+        formattingMode: DictationFormattingMode,
+        outcome: String
+    ) {
+        capture(Event.dictationOutcome, [
+            "surface_kind": surfaceKind.rawValue,
+            "formatting_mode": formattingMode.rawValue,
+            "outcome": outcome,
+        ])
+    }
+
+    /// Stage timing telemetry is anonymous and numeric only. It supports the
+    /// dictation latency target without retaining raw audio or transcripts.
+    static func dictationTiming(
+        asrFinalizationMilliseconds: Int,
+        workerConnectionMilliseconds: Int,
+        polishMilliseconds: Int,
+        insertionMilliseconds: Int,
+        totalMilliseconds: Int
+    ) {
+        capture(Event.dictationTiming, [
+            "asr_finalization_ms": asrFinalizationMilliseconds,
+            "worker_connection_ms": workerConnectionMilliseconds,
+            "polish_ms": polishMilliseconds,
+            "target_insertion_ms": insertionMilliseconds,
+            "total_ms": totalMilliseconds,
+            "performance_target_exceeded": totalMilliseconds > 700,
         ])
     }
 }

@@ -142,7 +142,8 @@ struct NotchContainerView: View {
         } else if let presentation = companionManager.focusedEditPresentation {
             FocusedEditCompletionBar(
                 presentation: presentation,
-                onUndo: { companionManager.undoFocusedEdit() }
+                onUndo: { companionManager.undoFocusedEdit() },
+                onCopy: { companionManager.copyFocusedEditText() }
             )
         } else if companionManager.isAssistantActive {
             AurenStatusBar(companionManager: companionManager)
@@ -474,7 +475,7 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
     var description: String {
         switch self {
         case .welcome:
-            return "Voice, tools, approvals, connectors, and setup all happen from the notch panel."
+            return "Voice, tools, connectors, and safe Ctrl + fn dictation all happen from the notch panel."
         case .microphone:
             return "Macky needs microphone access to hear your push-to-talk requests. Audio capture only starts when you hold the key."
         case .screenRecording:
@@ -486,7 +487,7 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
         case .reminders:
             return "Reminders access powers the in-panel reminder list and task updates."
         case .hotkey:
-            return "Choose the modifier combo that wakes Macky without opening another UI."
+            return "Choose the assistant shortcut. ctrl + fn is reserved for one-shot dictation into a verified text field."
         case .finished:
             return "Macky is ready to work from the notch."
         }
@@ -497,7 +498,7 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
         case .welcome, .hotkey, .finished:
             return ""
         case .microphone:
-            return "Nothing is recorded in the background — only while the key is held."
+            return "Nothing is recorded in the background. Assistant and dictation audio start only while their shortcut is held."
         case .screenRecording:
             return "Screen context is sent only when Macky needs it for your request."
         case .accessibility:
@@ -704,6 +705,12 @@ private struct MackyOnboardingHotkeyView: View {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
                 )
+
+            Text("Dictation is fixed to ctrl + fn. It validates the focused editable field before recording, then inserts one final result only if that exact field is still focused. If focus changes, Macky offers Copy instead.")
+                .font(.system(size: 10, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.45))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 340)
 
             HStack(spacing: 9) {
                 Button("Not now", action: onSkip)

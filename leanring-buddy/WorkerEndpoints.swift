@@ -42,6 +42,16 @@ enum WorkerEndpoints {
     /// `/realtime` socket.
     static let canvasVisionURL = URL(string: "\(httpsBase)/canvas-vision")!
 
+    /// On-demand AssemblyAI Universal-3.5 Pro Streaming proxy. The app opens it
+    /// only for a held Ctrl + Fn dictation after local target validation; it is
+    /// explicitly terminated on release to avoid idle-session billing.
+    static let dictationAssemblyAIURL = URL(string: "wss://\(baseHost)/dictation/assemblyai")!
+
+    /// Optional Smart dictation polish route. Literal and Clean modes never call
+    /// this endpoint, so offline-style local formatting remains available when
+    /// Azure is unavailable.
+    static let dictationPolishURL = URL(string: "\(httpsBase)/dictation/polish")!
+
     /// Versioned session side-channel foundation. The realtime socket remains a pure
     /// byte proxy; these routes are for reconnect-safe typed state/events.
     static let sessionStateURL = URL(string: "\(httpsBase)/session/state")!

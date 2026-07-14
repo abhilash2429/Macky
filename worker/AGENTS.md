@@ -29,6 +29,8 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
 | `GET /composio-connections` | Requires `Authorization: Bearer <sessionToken>`. Lists the session's `composioUserId`'s ACTIVE connected accounts. Returns `{ connected: ["gmail", …] }`. |
 | `POST /spotify-play` | Requires `Authorization: Bearer <sessionToken>`. Fast, direct "play a track by name" path. Body `{ query, uri? }`. Does SPOTIFY_SEARCH_FOR_ITEM → SPOTIFY_START_RESUME_PLAYBACK server-side in one hop for the session's `composioUserId` (via the Composio REST *execute* endpoint, not the MCP tool-router), targeting an active device when one exists and falling back to SPOTIFY_TRANSFER_PLAYBACK for an idle one. Returns `{ status:"playing", track, artist }`, or `{ needs_device:true, uri, … }` when Spotify has no awake device (the app opens Spotify locally and retries with the `uri`). Bypasses the slow model-driven MCP discovery chain that caused named-song playback to stall or silently no-op. Called by the `play_spotify_track` native tool. |
 | `POST /canvas-vision` | Requires `Authorization: Bearer <sessionToken>`. Accepts one on-demand screenshot, the user's teaching request, and source image dimensions. Calls the Azure Responses API with `CANVAS_VISION_MODEL` (`gpt-5.6-sol`), `store: false`, a hashed safety identifier, original image detail, and strict Structured Outputs; validates every diagram/cursor coordinate and returns a `canvas_payload`. |
+| `GET /dictation/assemblyai` | Requires `Authorization: Bearer <sessionToken>` and a WebSocket upgrade. The app sends one validated local `dictation.start` config (coarse surface kind, formatting mode, and up to 100 glossary keyterms); the Worker creates a short-lived AssemblyAI token, opens Universal-3.5 Pro Streaming upstream, then forwards binary PCM16 16 kHz frames and provider events. It must forward `Terminate` immediately and close a failed termination within 4 seconds so sessions do not keep billing. Never log transcript frames, raw AX/browser metadata, or keyterms. |
+| `POST /dictation/polish` | Requires `Authorization: Bearer <sessionToken>`. Optional Smart-mode final polish only. Accepts transcript + coarse surface kind + safe insertion flags, calls Azure Responses with `DICTATION_POLISH_MODEL` (`gpt-5.6-luna`), `store: false`, `reasoning.effort: none`, low verbosity, and strict `{ text }` structured output. Literal and Clean modes never call it. |
 | `POST /auth/magic-link` | Validates `{ email }`, stores a one-time token (`token → email`) in `AUTH_TOKENS` KV with a 15-minute TTL, and emails a clickable link via Resend. The link points at the https `/auth/open` endpoint (custom schemes aren't clickable in webmail). |
 | `POST /auth/verify` | Consumes a magic-link token (single-use; deleted on first success), best-effort provisions the Composio user for that email, creates a `SESSIONS` record keyed by a fresh `sessionToken` with `composioUserId = email`, and returns `{ sessionToken, composioUserId }`. This **replaces** any anonymous session/identity the app was previously using — see §5. |
 | `POST /auth/anonymous` | No auth required (this route *creates* identity). Mints a fresh no-login Composio identity (`composioUserId = "anon-<uuid>"`), provisions it, creates a `SESSIONS` record, and returns `{ sessionToken, composioUserId }` — same shape as `/auth/verify`. Called by the app on first run (or whenever it has no stored session), so connectors work with zero setup before/without email login. |
@@ -53,6 +55,7 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
 **Secrets** (set with `npx wrangler secret put <NAME>`, never in source or `wrangler.toml`):
 
 - `AZURE_OPENAI_API_KEY` — used by `/realtime` and `/canvas-vision` to authenticate to Azure.
+- `ASSEMBLYAI_API_KEY` — used only by `/dictation/assemblyai` to mint a one-time upstream streaming token. Never expose it to the macOS client or log it.
 - `COMPOSIO_API_KEY` — used by `/composio-config` and Composio user provisioning.
 - `RESEND_API_KEY` — used to deliver magic-link emails via the Resend HTTP API.
 
@@ -99,6 +102,8 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
 - Composio user provisioning (`provisionComposioUser`, used by both `/auth/verify` and
   `/auth/anonymous`) is best-effort: a Composio hiccup must not block login or the
   first-run bootstrap.
+- Dictation has a deliberately separate, authenticated WebSocket route because AssemblyAI bills on open session duration. It opens only after the app's local target validation, has no keep-alive/warm connection, and must always forward `Terminate` before tearing down the upstream socket. If final termination cannot be confirmed, close it promptly and return no text rather than leaving a billable stream open.
+- `DICTATION_PRIVACY_MODE = "development"` is permitted only for the free-credit development account. Before release, enable AssemblyAI's account-level streaming zero-retention opt-out, set `DICTATION_PRIVACY_MODE = "production"`, and set `DICTATION_ZERO_RETENTION_CONFIRMED = "true"`; the route rejects production traffic without the confirmation.
 
 ---
 
@@ -124,6 +129,7 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
 - **Deploy** only when explicitly requested: `npx wrangler deploy`.
 - TypeScript-only changes can be type-checked without deploying.
 - Canvas validator fixtures: `node --experimental-transform-types --test test/canvas-vision-validation.test.ts`.
+- Dictation validation fixtures: `node --experimental-transform-types --test test/dictation-validation.test.ts`.
 
 ---
 

@@ -24,6 +24,7 @@ struct FocusedEditPresentation: Identifiable, Equatable {
         case terminalCommand
         case safetyNotice
         case undo
+        case copyAvailable
     }
 
     let id: UUID
@@ -35,6 +36,10 @@ struct FocusedEditPresentation: Identifiable, Equatable {
     let summary: String
     let detail: String
     let canUndo: Bool
+    /// A safe recovery path for results that were intentionally not inserted
+    /// after target revalidation failed. The clipboard changes only when the
+    /// user explicitly presses Copy in the notch.
+    let canCopy: Bool
     let timestamp: Date
 
     init(
@@ -47,6 +52,7 @@ struct FocusedEditPresentation: Identifiable, Equatable {
         summary: String,
         detail: String,
         canUndo: Bool,
+        canCopy: Bool = false,
         timestamp: Date = Date()
     ) {
         self.id = id
@@ -58,6 +64,7 @@ struct FocusedEditPresentation: Identifiable, Equatable {
         self.summary = summary
         self.detail = detail
         self.canUndo = canUndo
+        self.canCopy = canCopy
         self.timestamp = timestamp
     }
 }

@@ -53,3 +53,19 @@ CANVAS_VISION_MODEL = "gpt-5.6-sol"
 # Reasoning effort for canvas-vision: minimal | low | medium | high.
 # "medium" keeps guides responsive; "high" was 15-45s per request.
 CANVAS_VISION_REASONING_EFFORT = "medium"
+
+# Dictation development uses AssemblyAI Universal-3.5 Pro Streaming. Set the
+# secret out-of-band before the route can be used:
+#   npx wrangler secret put ASSEMBLYAI_API_KEY
+# The provider's zero-retention opt-out is account-level and requires a paid
+# plan. This development deployment intentionally uses the free-credit account;
+# change this to "production" only after that opt-out is enabled.
+DICTATION_PRIVACY_MODE = "development"
+# Azure deployment used only by optional Smart dictation polish. Literal and
+# Clean insert locally and do not call this route.
+DICTATION_POLISH_MODEL = "gpt-5.6-luna"
+# Before a release deployment, switch DICTATION_PRIVACY_MODE to "production"
+# only after AssemblyAI account-level zero retention has been enabled, then set
+# this confirmation flag to "true". The Worker refuses production dictation
+# traffic otherwise.
+# DICTATION_ZERO_RETENTION_CONFIRMED = "true"
