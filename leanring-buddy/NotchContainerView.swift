@@ -28,8 +28,7 @@ struct NotchContainerView: View {
     @State private var isHovering = false
     @State private var isDropTargeted = false
     @State private var collapseTask: Task<Void, Never>?
-    @State private var focusedEditAutoCollapseTask: Task<Void, Never>?
-    @State private var focusedEditAutoPresentationID: UUID?
+    @State private var focusedEditDismissalTask: Task<Void, Never>?
 
     private let morphAnimation = Animation.timingCurve(
         NotchConstants.morphControlPoints.c0x,
@@ -65,7 +64,10 @@ struct NotchContainerView: View {
                 .animation(morphAnimation, value: notch.notchState)
                 .contentShape(Rectangle())
                 .onHover { handleHover($0) }
-                .onTapGesture { open() }
+                .onTapGesture {
+                    guard companionManager.focusedEditPresentation == nil else { return }
+                    open()
+                }
                 .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                     panelPage = .files
                     open()
@@ -101,7 +103,7 @@ struct NotchContainerView: View {
             if !active { scheduleCollapse() }
         }
         .onChange(of: companionManager.focusedEditPresentation?.id) { _, _ in
-            presentFocusedEditIfNeeded()
+            presentFocusedEditInline()
         }
     }
 
@@ -137,6 +139,11 @@ struct NotchContainerView: View {
         } else if isOpen {
             MackyPanelHeader(selectedPage: $panelPage, onClose: { close(userInitiated: true) })
                 .frame(height: max(28, notch.effectiveClosedNotchHeight))
+        } else if let presentation = companionManager.focusedEditPresentation {
+            FocusedEditCompletionBar(
+                presentation: presentation,
+                onUndo: { companionManager.undoFocusedEdit() }
+            )
         } else if companionManager.isAssistantActive {
             AurenStatusBar(companionManager: companionManager)
         } else {
@@ -200,6 +207,7 @@ struct NotchContainerView: View {
         isHovering = hovering
         if hovering {
             collapseTask?.cancel()
+            guard companionManager.focusedEditPresentation == nil else { return }
             open()
         } else {
             scheduleCollapse()
@@ -213,7 +221,6 @@ struct NotchContainerView: View {
             guard !Task.isCancelled, !isHovering else { return }
             guard !isDropTargeted else { return }
             guard !setupRequiresPanel else { return }
-            guard focusedEditAutoPresentationID == nil else { return }
             // Stay open while the assistant is listening/thinking/speaking so the
             // notch is live for the whole push-to-talk turn.
             guard !companionManager.isAssistantActive else { return }
@@ -223,26 +230,20 @@ struct NotchContainerView: View {
         }
     }
 
-    /// Focused text edits are a concrete outcome worth showing. They reuse Home
-    /// rather than introducing another panel page, then collapse after a short hold
-    /// unless the user keeps the pointer over the panel.
-    private func presentFocusedEditIfNeeded() {
-        guard let presentation = companionManager.focusedEditPresentation,
-              presentation.shouldAutoExpand else { return }
-        collapseTask?.cancel()
-        focusedEditAutoCollapseTask?.cancel()
-        focusedEditAutoPresentationID = presentation.id
-        panelPage = .home
-        open()
-
-        focusedEditAutoCollapseTask = Task { @MainActor in
+    /// Focused text edits stay inside the closed-notch footprint. The confirmation
+    /// is deliberately transient so simple edits do not open the Home panel.
+    private func presentFocusedEditInline() {
+        focusedEditDismissalTask?.cancel()
+        guard let presentation = companionManager.focusedEditPresentation else {
+            focusedEditDismissalTask = nil
+            return
+        }
+        focusedEditDismissalTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled,
-                  focusedEditAutoPresentationID == presentation.id else { return }
-            focusedEditAutoPresentationID = nil
-            focusedEditAutoCollapseTask = nil
-            guard !isHovering, !companionManager.isAssistantActive else { return }
-            close()
+                  companionManager.focusedEditPresentation?.id == presentation.id else { return }
+            companionManager.clearFocusedEditPresentation()
+            focusedEditDismissalTask = nil
         }
     }
 

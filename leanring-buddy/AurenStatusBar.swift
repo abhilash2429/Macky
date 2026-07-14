@@ -69,7 +69,7 @@ struct AurenStatusBar: View {
         ZStack {
             if !text.isEmpty {
                 Text(text)
-                    .font(.system(size: DS.PanelTypography.size(11), weight: .semibold, design: .rounded))
+                    .font(.system(size: DS.Typography.compactStatus, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.9))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -82,6 +82,80 @@ struct AurenStatusBar: View {
         }
         .animation(.smooth(duration: 0.22), value: text)
         .clipped()
+    }
+}
+
+/// A short-lived confirmation that replaces the normal active status bar after
+/// Macky changes focused text. It never opens the panel: the tick and optional
+/// undo control live on the same closed-notch footprint as live voice status.
+struct FocusedEditCompletionBar: View {
+    @EnvironmentObject var notch: NotchUIModel
+    let presentation: FocusedEditPresentation
+    let onUndo: () -> Void
+
+    private var isFailure: Bool {
+        presentation.kind == .safetyNotice
+    }
+
+    private var statusText: String {
+        switch presentation.kind {
+        case .undo:
+            return "Restored"
+        case .safetyNotice:
+            return "Couldn't edit"
+        case .textEdit, .terminalCommand:
+            return "Done"
+        }
+    }
+
+    var body: some View {
+        let metrics = notch.focusedEditCompletionBarMetrics()
+        HStack(spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: isFailure ? "exclamationmark" : "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 16, height: 16)
+                    .background(Circle().fill((isFailure ? Color.red : Color.green).opacity(0.78)))
+
+                Text(statusText)
+                    .font(.system(size: DS.Typography.compactStatus, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+            }
+            .padding(.leading, NotchConstants.statusLeadingPad)
+            .frame(width: metrics.leftFlankWidth, alignment: .leading)
+            .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
+
+            Rectangle()
+                .fill(Color.black)
+                .frame(width: metrics.bridgeWidth)
+
+            Group {
+                if presentation.canUndo {
+                    Button(action: onUndo) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: DS.Typography.compactStatus, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .frame(
+                                width: NotchConstants.focusedEditUndoButtonSize,
+                                height: NotchConstants.focusedEditUndoButtonSize
+                            )
+                            .background(Circle().fill(Color.white.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Undo last text edit")
+                } else {
+                    Color.clear
+                        .frame(
+                            width: NotchConstants.focusedEditUndoButtonSize,
+                            height: NotchConstants.focusedEditUndoButtonSize
+                        )
+                }
+            }
+            .frame(width: metrics.rightFlankWidth, height: notch.effectiveClosedNotchHeight, alignment: .leading)
+        }
+        .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)
     }
 }
 

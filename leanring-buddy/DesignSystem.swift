@@ -167,6 +167,14 @@ enum DS {
         }
     }
 
+    /// Shared point sizes for the compact notch UI and common panel actions.
+    /// Unlike PanelTypography's legacy scaled controls, these values are used
+    /// directly so the status bar and panel actions share a readable baseline.
+    enum Typography {
+        static let compactStatus: CGFloat = 12
+        static let panelAction: CGFloat = 12
+    }
+
     // MARK: - Spacing (for reference, not enforced)
 
     enum Spacing {

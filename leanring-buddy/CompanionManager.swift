@@ -79,8 +79,8 @@ final class CompanionManager: ObservableObject {
 
     @Published private(set) var recentInteractions: [Interaction] = []
     @Published private(set) var historyLog: [HistoryEntry] = []
-    /// The most recent focused-field operation. The existing Home panel renders it
-    /// as a transient action card and opens automatically when a text edit finishes.
+    /// The most recent focused-field operation, displayed briefly in the closed
+    /// notch as an inline completion state.
     @Published private(set) var focusedEditPresentation: FocusedEditPresentation?
     @Published var pendingFileContext: [String] = []
     @Published var pendingImageContext: [Data] = []
@@ -708,10 +708,13 @@ final class CompanionManager: ObservableObject {
                 applicationName: NSWorkspace.shared.frontmostApplication?.localizedName ?? "the focused app",
                 summary: "Macky did not undo the edit",
                 detail: error.localizedDescription,
-                canUndo: false,
-                shouldAutoExpand: true
+                canUndo: false
             )
         }
+    }
+
+    func clearFocusedEditPresentation() {
+        focusedEditPresentation = nil
     }
 
     private func startPendingVisualGuidanceIfNeeded() {

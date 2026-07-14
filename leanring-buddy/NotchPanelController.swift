@@ -11,8 +11,8 @@
 //
 //    • idleClosedFrame  — exactly the notch footprint, so clicks pass through to
 //                         apps underneath when the assistant is idle.
-//    • activeClosedFrame — the notch plus room on either flank for the status
-//                          text + waveform while the assistant is active.
+//    • activeClosedFrame — the notch plus room on either flank for live status,
+//                          or the compact focused-edit confirmation + undo control.
 //    • openFrame        — the full 640×210 panel that drops below the notch.
 //
 //  It observes NotchUIModel.notchState (open/close) and CompanionManager's
@@ -153,18 +153,30 @@ final class NotchPanelController {
     /// (more to the left when the text is longer than the waveform).
     private func activeFrame(for screen: NSScreen, text: String) -> NSRect {
         let m = notchModel.activeBarMetrics(for: text)
+        return closedFrame(for: m, screen: screen)
+    }
+
+    private func focusedEditCompletionFrame(for screen: NSScreen) -> NSRect {
+        let metrics = notchModel.focusedEditCompletionBarMetrics()
+        return closedFrame(for: metrics, screen: screen)
+    }
+
+    private func closedFrame(for metrics: ActiveBarMetrics, screen: NSScreen) -> NSRect {
         let height = notchModel.closedNotchSize.height + Self.closedBottomHeadroom
         let top = screen.frame.maxY
-        let originX = screen.frame.midX - m.leftFlankWidth - m.bridgeWidth / 2
-        return NSRect(x: originX, y: top - height, width: m.totalWidth, height: height)
+        let originX = screen.frame.midX - metrics.leftFlankWidth - metrics.bridgeWidth / 2
+        return NSRect(x: originX, y: top - height, width: metrics.totalWidth, height: height)
     }
 
     /// The frame the closed notch should occupy right now. While the assistant is
-    /// active it's the constant active bar (matches what `AurenStatusBar` renders,
-    /// including states with no status text like continuous-listening); otherwise the
-    /// bare idle cutout. Keying off `isAssistantActive` — not whether the text is
-    /// empty — keeps the window from clipping the waveform in a text-less active state.
+    /// active it is either the focused-edit completion bar or the constant live-status
+    /// bar. Otherwise it is the bare idle cutout. Keying live status off
+    /// `isAssistantActive` — not whether the text is empty — keeps the window from
+    /// clipping the waveform in a text-less active state.
     private func closedTargetFrame(for screen: NSScreen) -> NSRect {
+        if companionManager.focusedEditPresentation != nil {
+            return focusedEditCompletionFrame(for: screen)
+        }
         guard companionManager.isAssistantActive else { return idleClosedFrame }
         return activeFrame(for: screen, text: companionManager.activeStatusText)
     }
@@ -193,8 +205,9 @@ final class NotchPanelController {
         .map { _, _, _ in () }
 
         let activityB = companionManager.$operationState.map { _ in () }
+        let focusedEditPresentation = companionManager.$focusedEditPresentation.map { _ in () }
 
-        Publishers.Merge(activityA, activityB)
+        Publishers.Merge3(activityA, activityB, focusedEditPresentation)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.applyClosedActivity()

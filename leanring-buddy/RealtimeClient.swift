@@ -79,7 +79,7 @@ final class RealtimeClient: ObservableObject {
     var onVisualGuidanceClearRequested: (@MainActor () async -> String)?
     var onCursorLabelRequested: (@MainActor (CursorLabelPresentation) async -> Void)?
     /// Focused-field edits are performed locally through Accessibility. The app
-    /// coordinator owns the Home-panel receipt/detail presentation.
+    /// coordinator owns the short-lived closed-notch completion presentation.
     var onFocusedEditPresentation: ((FocusedEditPresentation) -> Void)?
 
     /// Transcript of the current turn's user speech, captured from

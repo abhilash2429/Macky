@@ -35,7 +35,6 @@ struct FocusedEditPresentation: Identifiable, Equatable {
     let summary: String
     let detail: String
     let canUndo: Bool
-    let shouldAutoExpand: Bool
     let timestamp: Date
 
     init(
@@ -48,7 +47,6 @@ struct FocusedEditPresentation: Identifiable, Equatable {
         summary: String,
         detail: String,
         canUndo: Bool,
-        shouldAutoExpand: Bool,
         timestamp: Date = Date()
     ) {
         self.id = id
@@ -60,26 +58,7 @@ struct FocusedEditPresentation: Identifiable, Equatable {
         self.summary = summary
         self.detail = detail
         self.canUndo = canUndo
-        self.shouldAutoExpand = shouldAutoExpand
         self.timestamp = timestamp
-    }
-
-    var iconName: String {
-        switch kind {
-        case .textEdit: return "pencil.line"
-        case .terminalCommand: return "terminal"
-        case .safetyNotice: return "exclamationmark.triangle"
-        case .undo: return "arrow.uturn.backward"
-        }
-    }
-
-    var title: String {
-        switch kind {
-        case .textEdit: return "Edited focused text"
-        case .terminalCommand: return "Command staged"
-        case .safetyNotice: return "Text edit paused"
-        case .undo: return "Edit undone"
-        }
     }
 }
 
@@ -133,6 +112,19 @@ final class FocusedTextIntegration {
         "dev.warp.Warp-Stable",
         "dev.warp.Warp",
     ]
+    private static let webBrowserBundleIdentifiers: Set<String> = [
+        "com.apple.Safari",
+        "com.google.Chrome",
+        "com.google.Chrome.canary",
+        "org.chromium.Chromium",
+        "com.microsoft.edgemac",
+        "com.brave.Browser",
+        "com.operasoftware.Opera",
+        "com.vivaldi.Vivaldi",
+        "company.thebrowser.Browser",
+        "org.mozilla.firefox",
+        "com.kagi.kagimacOS",
+    ]
 
     private struct Snapshot {
         let id: UUID
@@ -147,6 +139,8 @@ final class FocusedTextIntegration {
         let selectedRange: CFRange?
         let selectedText: String?
         let isTerminal: Bool
+        let isBrowser: Bool
+        let requiresPasteForTextEdits: Bool
         let capturedAt: Date
     }
 
@@ -188,7 +182,10 @@ final class FocusedTextIntegration {
             throw FocusedTextIntegrationError.emptyReplacement
         }
 
-        try validate(snapshot, expectedValue: snapshot.originalValue)
+        try validate(
+            snapshot,
+            expectedValue: snapshot.requiresPasteForTextEdits ? nil : snapshot.originalValue
+        )
 
         if snapshot.isTerminal {
             guard operation == .insertAtCursor else {
@@ -202,10 +199,37 @@ final class FocusedTextIntegration {
                 insertedText: replacementText,
                 summary: "Staged a command in \(snapshot.applicationName)",
                 detail: "Not run. Review it in Terminal, then press Return when you are ready.",
-                canUndo: false,
-                shouldAutoExpand: true
+                canUndo: false
             )
             return (presentation, Self.successJSON(status: "command_staged", presentation: presentation))
+        }
+
+        if snapshot.requiresPasteForTextEdits {
+            guard operation != .replaceField else {
+                throw FocusedTextIntegrationError.fullFieldReplacementUnavailable
+            }
+            if operation == .replaceSelection, !Self.selectedRangeHasSelection(snapshot.selectedRange) {
+                throw FocusedTextIntegrationError.selectionUnavailable
+            }
+
+            // Browser and other non-native text controls do not provide a dependable
+            // AXValue/selected-range representation for rebuilding the full field. Keep
+            // the focused-control and selection checks, then let the control's normal
+            // paste behavior perform the insertion or replacement.
+            try await pasteText(replacementText, into: snapshot, expectedValue: nil)
+            let presentation = FocusedEditPresentation(
+                kind: .textEdit,
+                applicationName: snapshot.applicationName,
+                windowTitle: snapshot.windowTitle,
+                originalText: originalTextForPresentation(snapshot: snapshot, operation: operation),
+                insertedText: replacementText,
+                summary: editSummary(for: operation),
+                detail: snapshot.isBrowser
+                    ? "Pasted into the verified focused browser field. Review it before sending."
+                    : "Pasted into the verified focused field. Review it before sending.",
+                canUndo: false
+            )
+            return (presentation, Self.successJSON(status: "focused_text_staged", presentation: presentation))
         }
 
         guard let originalValue = snapshot.originalValue else {
@@ -224,8 +248,7 @@ final class FocusedTextIntegration {
                 insertedText: replacementText,
                 summary: editSummary(for: operation),
                 detail: "Pasted into the verified focused field. Review it before sending.",
-                canUndo: false,
-                shouldAutoExpand: true
+                canUndo: false
             )
             return (presentation, Self.successJSON(status: "focused_text_staged", presentation: presentation))
         }
@@ -278,8 +301,7 @@ final class FocusedTextIntegration {
             detail: usedPasteFallback
                 ? "Pasted into the verified focused field. Review it before sending."
                 : "Updated the verified focused field.",
-            canUndo: !usedPasteFallback,
-            shouldAutoExpand: true
+            canUndo: !usedPasteFallback
         )
         return (presentation, Self.successJSON(status: "focused_text_updated", presentation: presentation))
     }
@@ -315,8 +337,7 @@ final class FocusedTextIntegration {
             windowTitle: transaction.snapshot.windowTitle,
             summary: "Restored the previous text",
             detail: "The focused field is back to its earlier value.",
-            canUndo: false,
-            shouldAutoExpand: true
+            canUndo: false
         )
     }
 
@@ -327,8 +348,7 @@ final class FocusedTextIntegration {
             applicationName: applicationName,
             summary: "Macky did not type anything",
             detail: error.localizedDescription,
-            canUndo: false,
-            shouldAutoExpand: true
+            canUndo: false
         )
     }
 
@@ -354,6 +374,7 @@ final class FocusedTextIntegration {
         }
 
         let isTerminal = Self.knownTerminalBundleIdentifiers.contains(bundleIdentifier)
+        let isBrowser = Self.webBrowserBundleIdentifiers.contains(bundleIdentifier)
         let value = isTerminal ? nil : Self.stringAttribute(kAXValueAttribute, from: element)
         if let value, value.count > Self.maxEditableValueLength {
             throw FocusedTextIntegrationError.fieldIsTooLarge
@@ -365,6 +386,9 @@ final class FocusedTextIntegration {
         let isTextRole = [kAXTextFieldRole as String, kAXTextAreaRole as String, kAXComboBoxRole as String].contains(role)
         let editable = Self.boolAttribute(kAXIsEditableAttribute, from: element) ?? isTextRole
         guard editable || isTerminal else {
+            if isBrowser {
+                throw FocusedTextIntegrationError.browserPageTextNotEditable
+            }
             throw FocusedTextIntegrationError.fieldIsNotWritable
         }
 
@@ -381,6 +405,11 @@ final class FocusedTextIntegration {
             selectedRange: selectedRange,
             selectedText: selectedText,
             isTerminal: isTerminal,
+            isBrowser: isBrowser,
+            requiresPasteForTextEdits: !isTerminal && (
+                isBrowser
+                    || !AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString)
+            ),
             capturedAt: Date()
         )
     }
@@ -611,6 +640,8 @@ private enum FocusedTextIntegrationError: LocalizedError {
     case selectionUnavailable
     case emptyReplacement
     case terminalOnlyStagesCommands
+    case browserPageTextNotEditable
+    case fullFieldReplacementUnavailable
     case writeCouldNotBeVerified
     case pasteFailed
     case noUndoAvailable
@@ -644,6 +675,10 @@ private enum FocusedTextIntegrationError: LocalizedError {
             return "Macky needs text to insert."
         case .terminalOnlyStagesCommands:
             return "Terminal commands can only be staged at the cursor; Macky will not replace Terminal output."
+        case .browserPageTextNotEditable:
+            return "The selected browser page text is not editable. Focus a text field or composer, then try again."
+        case .fullFieldReplacementUnavailable:
+            return "Macky cannot safely replace a whole browser field. Select the text to replace or place the cursor where you want to insert text."
         case .writeCouldNotBeVerified:
             return "Macky could not verify the text update, so it was not reported as complete."
         case .pasteFailed:

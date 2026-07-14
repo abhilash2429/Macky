@@ -21,7 +21,6 @@ struct AurenPanel: View {
     @ObservedObject var companionManager: CompanionManager
     let page: MackyPanelPage
     var onOpenConnectors: () -> Void = {}
-    @State private var selectedFocusedEdit: FocusedEditPresentation?
 
     var body: some View {
         switch page {
@@ -37,46 +36,27 @@ struct AurenPanel: View {
     private var home: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
-                if let selectedFocusedEdit {
-                    FocusedEditDetailView(
-                        presentation: selectedFocusedEdit,
-                        onBack: { self.selectedFocusedEdit = nil },
-                        onUndo: { companionManager.undoFocusedEdit() }
-                    )
-                } else {
-                    if let presentation = companionManager.focusedEditPresentation {
-                        FocusedEditCard(
-                            presentation: presentation,
-                            onView: { selectedFocusedEdit = presentation },
-                            onUndo: { companionManager.undoFocusedEdit() }
-                        )
-                    }
+                IconPreviewStrip(
+                    title: "Skills",
+                    statusText: enabledSkills.isEmpty ? nil : "\(enabledSkills.count) active",
+                    icons: enabledSkills.map { .init(id: $0.id, systemName: $0.icon, image: nil) },
+                    onTap: { SkillsWindowController.shared.showWindow() }
+                )
 
-                    IconPreviewStrip(
-                        title: "Skills",
-                        statusText: enabledSkills.isEmpty ? nil : "\(enabledSkills.count) active",
-                        icons: enabledSkills.map { .init(id: $0.id, systemName: $0.icon, image: nil) },
-                        onTap: { SkillsWindowController.shared.showWindow() }
-                    )
+                IconPreviewStrip(
+                    title: "Connectors",
+                    statusText: nil,
+                    icons: connectedConnectors.map { .init(id: $0.slug, systemName: nil, image: NSImage(named: $0.logoAssetName)) },
+                    onTap: onOpenConnectors
+                )
 
-                    IconPreviewStrip(
-                        title: "Connectors",
-                        statusText: nil,
-                        icons: connectedConnectors.map { .init(id: $0.slug, systemName: nil, image: NSImage(named: $0.logoAssetName)) },
-                        onTap: onOpenConnectors
-                    )
-
-                    ChatsSection(interactions: companionManager.recentInteractions)
-                }
+                ChatsSection(interactions: companionManager.recentInteractions)
             }
             .padding(.horizontal, 14)
             .padding(.top, 8)
             .padding(.bottom, 14)
         }
         .onAppear { companionManager.refreshConnectedToolkits() }
-        .onChange(of: companionManager.focusedEditPresentation?.id) { _, _ in
-            selectedFocusedEdit = nil
-        }
     }
 
     private var enabledSkills: [SkillIdentity] {
@@ -85,145 +65,6 @@ struct AurenPanel: View {
 
     private var connectedConnectors: [ConnectorIdentity] {
         ConnectorRegistry.connectors.filter { companionManager.connectedToolkits.contains($0.slug) }
-    }
-}
-
-private struct FocusedEditCard: View {
-    let presentation: FocusedEditPresentation
-    let onView: () -> Void
-    let onUndo: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .top, spacing: 10) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(nsColor: .secondarySystemFill))
-                    .frame(width: 30, height: 30)
-                    .overlay {
-                        Image(systemName: presentation.iconName)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                    }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(presentation.title)
-                        .font(.system(.subheadline, design: .rounded))
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Color.white.opacity(0.9))
-                    Text(presentation.applicationName)
-                        .font(.system(.footnote, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.45))
-                }
-
-                Spacer()
-
-                Text("Done")
-                    .font(.system(.footnote, design: .rounded))
-                    .foregroundStyle(Color.white.opacity(0.45))
-            }
-
-            if let insertedText = presentation.insertedText, !insertedText.isEmpty {
-                Text(insertedText)
-                    .font(.system(.caption, design: presentation.kind == .terminalCommand ? .monospaced : .rounded))
-                    .foregroundStyle(Color.white.opacity(0.72))
-                    .lineLimit(2)
-                    .padding(9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.black.opacity(0.28)))
-            }
-
-            Text(presentation.detail)
-                .font(.system(.footnote, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.52))
-                .lineLimit(2)
-
-            HStack(spacing: 8) {
-                if presentation.canUndo {
-                    Button("Undo", action: onUndo)
-                        .mackySettingsButton()
-                }
-                Spacer()
-                Button("View", action: onView)
-                    .mackySettingsButton()
-            }
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .secondarySystemFill)))
-    }
-}
-
-private struct FocusedEditDetailView: View {
-    let presentation: FocusedEditPresentation
-    let onBack: () -> Void
-    let onUndo: () -> Void
-
-    private var timestamp: String {
-        presentation.timestamp.formatted(date: .omitted, time: .shortened)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Button(action: onBack) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.75))
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(Color(nsColor: .secondarySystemFill)))
-                }
-                .buttonStyle(.plain)
-
-                Text(presentation.title)
-                    .font(.system(.headline, design: .rounded))
-                    .foregroundColor(.white.opacity(0.9))
-
-                Spacer()
-
-                Text(timestamp)
-                    .font(.system(.footnote, design: .rounded))
-                    .foregroundColor(.white.opacity(0.4))
-            }
-
-            focusedEditTextBlock(title: "App", text: presentation.applicationName)
-
-            if let originalText = presentation.originalText, !originalText.isEmpty {
-                focusedEditTextBlock(title: "Original", text: originalText)
-            }
-
-            if let insertedText = presentation.insertedText, !insertedText.isEmpty {
-                focusedEditTextBlock(
-                    title: presentation.kind == .terminalCommand ? "Staged command" : "Inserted",
-                    text: insertedText,
-                    usesMonospacedText: presentation.kind == .terminalCommand
-                )
-            }
-
-            focusedEditTextBlock(title: "Result", text: presentation.detail)
-
-            if presentation.canUndo {
-                HStack {
-                    Spacer()
-                    Button("Undo change", action: onUndo)
-                        .mackySettingsButton()
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func focusedEditTextBlock(title: String, text: String, usesMonospacedText: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(.caption, design: .rounded))
-                .foregroundColor(.accentColor)
-            Text(text)
-                .font(.system(.subheadline, design: usesMonospacedText ? .monospaced : .rounded))
-                .foregroundColor(.white.opacity(0.9))
-                .lineLimit(usesMonospacedText ? 4 : 5)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .secondarySystemFill)))
     }
 }
 
@@ -677,8 +518,7 @@ private extension View {
     func mackySettingsButton() -> some View {
         self
             .buttonStyle(.plain)
-            .font(.system(.footnote, design: .rounded))
-            .fontWeight(.semibold)
+            .font(.system(size: DS.Typography.panelAction, weight: .semibold, design: .rounded))
             .foregroundStyle(Color.white.opacity(0.9))
             .padding(.horizontal, 10)
             .padding(.vertical, 7)

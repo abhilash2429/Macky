@@ -47,7 +47,7 @@ enum NotchConstants {
     // MARK: - Active closed-bar layout
 
     /// Leading inset for the status text so it clears the shape's rounded corner.
-    static let statusLeadingPad: CGFloat = 10
+    static let statusLeadingPad: CGFloat = 18
     /// Gap between the status text and the cutout bridge.
     static let statusTrailingGap: CGFloat = 8
     /// Inset to the right of the waveform on the active bar's right flank.
@@ -56,8 +56,10 @@ enum NotchConstants {
     /// constant footprint across every state (Listening / Thinking / Speaking /
     /// executing) — the text truncates with "…" inside this slot instead of resizing
     /// the notch. Sized to comfortably fit the standard state words.
-    static let activeStatusTextWidth: CGFloat = 96
+    static let activeStatusTextWidth: CGFloat = 104
     static let waveformBoxSize: CGFloat = 26
+    static let focusedEditUndoButtonSize: CGFloat = 28
+    static let focusedEditUndoTrailingPad: CGFloat = 8
 
     // MARK: - Open/close morph timing
 
@@ -139,6 +141,26 @@ final class NotchUIModel: ObservableObject {
             totalWidth: leftFlank + bridge + rightFlank,
             leftFlankWidth: leftFlank,
             textWidth: textW,
+            bridgeWidth: bridge,
+            rightFlankWidth: rightFlank
+        )
+    }
+
+    /// The focused-edit completion bar shares the expanded left text flank with
+    /// the live status bar, while reserving a compact undo button on the right.
+    /// The physical notch bridge stays centered; the extra leading padding grows
+    /// the UI to the left rather than crowding text against its outer edge.
+    func focusedEditCompletionBarMetrics() -> ActiveBarMetrics {
+        let bridge = max(0, closedNotchSize.width)
+        let leftFlank = NotchConstants.statusLeadingPad
+            + NotchConstants.activeStatusTextWidth
+            + NotchConstants.statusTrailingGap
+        let rightFlank = NotchConstants.focusedEditUndoButtonSize
+            + NotchConstants.focusedEditUndoTrailingPad
+        return ActiveBarMetrics(
+            totalWidth: leftFlank + bridge + rightFlank,
+            leftFlankWidth: leftFlank,
+            textWidth: NotchConstants.activeStatusTextWidth,
             bridgeWidth: bridge,
             rightFlankWidth: rightFlank
         )
