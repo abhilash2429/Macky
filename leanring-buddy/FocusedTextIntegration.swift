@@ -70,6 +70,8 @@ struct FocusedTextContext {
     let fieldRole: String
     let selectedText: String?
     let canReplaceSelection: Bool
+    let canReplaceField: Bool
+    let fieldCharacterCount: Int?
     let canInsertAtCursor: Bool
     let isTerminal: Bool
 
@@ -83,6 +85,8 @@ struct FocusedTextContext {
             "selected_text": selectedText ?? "",
             "has_selection": !(selectedText ?? "").isEmpty,
             "can_replace_selection": canReplaceSelection,
+            "can_replace_field": canReplaceField,
+            "field_character_count": fieldCharacterCount ?? NSNull(),
             "can_insert_at_cursor": canInsertAtCursor,
             "is_terminal": isTerminal,
             "terminal_execution_allowed": false,
@@ -103,9 +107,10 @@ struct FocusedTextContext {
 @MainActor
 final class FocusedTextIntegration {
     private static let snapshotLifetime: TimeInterval = 8
-    private static let undoLifetime: TimeInterval = 30
+    private static let undoLifetime: TimeInterval = 5
     private static let maxEditableValueLength = 32_000
     private static let maxSelectedTextLength = 4_000
+    private static let maxAutomaticWholeFieldReplacementLength = 4_000
     private static let knownTerminalBundleIdentifiers: Set<String> = [
         "com.apple.Terminal",
         "com.googlecode.iterm2",
@@ -153,8 +158,8 @@ final class FocusedTextIntegration {
     private var snapshots: [UUID: Snapshot] = [:]
     private var undoTransaction: UndoTransaction?
 
-    func inspectFocusedField() throws -> FocusedTextContext {
-        let snapshot = try captureSnapshot()
+    func inspectFocusedField() async throws -> FocusedTextContext {
+        let snapshot = try await captureSnapshot()
         snapshots = [snapshot.id: snapshot]
 
         return FocusedTextContext(
@@ -165,6 +170,9 @@ final class FocusedTextIntegration {
             fieldRole: snapshot.role,
             selectedText: snapshot.selectedText,
             canReplaceSelection: !snapshot.isTerminal && Self.selectedRangeHasSelection(snapshot.selectedRange),
+            canReplaceField: !snapshot.isTerminal
+                && (snapshot.originalValue?.count ?? Self.maxAutomaticWholeFieldReplacementLength) < Self.maxAutomaticWholeFieldReplacementLength,
+            fieldCharacterCount: snapshot.originalValue?.count,
             canInsertAtCursor: true,
             isTerminal: snapshot.isTerminal
         )
@@ -205,18 +213,25 @@ final class FocusedTextIntegration {
         }
 
         if snapshot.requiresPasteForTextEdits {
-            guard operation != .replaceField else {
-                throw FocusedTextIntegrationError.fullFieldReplacementUnavailable
-            }
-            if operation == .replaceSelection, !Self.selectedRangeHasSelection(snapshot.selectedRange) {
-                throw FocusedTextIntegrationError.selectionUnavailable
+            if operation == .replaceField {
+                guard let originalValue = snapshot.originalValue else {
+                    throw FocusedTextIntegrationError.fullFieldReplacementUnavailable
+                }
+                guard originalValue.count < Self.maxAutomaticWholeFieldReplacementLength else {
+                    throw FocusedTextIntegrationError.fieldIsTooLargeForWholeReplacement
+                }
+                try await pasteReplacingEntireField(replacementText, into: snapshot)
+            } else {
+                if operation == .replaceSelection, !Self.selectedRangeHasSelection(snapshot.selectedRange) {
+                    throw FocusedTextIntegrationError.selectionUnavailable
+                }
+                try await pasteText(replacementText, into: snapshot, expectedValue: nil)
             }
 
             // Browser and other non-native text controls do not provide a dependable
             // AXValue/selected-range representation for rebuilding the full field. Keep
             // the focused-control and selection checks, then let the control's normal
             // paste behavior perform the insertion or replacement.
-            try await pasteText(replacementText, into: snapshot, expectedValue: nil)
             let presentation = FocusedEditPresentation(
                 kind: .textEdit,
                 applicationName: snapshot.applicationName,
@@ -251,6 +266,11 @@ final class FocusedTextIntegration {
                 canUndo: false
             )
             return (presentation, Self.successJSON(status: "focused_text_staged", presentation: presentation))
+        }
+
+        if operation == .replaceField,
+           originalValue.count >= Self.maxAutomaticWholeFieldReplacementLength {
+            throw FocusedTextIntegrationError.fieldIsTooLargeForWholeReplacement
         }
 
         let updatedValue = try valueAfterApplying(
@@ -352,7 +372,7 @@ final class FocusedTextIntegration {
         )
     }
 
-    private func captureSnapshot() throws -> Snapshot {
+    private func captureSnapshot() async throws -> Snapshot {
         guard AXIsProcessTrusted() else {
             throw FocusedTextIntegrationError.accessibilityPermissionRequired
         }
@@ -363,6 +383,15 @@ final class FocusedTextIntegration {
         }
 
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+        let isTerminal = Self.knownTerminalBundleIdentifiers.contains(bundleIdentifier)
+        let isBrowser = Self.webBrowserBundleIdentifiers.contains(bundleIdentifier)
+        if isBrowser {
+            // Chromium-based browsers can return only a generic web area until an
+            // assistive client asks for their full accessibility tree. Enable the
+            // documented/manual mode, then yield briefly before re-reading focus.
+            Self.enableBrowserAccessibility(for: applicationElement)
+            try await Task.sleep(for: .milliseconds(120))
+        }
         guard let element = Self.elementAttribute(kAXFocusedUIElementAttribute, from: applicationElement) else {
             throw FocusedTextIntegrationError.noFocusedField
         }
@@ -373,8 +402,6 @@ final class FocusedTextIntegration {
             throw FocusedTextIntegrationError.secureField
         }
 
-        let isTerminal = Self.knownTerminalBundleIdentifiers.contains(bundleIdentifier)
-        let isBrowser = Self.webBrowserBundleIdentifiers.contains(bundleIdentifier)
         let value = isTerminal ? nil : Self.stringAttribute(kAXValueAttribute, from: element)
         if let value, value.count > Self.maxEditableValueLength {
             throw FocusedTextIntegrationError.fieldIsTooLarge
@@ -534,7 +561,7 @@ final class FocusedTextIntegration {
             "summary": presentation.summary,
             "detail": presentation.detail,
             "can_undo": presentation.canUndo,
-            "execution_performed": false,
+            "execution_performed": true,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let string = String(data: data, encoding: .utf8) else {
@@ -571,6 +598,52 @@ final class FocusedTextIntegration {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value as! AXUIElement
+    }
+
+    private static func enableBrowserAccessibility(for applicationElement: AXUIElement) {
+        // AXManualAccessibility is Chromium/Electron's opt-in for exposing the
+        // detailed web accessibility tree to a trusted assistive client. Chromium
+        // also supports AXEnhancedUserInterface on the focused browser window.
+        _ = AXUIElementSetAttributeValue(
+            applicationElement,
+            "AXManualAccessibility" as CFString,
+            true as CFTypeRef
+        )
+        if let focusedWindow = elementAttribute(kAXFocusedWindowAttribute, from: applicationElement) {
+            _ = AXUIElementSetAttributeValue(
+                focusedWindow,
+                "AXEnhancedUserInterface" as CFString,
+                true as CFTypeRef
+            )
+        }
+    }
+
+    private func pasteReplacingEntireField(_ text: String, into snapshot: Snapshot) async throws {
+        try validate(snapshot, expectedValue: nil)
+        let pasteboard = NSPasteboard.general
+        let originalItems = Self.copyPasteboardItems(pasteboard.pasteboardItems)
+
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            throw FocusedTextIntegrationError.pasteFailed
+        }
+        let MackyPasteboardChangeCount = pasteboard.changeCount
+
+        try validate(snapshot, expectedValue: nil)
+        try Self.postSelectAllShortcut()
+        try await Task.sleep(for: .milliseconds(50))
+        try validate(snapshot, expectedValue: nil, requiresMatchingSelection: false)
+        try Self.postPasteShortcut()
+        try await Task.sleep(for: .milliseconds(150))
+
+        // Restore only if neither the user nor the target app has copied newer
+        // content while Macky was selecting and pasting.
+        if pasteboard.changeCount == MackyPasteboardChangeCount {
+            pasteboard.clearContents()
+            if !originalItems.isEmpty {
+                _ = pasteboard.writeObjects(originalItems)
+            }
+        }
     }
 
     private static func selectedRange(from element: AXUIElement) -> CFRange? {
@@ -624,6 +697,18 @@ final class FocusedTextIntegration {
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
     }
+
+    private static func postSelectAllShortcut() throws {
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_A), keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_A), keyDown: false) else {
+            throw FocusedTextIntegrationError.pasteFailed
+        }
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+    }
 }
 
 private enum FocusedTextIntegrationError: LocalizedError {
@@ -633,6 +718,7 @@ private enum FocusedTextIntegrationError: LocalizedError {
     case secureField
     case fieldIsNotWritable
     case fieldIsTooLarge
+    case fieldIsTooLargeForWholeReplacement
     case snapshotUnavailable
     case snapshotExpired
     case focusChanged
@@ -661,6 +747,8 @@ private enum FocusedTextIntegrationError: LocalizedError {
             return "The focused control is not a writable text field."
         case .fieldIsTooLarge:
             return "The focused text is too large to edit safely. Select the part you want changed instead."
+        case .fieldIsTooLargeForWholeReplacement:
+            return "The focused field is too large to replace safely. Select the part you want Macky to change."
         case .snapshotUnavailable:
             return "The focused field needs to be checked again before Macky can edit it."
         case .snapshotExpired:

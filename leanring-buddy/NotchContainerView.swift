@@ -239,7 +239,7 @@ struct NotchContainerView: View {
             return
         }
         focusedEditDismissalTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled,
                   companionManager.focusedEditPresentation?.id == presentation.id else { return }
             companionManager.clearFocusedEditPresentation()

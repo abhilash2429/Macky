@@ -339,12 +339,12 @@ final class RealtimeClient: ObservableObject {
     private func registerFocusedTextTools() {
         registerTool(
             name: "get_focused_text_context",
-            description: "Inspect the user's currently focused writable text field or supported Terminal prompt before rewriting, drafting, or inserting text. Call proactively when the user's explicit request implies writing into the active app, even if they did not say 'type' or 'paste'. This only returns the selected text needed for the edit, never reads secure fields, and returns a short-lived snapshot_id required by apply_focused_text.",
+            description: "Inspect the user's currently focused writable text field or supported Terminal prompt before editing, formatting, rewriting, drafting, or inserting text. Call proactively when the user's request refers to the active content with phrases like 'format this', 'fix this', or 'rewrite it' even if they never say 'text', 'selected', 'type', or 'paste'. This returns whether a selection exists, whether the complete focused field is safe to replace, and a short-lived snapshot_id required by apply_focused_text. It never reads secure fields.",
             schema: ["type": "object", "properties": [String: Any]()]
         ) { [weak self] _ in
             guard let self else { return "{\"error\":\"client unavailable\"}" }
             do {
-                return try self.focusedTextIntegration.inspectFocusedField().jsonString()
+                return try await self.focusedTextIntegration.inspectFocusedField().jsonString()
             } catch {
                 self.onFocusedEditPresentation?(self.focusedTextIntegration.safetyPresentation(for: error))
                 return Self.errorJSON(error.localizedDescription)
@@ -353,7 +353,7 @@ final class RealtimeClient: ObservableObject {
 
         registerTool(
             name: "apply_focused_text",
-            description: "Apply text to a field returned by get_focused_text_context. Always use the current-turn snapshot_id and never reuse an older one. Use replace_selection to rewrite selected text, insert_at_cursor to draft into a focused composer or stage a Terminal command, and replace_field only when the user explicitly asks to replace the complete field. For Terminal, only insert_at_cursor is allowed and it stages the command without pressing Return or executing anything. Do not use this for secure fields, sending messages, or running commands.",
+            description: "Apply text to a field returned by get_focused_text_context. Always use the current-turn snapshot_id and never reuse an older one. Use replace_selection when context reports a selection. For an edit or formatting request with no selection, use replace_field when can_replace_field is true; otherwise ask the user to select the intended portion. Use insert_at_cursor for a new draft or text the user explicitly wants added at the cursor. For Terminal, only insert_at_cursor is allowed and it stages the command without pressing Return or executing anything. Do not use this for secure fields, sending messages, or running commands.",
             schema: [
                 "type": "object",
                 "additionalProperties": false,
@@ -2242,14 +2242,20 @@ final class RealtimeClient: ObservableObject {
         again to see the opened menu, then click History.
 
         # Focused Text Editing
+        - For focused-text edits, make the inspection and apply tool calls silently. Do not say "on it", repeat the \
+        requested text, narrate progress, or speak before apply_focused_text unless you need input or confirmation \
+        from the user. After the tool result, say only the brief final outcome.
+        - Treat requests to edit, format, fix, clean up, polish, or rewrite the active content as focused-text edits. \
+        The user does not need to say "text", "focused text", or "selected text".
         - When the user's explicit request implies writing into the active app — for example rewriting selected text, \
         drafting a reply, filling a focused composer, or staging a command in Terminal — proactively call \
         get_focused_text_context even if they did not say "type", "paste", or "replace".
         - Only call apply_focused_text with the short-lived snapshot_id returned in the same turn. If inspection says \
         the field changed, is secure, or is not writable, explain briefly and do not try another input path.
-        - Use replace_selection only when the user selected the text to rewrite. Use insert_at_cursor for an empty \
-        focused composer or Terminal prompt. Use replace_field only when the user explicitly wants the whole field \
-        replaced.
+        - If context reports a selection, use replace_selection. If there is no selection and the request changes the \
+        existing focused content, use replace_field when can_replace_field is true. If can_replace_field is false, ask \
+        the user to select the intended portion rather than replacing a large or unreadable field. Use \
+        insert_at_cursor for a new draft, an empty composer, or text the user explicitly wants added at the cursor.
         - For Terminal, stage a command with insert_at_cursor but never press Return, run the command, use sudo, or \
         claim it installed anything. Say that the command is ready for review and execution by the user.
         - Drafting text is not sending it. Never send a message, submit a form, or publish content unless the user \
