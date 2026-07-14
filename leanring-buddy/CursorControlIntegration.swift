@@ -2,14 +2,27 @@
 //  CursorControlIntegration.swift
 //  leanring-buddy
 //
-//  Standalone local cursor automation. Visual guidance may use this engine to point,
-//  but clicking, dragging, and scrolling are independent realtime tools.
+//  Standalone local cursor automation for realtime tools.
 //
 
 import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+
+/// The screenshot coordinate system used by standalone cursor automation.
+/// Coordinates are screenshot pixels with a top-left origin; the display frame is
+/// AppKit's global point space so the local action can be mapped safely.
+struct CursorCoordinateSpace {
+    let width: Double
+    let height: Double
+    let displayID: CGDirectDisplayID?
+    let displayFrame: CGRect?
+
+    var cgSize: CGSize {
+        CGSize(width: max(1, width), height: max(1, height))
+    }
+}
 
 enum CursorControlAction: String {
     case move
@@ -76,7 +89,7 @@ struct CursorControlRequest {
 enum CursorControlIntegration {
     static func perform(
         _ request: CursorControlRequest,
-        coordinateSpace: VisualGuidanceCoordinateSpace?
+        coordinateSpace: CursorCoordinateSpace?
     ) async throws -> String {
         guard AXIsProcessTrusted() else {
             throw CursorControlError.accessibilityPermissionRequired
@@ -128,44 +141,20 @@ enum CursorControlIntegration {
         return "{\"status\":\"cursor_action_completed\",\"action\":\"\(request.action.rawValue)\"}"
     }
 
-    /// Visual guidance uses the standalone cursor engine for pointing only.
-    static func move(
-        to command: CursorCommand,
-        coordinateSpace: VisualGuidanceCoordinateSpace?,
-        expectedApplicationBundleIdentifier: String?
-    ) async throws -> String {
-        try await perform(
-            CursorControlRequest(
-                action: .move,
-                x: command.x,
-                y: command.y,
-                toX: nil,
-                toY: nil,
-                duration: command.duration,
-                button: .left,
-                scrollDeltaX: 0,
-                scrollDeltaY: 0,
-                expectedApplicationBundleIdentifier: expectedApplicationBundleIdentifier
-            ),
-            coordinateSpace: coordinateSpace
-        )
-    }
-
     static func appKitPoint(
         x: Double,
         y: Double,
-        coordinateSpace: VisualGuidanceCoordinateSpace?
+        coordinateSpace: CursorCoordinateSpace?
     ) throws -> CGPoint {
         let frame: CGRect
-        if let displayFrame = coordinateSpace?.displayFrame,
-           let displayID = displayFrame.displayID {
+        if let displayID = coordinateSpace?.displayID {
             guard let screen = NSScreen.screens.first(where: { screen in
                 (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
             }) else {
                 throw CursorControlError.noScreen
             }
             frame = screen.frame
-        } else if let displayFrame = coordinateSpace?.displayFrame?.cgRect {
+        } else if let displayFrame = coordinateSpace?.displayFrame {
             frame = displayFrame
         } else if let screen = NSScreen.main {
             frame = screen.frame
@@ -198,7 +187,7 @@ enum CursorControlIntegration {
     private static func requiredPoint(
         x: Double?,
         y: Double?,
-        coordinateSpace: VisualGuidanceCoordinateSpace?
+        coordinateSpace: CursorCoordinateSpace?
     ) throws -> CGPoint {
         guard let x, let y else { throw CursorControlError.missingCoordinates }
         return try appKitPoint(x: x, y: y, coordinateSpace: coordinateSpace)
@@ -207,7 +196,7 @@ enum CursorControlIntegration {
     private static func optionalPoint(
         x: Double?,
         y: Double?,
-        coordinateSpace: VisualGuidanceCoordinateSpace?
+        coordinateSpace: CursorCoordinateSpace?
     ) throws -> CGPoint? {
         if x == nil, y == nil { return nil }
         guard let x, let y else { throw CursorControlError.missingCoordinates }
@@ -216,7 +205,7 @@ enum CursorControlIntegration {
 
     private static func moveIfRequested(
         _ request: CursorControlRequest,
-        coordinateSpace: VisualGuidanceCoordinateSpace?
+        coordinateSpace: CursorCoordinateSpace?
     ) async throws {
         guard let target = try optionalPoint(x: request.x, y: request.y, coordinateSpace: coordinateSpace) else {
             return
@@ -375,6 +364,7 @@ enum CursorControlError: LocalizedError {
     case noScreen
     case missingCoordinates
     case coordinateOutOfBounds
+    case staleScreenCapture
     case applicationChanged
     case displayIDRequired
     case missingScrollDelta
@@ -390,6 +380,8 @@ enum CursorControlError: LocalizedError {
             return "cursor action is missing required coordinates"
         case .coordinateOutOfBounds:
             return "cursor coordinates are outside the selected screen capture"
+        case .staleScreenCapture:
+            return "the screen capture is no longer current; capture the screen again before moving the cursor"
         case .applicationChanged:
             return "the frontmost application changed after the cursor coordinates were captured"
         case .displayIDRequired:

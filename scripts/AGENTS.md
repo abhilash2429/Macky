@@ -34,10 +34,11 @@ Runs `set -euo pipefail` and, in order:
 
 ### Key configuration (top of `release.sh`)
 - `SCHEME="leanring-buddy"` — the Xcode scheme that builds the app.
-- `APP_NAME="makesomething"` — legacy product/artifact name still used for archive and
-  DMG paths.
-- `GITHUB_REPO="julianjear/makesomething-mac-app"` — the releases repo the appcast is
-  pushed to.
+- `APP_NAME="Macky"` — the product/artifact name used for archive, export, and DMG paths.
+- `GITHUB_REPO="julianjear/makesomething-mac-app"` — the existing releases repo the
+  appcast is pushed to; retain this identifier until a replacement repo is supplied.
+- `DMG_BACKGROUND` — optional DMG background image. If it is absent, the release uses
+  create-dmg's standard appearance.
 - Sparkle CLI tools are auto-discovered from Xcode's SPM DerivedData cache; the script
   errors out early if they aren't present (build in Xcode once first).
 
@@ -60,9 +61,8 @@ Runs `set -euo pipefail` and, in order:
 - Keep paths and repo names explicit; avoid clever shell expansion for destructive
   operations.
 - Do not add commands that delete outside the repo or a known build-output directory.
-- The script still references legacy `makesomething` branding (and the
-  `julianjear/makesomething-mac-app` repo). Changing that is a deliberate
-  release/distribution decision, **not** a drive-by cleanup.
+- The script retains the existing `julianjear/makesomething-mac-app` repo identifier
+  because changing the release destination requires an explicit replacement.
 
 ---
 

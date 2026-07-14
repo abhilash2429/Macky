@@ -133,8 +133,6 @@ final class CompanionManager: ObservableObject {
     let dictationCoordinator = DictationCoordinator()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let realtimeClient = RealtimeClient()
-    let visualGuidanceOverlayController = VisualGuidanceOverlayController()
-    let subAgentProgressController = SubAgentProgressController()
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
@@ -154,10 +152,6 @@ final class CompanionManager: ObservableObject {
     /// Captured at push-to-talk start so opening or hovering Macky's panel cannot replace
     /// the user's external app with Macky itself before the voice request is committed.
     private var foregroundAppContextForCurrentTurn: ForegroundAppContext?
-    private var pendingVisualGuidancePresentation: VisualGuidancePresentation?
-    /// Fallback that starts a queued overlay when the narration audio it normally
-    /// waits for never arrives (cancelled or audio-less response).
-    private var pendingVisualGuidanceStartTask: Task<Void, Never>?
 
     var allPermissionsGranted: Bool {
         hasAccessibilityPermission
@@ -585,50 +579,6 @@ final class CompanionManager: ObservableObject {
     private var turnReleaseTimestamp: Date?
 
     private func bindRealtimeClient() {
-        subAgentProgressController.onCancel = { [weak self] in
-            self?.cancelVisualGuidance()
-        }
-        visualGuidanceOverlayController.onSequenceCompleted = { [weak self] in
-            self?.subAgentProgressController.hide()
-        }
-
-        visualGuidanceOverlayController.onSequenceCompletedByUserAction = { [weak self] in
-            guard let self else { return }
-            self.subAgentProgressController.hide()
-            self.realtimeClient.continueVisualGuidanceAfterUserAction()
-        }
-
-        realtimeClient.onVisualGuidanceSequenceRequested = { [weak self] presentation in
-            guard let self else { return "{\"error\": \"app unavailable\"}" }
-            self.pendingVisualGuidancePresentation = presentation
-            // The overlay normally starts with the model's narration audio. If that
-            // response never produces audio (cancelled, text-only, or lost), this
-            // fallback starts the overlay anyway instead of stranding it to pop up
-            // stale during a later, unrelated response.
-            self.pendingVisualGuidanceStartTask?.cancel()
-            self.pendingVisualGuidanceStartTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                guard !Task.isCancelled else { return }
-                self?.startPendingVisualGuidanceIfNeeded()
-            }
-            return "{\"status\": \"visual guidance queued for narration\"}"
-        }
-
-        realtimeClient.onCursorLabelRequested = { [weak self] presentation in
-            guard let self else { return }
-            // A transient cursor label must not tear down a live or queued guide:
-            // showCursorLabel() clears the overlay before presenting.
-            guard self.pendingVisualGuidancePresentation == nil,
-                  !self.visualGuidanceOverlayController.isRunningGuidanceSequence else { return }
-            self.visualGuidanceOverlayController.showCursorLabel(presentation)
-        }
-
-        realtimeClient.onVisualGuidanceClearRequested = { [weak self] in
-            guard let self else { return "{\"error\": \"app unavailable\"}" }
-            self.cancelVisualGuidance()
-            return "{\"status\": \"cleared\"}"
-        }
-
         realtimeClient.onResponseAudioStarted = { [weak self] in
             guard let self else { return }
             // Turn latency: time from push-to-talk release to the first response-audio
@@ -637,7 +587,6 @@ final class CompanionManager: ObservableObject {
                 MackyAnalytics.turnLatency(milliseconds: Int(Date().timeIntervalSince(start) * 1000))
                 self.turnReleaseTimestamp = nil
             }
-            self.startPendingVisualGuidanceIfNeeded()
             self.voiceState = .responding
             self.operationState = .speaking
         }
@@ -756,23 +705,6 @@ final class CompanionManager: ObservableObject {
         )
     }
 
-    private func startPendingVisualGuidanceIfNeeded() {
-        pendingVisualGuidanceStartTask?.cancel()
-        pendingVisualGuidanceStartTask = nil
-        guard let presentation = pendingVisualGuidancePresentation else { return }
-        pendingVisualGuidancePresentation = nil
-        visualGuidanceOverlayController.run(presentation: presentation)
-    }
-
-    private func cancelVisualGuidance() {
-        pendingVisualGuidanceStartTask?.cancel()
-        pendingVisualGuidanceStartTask = nil
-        pendingVisualGuidancePresentation = nil
-        realtimeClient.cancelVisualGuidanceWork()
-        visualGuidanceOverlayController.clear()
-        subAgentProgressController.hide()
-    }
-
     private func beginToolActivity(toolName: String) {
         activeToolCount += 1
         turnUsedTool = true
@@ -888,7 +820,6 @@ final class CompanionManager: ObservableObject {
             foregroundAppContextForCurrentTurn = isForegroundAppContextEnabled
                 ? ForegroundAppContextProvider.capture()
                 : nil
-            cancelVisualGuidance()
             realtimeClient.cancelCursorControlWork()
             realtimeClient.interruptPlayback()
             realtimeClient.clearAudioBuffer()

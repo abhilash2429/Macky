@@ -90,7 +90,7 @@ You have two paths. Most people will use Path A.
    open leanring-buddy.xcodeproj
    ```
 3. **Wait for dependencies.** The first time you open it, Xcode automatically downloads a
-   few packages (Sparkle, PostHog, PLCrashReporter). Give it a minute. You can watch the
+   few packages (Sparkle and PostHog). Give it a minute. You can watch the
    progress in the top toolbar.
 4. **Pick the app.** In the toolbar near the top-left, make sure the scheme selector says
    **`leanring-buddy`** and the target is **My Mac**.
@@ -281,8 +281,7 @@ your own:
    fetch, the connector connect/connections calls, and the magic-link auth routes — derives
    from that one host, so there is nothing else to update.
 
-To package and ship a signed, notarized release, see [`scripts/README.md`](scripts/README.md)
-and [`scripts/AGENTS.md`](scripts/AGENTS.md).
+To package and ship a signed, notarized release, see [`scripts/AGENTS.md`](scripts/AGENTS.md).
 
 ---
 

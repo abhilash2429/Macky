@@ -83,9 +83,7 @@ to the notch.
 - `AppLauncherIntegration.swift` — `NSWorkspace` app launching.
 - `CompanionScreenCaptureUtility.swift` — ScreenCaptureKit for on-demand screen context.
 - `CursorControlIntegration.swift` — standalone CGEvent cursor movement, clicking, dragging,
-  and scrolling. Visual guidance reuses it for pointing only.
-- `VisualGuidance*` / `VisualScene*` — validated screenshot-coordinate diagrams, overlay
-  rendering, optional Accessibility targets, and cursor labels.
+  and scrolling.
 
 ### Observability
 - `MackyAnalytics.swift` — thin wrapper over the PostHog SDK. No-ops until a
@@ -93,15 +91,11 @@ to the notch.
   **call sites** live in `CompanionManager` (turn latency, connector-connect funnel steps)
   and `RealtimeClient` (native + MCP tool success/failure, connect-link requested). Add new
   events through its `Event`/category methods, not a parallel API.
-- `MackyCrashReporter.swift` — PLCrashReporter startup wiring, guarded by
-  `#if canImport(CrashReporter)`. No-op until the `CrashReporter` package product is linked
-  to the target in Xcode (it is resolved transitively but not yet a linked product).
 
 ### Config & resources
 - `Info.plist` — bundle config, permission usage strings, the `Macky://` URL scheme.
 - `leanring-buddy.entitlements` — sandbox/capabilities, permissions, URL scheme.
 - `Assets.xcassets/` — app icon and colors.
-- `enter.mp3`, `eshop.mp3` — UI sound effects.
 
 ---
 
@@ -113,17 +107,15 @@ to the notch.
   it resolves after the first `session.update`, the MCP tool is wired in with a follow-up
   update. A reconnect mid-utterance does **not** replay dropped mic audio (the server-side
   input buffer is cleared on reconnect, so replaying a fragment would mis-transcribe);
-  instead the dropped utterance is surfaced via `lastError` rather than silently committed.
+  instead the dropped utterance is discarded rather than committed as a partial turn.
 - macOS-native actions stay local in Swift; web services go through the **Composio MCP
   gateway** wired into the realtime session config — not through one-off OAuth clients.
 - Screen context is **on demand** — the app does not capture or send screenshots on every
   key press, and by default captures only the cursor's display (the `get_screen_context`
   tool's `all_screens` flag opts into every monitor).
-- Coordinate-based cursor actions require a fresh current-turn screen capture. Visual
-  diagrams are generated on demand by GPT-5.6-sol through the authenticated Worker route;
-  the realtime model remains responsible for deciding when to teach and for narration.
-  Multi-display coordinate actions must use the capture's `display_id`, and any standalone
-  cursor action invalidates cached coordinates before the next action.
+- Coordinate-based cursor actions require a fresh current-turn screen capture. Multi-display
+  coordinate actions must use the capture's `display_id`, and any standalone cursor action
+  invalidates cached coordinates before the next action.
 
 ---
 

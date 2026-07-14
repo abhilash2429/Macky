@@ -41,9 +41,9 @@ the development ASR path is AssemblyAI Universal-3.5 Pro Streaming over a new on
 
 dictation has three style modes: **Literal** renders explicit spoken layout commands locally, **Clean** performs only conservative local cleanup, and **Smart** sends the final transcript plus its coarse surface category to `gpt-5.6-luna` through the Worker for a strict `{ text }` transform. Literal and Clean do not call Luna. The AssemblyAI free-credit setup is development-only: before release, the account-level streaming zero-retention opt-out must be enabled and the Worker switched to its guarded production privacy configuration.
 
-precise visual teaching is the one deliberate specialist path: when the realtime model decides the user needs an exact on-screen diagram, the app sends that single on-demand screenshot (plus optional accessibility target boxes) to GPT-5.6-sol through the Worker. GPT-5.6-sol returns validated top-left screenshot coordinates for highlights, arrows, labels, and pointing. for multi-stage tasks, a guide's final step can be marked advance=on_user_action: the overlay then waits for the user's own click, and the app pings the realtime model to re-capture the changed screen and teach the next single action. the realtime model remains the voice brain and narrates the guide; the specialist never owns the conversation.
+screen context is captured only on demand. the realtime model can inspect a fresh screenshot to answer questions about visible UI, and coordinate-based actions always bind to that fresh captured display.
 
-cursor control is a separate local macOS tool, not part of the diagram renderer. it can move, click, double-click, right-click, middle-click, drag, and scroll when the user asks Macky to operate visible UI. coordinate actions always bind to a fresh captured display; generated teaching diagrams only point and never click.
+cursor control is a separate local macOS tool. it can move, click, double-click, right-click, middle-click, drag, and scroll when the user asks Macky to operate visible UI.
 
 ---
 

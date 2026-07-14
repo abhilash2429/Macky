@@ -5,7 +5,7 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:$PATH"
 
 # =============================================================================
-# release.sh — Automates the full release pipeline for makesomething
+# release.sh — Automates the full release pipeline for Macky
 #
 # What it does (in order):
 #   1. Auto-detects version + build from the latest GitHub Release
@@ -16,7 +16,7 @@ export PATH="/opt/homebrew/bin:$PATH"
 #   6. Signs the DMG with your Sparkle EdDSA key
 #   7. Generates/updates appcast.xml automatically
 #   8. Creates a GitHub Release with the DMG attached
-#   9. Pushes the updated appcast.xml to the releases repo (makesomething-mac-app)
+#   9. Pushes the updated appcast.xml to the configured releases repo
 #
 # Usage:
 #   ./scripts/release.sh              Auto-bumps: 1.5 → 1.6, build 6 → 7
@@ -34,7 +34,7 @@ export PATH="/opt/homebrew/bin:$PATH"
 # ── Configuration ────────────────────────────────────────────────────────────
 
 SCHEME="leanring-buddy"
-APP_NAME="makesomething"
+APP_NAME="Macky"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/build"
 ARCHIVE_PATH="${BUILD_DIR}/${APP_NAME}.xcarchive"
@@ -202,14 +202,23 @@ echo "✅ Export complete (signed + notarized)"
 DMG_PATH="${RELEASES_DIR}/${DMG_FILENAME}"
 
 echo "💿 Creating DMG..."
+DMG_OPTIONS=(
+    --volname "${APP_NAME}"
+    --window-pos 200 120
+    --window-size 660 400
+    --icon-size 100
+    --icon "${APP_NAME}.app" 160 195
+    --app-drop-link 500 195
+)
+
+if [ -f "${DMG_BACKGROUND}" ]; then
+    DMG_OPTIONS+=(--background "${DMG_BACKGROUND}")
+else
+    echo "⚠️  DMG background not found; creating a standard DMG without one."
+fi
+
 create-dmg \
-    --volname "${APP_NAME}" \
-    --window-pos 200 120 \
-    --window-size 660 400 \
-    --icon-size 100 \
-    --icon "${APP_NAME}.app" 160 195 \
-    --app-drop-link 500 195 \
-    --background "${DMG_BACKGROUND}" \
+    "${DMG_OPTIONS[@]}" \
     "${DMG_PATH}" \
     "${EXPORT_DIR}/${APP_NAME}.app" \
     2>&1 | tail -3
@@ -259,7 +268,7 @@ echo "🏷️  Creating GitHub Release ${TAG}..."
 gh release create "${TAG}" "${DMG_PATH}" \
     --repo "${GITHUB_REPO}" \
     --title "v${MARKETING_VERSION}" \
-    --notes "makesomething v${MARKETING_VERSION}" \
+    --notes "Macky v${MARKETING_VERSION}" \
     --latest
 
 # ── Step 9: Push appcast.xml to the releases repo ───────────────────────────

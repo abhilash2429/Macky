@@ -35,8 +35,7 @@ Macky is a heavily reworked fork of **Clicky** (an open-source MIT-licensed macO
 assistant). The macOS UI primitives are kept — the `NSPanel`, ScreenCaptureKit usage,
 the CGEvent push-to-talk tap, and the design system. The old API brain (AssemblyAI +
 Claude + ElevenLabs chain) was removed and replaced with one realtime voice model plus an
-MCP-based integration layer. Exact visual teaching is the deliberate exception: the Worker
-uses GPT-5.6-sol on demand to convert one screenshot into validated overlay coordinates.
+MCP-based integration layer.
 
 Do **not** assume old Clicky, Auren, makesomething, or Boring Notch behavior still
 applies unless current files prove it. Treat the product direction in `MACKY.md` and the
@@ -96,7 +95,6 @@ current code as the source of truth.
 | `leanring-buddy.xcodeproj/` | Xcode project config: targets, build settings, SPM products, signing. | `leanring-buddy.xcodeproj/AGENTS.md` |
 | `worker/` | Cloudflare Worker TypeScript proxy. Owns `/realtime`, `/composio-config`, and the magic-link auth routes. | `worker/AGENTS.md` |
 | `scripts/` | Release automation (`release.sh`) for the macOS app. Production deployment tooling. | `scripts/AGENTS.md` |
-| `.github/workflows/` | CI: `macos-build.yml` builds the app on `macos-15` and uploads `Macky.app` as an artifact. | — |
 | `MACKY.md` | Product and architecture brief. The source of truth for intended behavior. | — |
 
 > The folder, scheme, and project file are all named `leanring-buddy` (note the typo).
@@ -182,7 +180,7 @@ For a human getting this project running locally.
 ### Run the app
 1. Open `leanring-buddy.xcodeproj` in Xcode.
 2. Select the `leanring-buddy` scheme and build & run (⌘R). Building once also lets SPM
-   download Sparkle, PostHog, and PLCrashReporter.
+   download Sparkle and PostHog.
 3. On first launch, grant the macOS permission prompts (Microphone, Accessibility, Screen
    Recording). These power push-to-talk, the global hotkey, and screen context.
 4. Sign in via the magic-link flow (see `worker/AGENTS.md`) or click **Skip for now**
@@ -198,5 +196,5 @@ For a human getting this project running locally.
 - From the repo root: `./scripts/release.sh` (auto-bumps version/build) or
   `./scripts/release.sh <version> [build]`. This builds, signs, notarizes, packages a
   DMG, signs the Sparkle update, and creates a GitHub Release. See `scripts/AGENTS.md`
-  and `scripts/README.md` for one-time setup (Developer ID cert, notarytool credentials,
+  for one-time setup (Developer ID cert, notarytool credentials,
   Sparkle key, `brew install create-dmg gh`).

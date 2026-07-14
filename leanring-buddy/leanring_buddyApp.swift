@@ -28,10 +28,8 @@ final class MackyAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        // Product analytics + crash reporting, wired before any other session state so
-        // early events/crashes are captured. Both no-op safely when unconfigured.
+        // Product analytics starts before any other session state so early events are captured.
         MackyAnalytics.start()
-        MackyCrashReporter.start()
 
         NSAppleEventManager.shared().setEventHandler(
             self,

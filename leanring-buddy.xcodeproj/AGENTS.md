@@ -31,8 +31,7 @@ tells Xcode *how* to build `leanring-buddy/` lives here.
 - **Bundle identifier:** `com.speedmac.Macky` (Macky branding).
 - **Minimum macOS target:** 14.2.
 - **Swift version:** 5.0 in project settings.
-- **Swift Package pins:** Sparkle (auto-update), PostHog (analytics), PLCrashReporter
-  (crash reporting).
+- **Swift Package pins:** Sparkle (auto-update) and PostHog (analytics).
 - **Test targets** may be absent or deleted in the current working tree — verify before
   relying on them.
 
@@ -61,9 +60,6 @@ tells Xcode *how* to build `leanring-buddy/` lives here.
 - On macOS, prefer opening the project in Xcode and building there.
 - When you cannot open/build the project, say so explicitly and rely on static review of
   the `project.pbxproj` diff.
-- The CI workflow (`.github/workflows/macos-build.yml`) resolves packages and builds the
-  `leanring-buddy` target with signing disabled — a good cross-check that the project
-  graph is still valid.
 
 ---
 
@@ -73,8 +69,8 @@ For a human working with the project.
 
 - **Open:** double-click `leanring-buddy.xcodeproj` (or `open leanring-buddy.xcodeproj`
   from the repo root) to launch it in Xcode.
-- **First build:** run a build once so Swift Package Manager downloads Sparkle, PostHog,
-  and PLCrashReporter. The Sparkle CLI tools fetched here are also what the release script
+- **First build:** run a build once so Swift Package Manager downloads Sparkle and PostHog.
+  The Sparkle CLI tools fetched here are also what the release script
   depends on.
 - **Add a source file:** add it to the `leanring-buddy` group in Xcode and confirm the
   `leanring-buddy` target checkbox is ticked under *Target Membership*.

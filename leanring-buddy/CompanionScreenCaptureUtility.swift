@@ -23,15 +23,6 @@ struct CompanionScreenCapture {
     let screenshotWidthInPixels: Int
     let screenshotHeightInPixels: Int
 
-    var visualGuidanceDisplayFrame: VisualGuidanceDisplayFrame {
-        VisualGuidanceDisplayFrame(
-            x: Double(displayFrame.origin.x),
-            y: Double(displayFrame.origin.y),
-            width: Double(displayFrame.width),
-            height: Double(displayFrame.height),
-            displayID: displayID
-        )
-    }
 }
 
 @MainActor

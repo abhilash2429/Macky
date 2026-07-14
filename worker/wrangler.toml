@@ -26,14 +26,6 @@ binding = "SESSIONS"
 id = "2fc10fdebea845029c7a9854988132d1"
 preview_id = "94f18781c0cb41369c37f84f5715d54b"
 
-[[durable_objects.bindings]]
-name = "SESSION_OBJECTS"
-class_name = "MackySessionObject"
-
-[[migrations]]
-tag = "v1-session-objects"
-new_sqlite_classes = ["MackySessionObject"]
-
 # Magic-link emails are sent via Resend (no domain required).
 # One-time setup before this works:
 #   1. Create a free account at https://resend.com using the email you want the
@@ -47,13 +39,6 @@ new_sqlite_classes = ["MackySessionObject"]
 MAGIC_LINK_FROM = "onboarding@resend.dev"
 # Public origin of this Worker, used to build the clickable link in the email.
 PUBLIC_BASE_URL = "https://realtime-proxy.speedmac.workers.dev"
-# Azure deployment name for the primary visual-guidance model (screen coordinates).
-# Runs on the same Azure resource / AZURE_OPENAI_API_KEY as the realtime endpoint.
-CANVAS_VISION_MODEL = "gpt-5.6-sol"
-# Reasoning effort for canvas-vision: minimal | low | medium | high.
-# "medium" keeps guides responsive; "high" was 15-45s per request.
-CANVAS_VISION_REASONING_EFFORT = "medium"
-
 # Dictation development uses AssemblyAI Universal-3.5 Pro Streaming. Set the
 # secret out-of-band before the route can be used:
 #   npx wrangler secret put ASSEMBLYAI_API_KEY

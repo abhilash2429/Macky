@@ -35,13 +35,6 @@ enum WorkerEndpoints {
     /// discovery the model would otherwise drive across several round-trips.
     static let spotifyPlayURL = URL(string: "\(httpsBase)/spotify-play")!
 
-    /// Visual-guidance vision route (`/canvas-vision`). When the realtime model asks for
-    /// precise visual guidance, the app POSTs the latest screenshot JPEG + instruction +
-    /// screenshot dimensions; the Worker runs GPT-5.6-sol and returns a `canvas_payload`
-    /// (VisualGuidanceSequence JSON). Keeps coordinate generation off the pure-proxy
-    /// `/realtime` socket.
-    static let canvasVisionURL = URL(string: "\(httpsBase)/canvas-vision")!
-
     /// On-demand AssemblyAI Universal-3.5 Pro Streaming proxy. The app opens it
     /// only for a held Ctrl + Fn dictation after local target validation; it is
     /// explicitly terminated on release to avoid idle-session billing.
@@ -52,8 +45,4 @@ enum WorkerEndpoints {
     /// Azure is unavailable.
     static let dictationPolishURL = URL(string: "\(httpsBase)/dictation/polish")!
 
-    /// Versioned session side-channel foundation. The realtime socket remains a pure
-    /// byte proxy; these routes are for reconnect-safe typed state/events.
-    static let sessionStateURL = URL(string: "\(httpsBase)/session/state")!
-    static let sessionEventURL = URL(string: "\(httpsBase)/session/event")!
 }
