@@ -401,6 +401,7 @@ private struct SettingsPanel: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 20) {
                 generalSection
+                contextSection
                 permissionsSection
                 shortcutsSection
                 accountSection
@@ -449,6 +450,31 @@ private struct SettingsPanel: View {
             SettingsPermissionRow(title: "Screen Content", granted: companionManager.hasScreenContentPermission) {
                 companionManager.requestScreenContentPermission()
             }
+        }
+    }
+
+    private var contextSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            PanelTitle("App Context", subtitle: "Make voice requests less repetitive in the app you are using.")
+            Toggle(isOn: Binding(
+                get: { companionManager.isForegroundAppContextEnabled },
+                set: { companionManager.setForegroundAppContextEnabled($0) }
+            )) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Use current app while speaking")
+                        .font(.system(.subheadline, design: .rounded))
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Color.white.opacity(0.9))
+                    Text("Sends only the active app name and bundle ID with each voice request. Macky never reads window titles, text, web pages, or app activity in the background.")
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .secondarySystemFill)))
         }
     }
 

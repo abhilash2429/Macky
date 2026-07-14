@@ -62,6 +62,7 @@ private enum ConnectorConnectError: Error {
 final class CompanionManager: ObservableObject {
     private static let panelOnboardingDefaultsKey = "mackyPanelOnboardingComplete"
     private static let enabledSkillIDsDefaultsKey = "mackyEnabledSkillIDs"
+    private static let foregroundAppContextEnabledDefaultsKey = "mackyForegroundAppContextEnabled"
     private static let maxRecentInteractions = 5
     private static let maxHistoryEntries = 20
 
@@ -109,6 +110,11 @@ final class CompanionManager: ObservableObject {
     /// the system permission dialog isn't hidden behind the panel.
     @Published private(set) var systemPromptToken = 0
     @Published var hasCompletedPanelOnboarding: Bool = UserDefaults.standard.bool(forKey: CompanionManager.panelOnboardingDefaultsKey)
+    /// Opt-in only: app identity is attached to a voice turn only after the user enables
+    /// this setting. It never enables an ambient app-activity monitor.
+    @Published private(set) var isForegroundAppContextEnabled = UserDefaults.standard.bool(
+        forKey: CompanionManager.foregroundAppContextEnabledDefaultsKey
+    )
 
     /// IDs of the Skills (see `SkillRegistry`) the user has enabled. This is the
     /// UI-observable half of a Skill: it drives the Home preview strip and the
@@ -142,6 +148,9 @@ final class CompanionManager: ObservableObject {
     private var lastNarration: String?
     private var turnUsedTool = false
     private var activeToolCount = 0
+    /// Captured at push-to-talk start so opening or hovering Macky's panel cannot replace
+    /// the user's external app with Macky itself before the voice request is committed.
+    private var foregroundAppContextForCurrentTurn: ForegroundAppContext?
     private var pendingVisualGuidancePresentation: VisualGuidancePresentation?
     /// Fallback that starts a queued overlay when the narration audio it normally
     /// waits for never arrives (cancelled or audio-less response).
@@ -180,6 +189,11 @@ final class CompanionManager: ObservableObject {
     var hasCompletedOnboarding: Bool {
         get { hasCompletedPanelOnboarding }
         set { setPanelOnboardingComplete(newValue) }
+    }
+
+    func setForegroundAppContextEnabled(_ isEnabled: Bool) {
+        isForegroundAppContextEnabled = isEnabled
+        UserDefaults.standard.set(isEnabled, forKey: CompanionManager.foregroundAppContextEnabledDefaultsKey)
     }
 
     func start() {
@@ -823,6 +837,9 @@ final class CompanionManager: ObservableObject {
         switch transition {
         case .pressed:
             guard !buddyDictationManager.isDictationInProgress else { return }
+            foregroundAppContextForCurrentTurn = isForegroundAppContextEnabled
+                ? ForegroundAppContextProvider.capture()
+                : nil
             cancelVisualGuidance()
             realtimeClient.cancelCursorControlWork()
             realtimeClient.interruptPlayback()
@@ -842,6 +859,7 @@ final class CompanionManager: ObservableObject {
                 } catch {
                     print("⚠️ Companion: couldn't start realtime audio streaming: \(error)")
                     self.buddyDictationManager.stopRealtimeAudioStreaming()
+                    self.foregroundAppContextForCurrentTurn = nil
                     self.voiceState = .idle
                     self.operationState = .error(error.localizedDescription)
                 }
@@ -854,10 +872,22 @@ final class CompanionManager: ObservableObject {
                 operationState = .thinking
                 turnReleaseTimestamp = Date()
                 guard realtimeClient.commitAudio() else {
+                    foregroundAppContextForCurrentTurn = nil
                     voiceState = .idle
                     operationState = .idle
                     return
                 }
+                if isForegroundAppContextEnabled {
+                    // Prefer a newer external app if the user switched during the utterance;
+                    // retain the start snapshot when Macky's own panel briefly has focus.
+                    if let contextAtRelease = ForegroundAppContextProvider.capture() {
+                        foregroundAppContextForCurrentTurn = contextAtRelease
+                    }
+                    if let foregroundAppContextForCurrentTurn {
+                        realtimeClient.sendForegroundAppContext(foregroundAppContextForCurrentTurn)
+                    }
+                }
+                foregroundAppContextForCurrentTurn = nil
                 if !pendingFileContext.isEmpty || !pendingImageContext.isEmpty {
                     realtimeClient.sendUserContext(texts: pendingFileContext, images: pendingImageContext)
                     clearPendingAttachments()
@@ -867,9 +897,12 @@ final class CompanionManager: ObservableObject {
                     pendingDroppedFiles = []
                 }
                 realtimeClient.requestResponse()
-            } else if !toolCallActive {
-                voiceState = .idle
-                operationState = .idle
+            } else {
+                foregroundAppContextForCurrentTurn = nil
+                if !toolCallActive {
+                    voiceState = .idle
+                    operationState = .idle
+                }
             }
         case .none:
             break

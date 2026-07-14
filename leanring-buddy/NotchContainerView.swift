@@ -501,7 +501,7 @@ private enum MackyPanelOnboardingStep: Int, CaseIterable {
         case .screenRecording:
             return "Screen context is sent only when Macky needs it for your request."
         case .accessibility:
-            return "This is used for control and hotkey behavior, not background browsing."
+            return "This is used for control and hotkey behavior, not background browsing. If you enable App Context in Settings, Macky sends only the active app identity while you speak."
         case .calendar:
             return "Calendar data stays in the panel unless you ask Macky to use it."
         case .reminders:
