@@ -137,16 +137,14 @@ enum MackyAnalytics {
     /// Stage timing telemetry is anonymous and numeric only. It supports the
     /// dictation latency target without retaining raw audio or transcripts.
     static func dictationTiming(
-        asrFinalizationMilliseconds: Int,
+        realtimeFinalizationMilliseconds: Int,
         workerConnectionMilliseconds: Int,
-        polishMilliseconds: Int,
         insertionMilliseconds: Int,
         totalMilliseconds: Int
     ) {
         capture(Event.dictationTiming, [
-            "asr_finalization_ms": asrFinalizationMilliseconds,
+            "realtime_finalization_ms": realtimeFinalizationMilliseconds,
             "worker_connection_ms": workerConnectionMilliseconds,
-            "polish_ms": polishMilliseconds,
             "target_insertion_ms": insertionMilliseconds,
             "total_ms": totalMilliseconds,
             "performance_target_exceeded": totalMilliseconds > 700,

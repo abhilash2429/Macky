@@ -35,14 +35,9 @@ enum WorkerEndpoints {
     /// discovery the model would otherwise drive across several round-trips.
     static let spotifyPlayURL = URL(string: "\(httpsBase)/spotify-play")!
 
-    /// On-demand AssemblyAI Universal-3.5 Pro Streaming proxy. The app opens it
-    /// only for a held Ctrl + Fn dictation after local target validation; it is
-    /// explicitly terminated on release to avoid idle-session billing.
-    static let dictationAssemblyAIURL = URL(string: "wss://\(baseHost)/dictation/assemblyai")!
-
-    /// Optional Smart dictation polish route. Literal and Clean modes never call
-    /// this endpoint, so offline-style local formatting remains available when
-    /// Azure is unavailable.
-    static let dictationPolishURL = URL(string: "\(httpsBase)/dictation/polish")!
+    /// Isolated text-only gpt-realtime-2.1-mini session for Ctrl + Fn
+    /// dictation. It is separate from the persistent assistant socket and is
+    /// created only after the local focused-field safety check.
+    static let dictationRealtimeURL = URL(string: "wss://\(baseHost)/dictation/realtime")!
 
 }

@@ -60,7 +60,7 @@ struct DictationSettingsView: View {
                     .foregroundColor(DS.Colors.textTertiary)
             }
 
-            Text("Development data handling: AssemblyAI receives held microphone audio, its transcript, this glossary, and a broad surface category; its free-credit account may retain that development data under the account terms. Macky never sends focused-field text, selections, titles, URLs, recipients, or page contents. Literal and Clean skip Luna; Smart sends the completed transcript to the Worker for polish. Release requires AssemblyAI zero-retention opt-out.")
+            Text("Azure gpt-realtime-2.1-mini receives held microphone audio, this glossary, and a broad surface category, then returns one final text-only result. Macky never sends focused-field text, selections, titles, URLs, recipients, or page contents. Literal, Clean, and Smart formatting all happen inside that isolated dictation session.")
                 .font(.system(size: DS.PanelTypography.size(10)))
                 .foregroundColor(DS.Colors.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)

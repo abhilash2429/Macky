@@ -30,7 +30,6 @@ enum DictationSurfaceKind: String, CaseIterable, Codable, Identifiable {
         }
     }
 }
-
 enum DictationFormattingMode: String, CaseIterable, Codable, Identifiable {
     case literal
     case clean
@@ -49,11 +48,11 @@ enum DictationFormattingMode: String, CaseIterable, Codable, Identifiable {
     var detail: String {
         switch self {
         case .literal:
-            return "Local command rendering only. No polish request."
+            return "Realtime model preserves literal wording and renders explicit commands only."
         case .clean:
-            return "Local command rendering and conservative filler cleanup."
+            return "Realtime model applies conservative punctuation and cleanup."
         case .smart:
-            return "Optional cloud polish after transcription. Preserves facts and identifiers."
+            return "Realtime model applies app-aware polish while preserving facts and identifiers."
         }
     }
 }
@@ -74,9 +73,8 @@ struct DictationTranscriptionConfiguration: Equatable {
 
 struct DictationTranscription: Equatable {
     let text: String
-    let asrFinalizationMilliseconds: Int
+    let realtimeFinalizationMilliseconds: Int
     let workerConnectionMilliseconds: Int
-    let providerSessionMilliseconds: Int?
 }
 
 @MainActor
@@ -202,63 +200,5 @@ enum DictationGlossary {
             if terms.count == maximumTerms { break }
         }
         return terms
-    }
-}
-
-enum LocalDictationFormatter {
-    static func format(
-        transcript: String,
-        mode: DictationFormattingMode,
-        surfaceKind: DictationSurfaceKind
-    ) -> String {
-        var formatted = renderExplicitCommands(in: transcript)
-        guard mode == .clean, surfaceKind != .code, surfaceKind != .terminal else {
-            return formatted
-        }
-        formatted = removeIsolatedFillers(from: formatted)
-        return normalizedWhitespace(in: formatted)
-    }
-
-    /// This accepts only intentional dictation command phrases. It does not use an
-    /// LLM and never removes semantically meaningful words such as "like".
-    private static func renderExplicitCommands(in transcript: String) -> String {
-        var text = transcript
-        text = replacingCommand("new paragraph", with: "\n\n", in: text)
-        text = replacingCommand("new line", with: "\n", in: text)
-        text = replacingCommand("bullet", with: "\n• ", in: text)
-        text = replacingCommand("comma", with: ",", in: text)
-        text = replacingCommand("period", with: ".", in: text)
-        text = replacingCommand("question mark", with: "?", in: text)
-        text = replacingCommand("exclamation mark", with: "!", in: text)
-        text = replacingCommand("colon", with: ":", in: text)
-        text = replacingCommand("semicolon", with: ";", in: text)
-        text = text.replacingOccurrences(of: "\\s+([,.;:?!])", with: "$1", options: [.regularExpression])
-        text = text.replacingOccurrences(of: "[ \t]+\n", with: "\n", options: [.regularExpression])
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func replacingCommand(_ command: String, with replacement: String, in text: String) -> String {
-        let words = command.split(separator: " ")
-            .map { NSRegularExpression.escapedPattern(for: String($0)) }
-            .joined(separator: "\\s+")
-        let expression = "(?i)\\b\(words)\\b"
-        return text.replacingOccurrences(of: expression, with: replacement, options: [.regularExpression])
-    }
-
-    private static func removeIsolatedFillers(from text: String) -> String {
-        text.replacingOccurrences(
-            of: "(?i)(^|[\\s,])(?:um+|uh+|erm+|hmm+)(?=\\s|[,.;:?!]|$)",
-            with: "$1",
-            options: [.regularExpression]
-        )
-    }
-
-    private static func normalizedWhitespace(in text: String) -> String {
-        text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.replacingOccurrences(of: "[ \\t]+", with: " ", options: [.regularExpression])
-                .trimmingCharacters(in: .whitespaces) }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

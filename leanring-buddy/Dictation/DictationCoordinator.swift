@@ -3,7 +3,7 @@
 //  leanring-buddy
 //
 //  Ctrl + Fn dictation is intentionally independent from the realtime assistant:
-//  it performs one target-safe ASR pass and one final insertion, never streams
+//  it performs one target-safe realtime text pass and one final insertion, never streams
 //  partial text into another app, invokes tools, or produces spoken output.
 //
 
@@ -25,7 +25,7 @@ enum DictationLifecycle: Equatable {
 final class DictationCoordinator: ObservableObject {
     private static let formattingModeDefaultsKey = "macky.dictation.formattingMode"
     private static let glossaryDefaultsKey = "macky.dictation.glossary"
-    private static let maximumPreconnectionAudioBytes = 16_000 // 500 ms at PCM16 16 kHz mono.
+    private static let maximumPreconnectionAudioBytes = 24_000 // 500 ms at PCM16 24 kHz mono.
 
     @Published private(set) var lifecycle: DictationLifecycle = .idle
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
@@ -60,7 +60,6 @@ final class DictationCoordinator: ObservableObject {
     private let targetIntegration: DictationTargetIntegration
     private let audioCapture: DictationAudioCapture
     private let transcriber: DictationTranscriber
-    private let urlSession: URLSession
 
     private var preparedTarget: DictationTargetPreparation?
     private var startTask: Task<Void, Never>?
@@ -80,14 +79,11 @@ final class DictationCoordinator: ObservableObject {
     init(
         targetIntegration: DictationTargetIntegration = DictationTargetIntegration(),
         audioCapture: DictationAudioCapture = DictationAudioCapture(),
-        transcriber: DictationTranscriber = AssemblyAIDictationTranscriber()
+        transcriber: DictationTranscriber = RealtimeDictationTranscriber()
     ) {
         self.targetIntegration = targetIntegration
         self.audioCapture = audioCapture
         self.transcriber = transcriber
-        let configuration = URLSessionConfiguration.default
-        configuration.waitsForConnectivity = true
-        self.urlSession = URLSession(configuration: configuration)
         self.formattingMode = DictationFormattingMode(
             rawValue: UserDefaults.standard.string(forKey: Self.formattingModeDefaultsKey) ?? ""
         ) ?? .literal
@@ -284,32 +280,7 @@ final class DictationCoordinator: ObservableObject {
         dictationID: UUID
     ) async throws {
         guard isCurrentDictation(dictationID) else { return }
-        let polishStartedAt = Date()
-        let insertionText: String
-        if formattingMode == .smart {
-            do {
-                insertionText = try await requestSmartPolish(transcription.text, target: target)
-                guard isCurrentDictation(dictationID) else { return }
-            } catch {
-                guard !Task.isCancelled, isCurrentDictation(dictationID) else { return }
-                finishWithError(
-                    "Smart dictation polish failed. Macky did not insert text.",
-                    offerCopyText: transcription.text,
-                    dictationID: dictationID
-                )
-                return
-            }
-        } else {
-            insertionText = LocalDictationFormatter.format(
-                transcript: transcription.text,
-                mode: formattingMode,
-                surfaceKind: target.surfaceKind
-            )
-        }
-        let polishMilliseconds = formattingMode == .smart
-            ? Int(Date().timeIntervalSince(polishStartedAt) * 1_000)
-            : 0
-        guard isCurrentDictation(dictationID) else { return }
+        let insertionText = transcription.text
         guard !insertionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             finishWithError("Macky did not hear text to insert.", offerCopyText: nil, dictationID: dictationID)
             return
@@ -327,9 +298,8 @@ final class DictationCoordinator: ObservableObject {
                 outcome: "inserted"
             )
             MackyAnalytics.dictationTiming(
-                asrFinalizationMilliseconds: transcription.asrFinalizationMilliseconds,
+                realtimeFinalizationMilliseconds: transcription.realtimeFinalizationMilliseconds,
                 workerConnectionMilliseconds: transcription.workerConnectionMilliseconds,
-                polishMilliseconds: polishMilliseconds,
                 insertionMilliseconds: insertionMilliseconds,
                 totalMilliseconds: totalMilliseconds
             )
@@ -344,56 +314,6 @@ final class DictationCoordinator: ObservableObject {
             )
             finishWithError(error.localizedDescription, offerCopyText: insertionText, dictationID: dictationID)
         }
-    }
-
-    private func requestSmartPolish(
-        _ transcript: String,
-        target: DictationTargetPreparation
-    ) async throws -> String {
-        guard let sessionToken = await AuthManager.shared.ensureSessionToken() else {
-            throw DictationCoordinatorError.noWorkerSession
-        }
-        let requestBody = try JSONSerialization.data(withJSONObject: [
-            "transcript": transcript,
-            "surface_kind": target.surfaceKind.rawValue,
-            "formatting_mode": DictationFormattingMode.smart.rawValue,
-            "has_selection": target.hasSelection,
-            "is_terminal": target.isTerminal,
-        ])
-        let (payload, statusCode) = try await sendSmartPolishRequest(requestBody, sessionToken: sessionToken)
-        if statusCode == 401,
-           let refreshedToken = await AuthManager.shared.refreshSessionToken(rejecting: sessionToken),
-           refreshedToken != sessionToken {
-            let retry = try await sendSmartPolishRequest(requestBody, sessionToken: refreshedToken)
-            return try smartPolishText(from: retry.payload, statusCode: retry.statusCode)
-        }
-        return try smartPolishText(from: payload, statusCode: statusCode)
-    }
-
-    private func sendSmartPolishRequest(
-        _ body: Data,
-        sessionToken: String
-    ) async throws -> (payload: [String: Any]?, statusCode: Int) {
-        var request = URLRequest(url: WorkerEndpoints.dictationPolishURL)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 12
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
-        request.httpBody = body
-        let (data, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw DictationCoordinatorError.invalidWorkerResponse
-        }
-        return ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any], httpResponse.statusCode)
-    }
-
-    private func smartPolishText(from payload: [String: Any]?, statusCode: Int) throws -> String {
-        guard (200...299).contains(statusCode),
-              let text = payload?["text"] as? String,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw DictationCoordinatorError.smartPolishUnavailable
-        }
-        return text
     }
 
     private func finishWithError(
@@ -467,18 +387,18 @@ final class DictationCoordinator: ObservableObject {
 }
 
 @MainActor
-final class AssemblyAIDictationTranscriber: DictationTranscriber {
+final class RealtimeDictationTranscriber: DictationTranscriber {
     private let urlSession: URLSession
     private var webSocketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
-    private var beginContinuation: CheckedContinuation<Void, Error>?
+    private var sessionReadyContinuation: CheckedContinuation<Void, Error>?
     private var finishContinuation: CheckedContinuation<DictationTranscription, Error>?
-    private var finalTurns: [Int: String] = [:]
+    private var finalResponseText = ""
     private var workerConnectionStartedAt: Date?
     private var workerConnectionMilliseconds = 0
     private var finalizationStartedAt: Date?
-    private var didRequestTermination = false
-    private var didReceiveBegin = false
+    private var didRequestCommit = false
+    private var didReceiveSessionUpdate = false
     private var terminalResult: Result<DictationTranscription, Error>?
     private var audioSendTail: Task<Void, Never>?
     private var acceptsAudio = false
@@ -495,16 +415,16 @@ final class AssemblyAIDictationTranscriber: DictationTranscriber {
             throw DictationCoordinatorError.noWorkerSession
         }
 
-        finalTurns = [:]
+        finalResponseText = ""
         workerConnectionMilliseconds = 0
         finalizationStartedAt = nil
-        didRequestTermination = false
-        didReceiveBegin = false
+        didRequestCommit = false
+        didReceiveSessionUpdate = false
         terminalResult = nil
         acceptsAudio = false
         audioSendTail = nil
 
-        var request = URLRequest(url: WorkerEndpoints.dictationAssemblyAIURL)
+        var request = URLRequest(url: WorkerEndpoints.dictationRealtimeURL)
         request.timeoutInterval = 10
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         let task = urlSession.webSocketTask(with: request)
@@ -526,18 +446,36 @@ final class AssemblyAIDictationTranscriber: DictationTranscriber {
             throw DictationCoordinatorError.invalidWorkerResponse
         }
         try await task.send(.string(startText))
-        try await awaitBegin()
+        try await awaitSessionReady()
         acceptsAudio = true
     }
 
     func sendAudio(_ pcm16Chunk: Data) {
-        guard let webSocketTask, acceptsAudio, !didRequestTermination, !pcm16Chunk.isEmpty else { return }
+        guard let webSocketTask, acceptsAudio, !didRequestCommit, !pcm16Chunk.isEmpty else { return }
+        let audioMessage: String
+        do {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "type": "dictation.audio",
+                "audio": pcm16Chunk.base64EncodedString(),
+            ])
+            guard let message = String(data: data, encoding: .utf8) else {
+                fail(DictationCoordinatorError.invalidWorkerResponse)
+                return
+            }
+            audioMessage = message
+        } catch {
+            fail(error)
+            return
+        }
         let previousTail = audioSendTail
         audioSendTail = Task { [weak self] in
             _ = await previousTail?.value
-            guard let self, self.acceptsAudio, !self.didRequestTermination else { return }
+            // `acceptsAudio` prevents new capture callbacks from queuing data
+            // after key release. A chunk already queued while Ctrl + Fn was
+            // held must still reach the Worker before the explicit commit.
+            guard let self, !self.didRequestCommit else { return }
             do {
-                try await webSocketTask.send(.data(pcm16Chunk))
+                try await webSocketTask.send(.string(audioMessage))
             } catch {
                 self.fail(error)
             }
@@ -546,51 +484,49 @@ final class AssemblyAIDictationTranscriber: DictationTranscriber {
 
     func finish() async throws -> DictationTranscription {
         guard let webSocketTask else { throw DictationCoordinatorError.transcriberUnavailable }
-        guard !didRequestTermination else { throw DictationCoordinatorError.transcriberAlreadyFinalizing }
+        guard !didRequestCommit else { throw DictationCoordinatorError.transcriberAlreadyFinalizing }
+        // Stop accepting new capture callbacks before yielding. The serial send
+        // tail still flushes work queued while Ctrl + Fn was held.
         acceptsAudio = false
         if let audioSendTail {
             await audioSendTail.value
         }
-        didRequestTermination = true
+        didRequestCommit = true
         finalizationStartedAt = Date()
-        try await webSocketTask.send(.string("{\"type\":\"Terminate\"}"))
-        return try await awaitTermination()
+        try await webSocketTask.send(.string("{\"type\":\"dictation.commit\"}"))
+        return try await awaitFinalResponse()
     }
 
     func cancel() {
         acceptsAudio = false
         audioSendTail?.cancel()
         audioSendTail = nil
-        if let webSocketTask, !didRequestTermination {
-            didRequestTermination = true
-            Task { try? await webSocketTask.send(.string("{\"type\":\"Terminate\"}")) }
-        }
         receiveTask?.cancel()
         receiveTask = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
-        beginContinuation?.resume(throwing: CancellationError())
+        sessionReadyContinuation?.resume(throwing: CancellationError())
         finishContinuation?.resume(throwing: CancellationError())
-        beginContinuation = nil
+        sessionReadyContinuation = nil
         finishContinuation = nil
-        finalTurns = [:]
-        didRequestTermination = false
-        didReceiveBegin = false
+        finalResponseText = ""
+        didRequestCommit = false
+        didReceiveSessionUpdate = false
         terminalResult = .failure(CancellationError())
     }
 
-    private func awaitBegin() async throws {
-        if didReceiveBegin { return }
+    private func awaitSessionReady() async throws {
+        if didReceiveSessionUpdate { return }
         if let terminalResult {
             _ = try terminalResult.get()
             return
         }
         try await withCheckedThrowingContinuation { continuation in
-            beginContinuation = continuation
+            sessionReadyContinuation = continuation
         }
     }
 
-    private func awaitTermination() async throws -> DictationTranscription {
+    private func awaitFinalResponse() async throws -> DictationTranscription {
         if let terminalResult {
             return try terminalResult.get()
         }
@@ -623,61 +559,70 @@ final class AssemblyAIDictationTranscriber: DictationTranscriber {
         }
 
         switch type {
-        case "Begin":
-            let configuredModel = ((message["configuration"] as? [String: Any])?["model"] as? String) ?? ""
-            guard configuredModel == "universal-3-5-pro" else {
+        case "session.updated":
+            let configuredModel = ((message["session"] as? [String: Any])?["model"] as? String) ?? ""
+            guard configuredModel == "gpt-realtime-2.1-mini" else {
                 fail(DictationCoordinatorError.unexpectedTranscriptionModel)
                 return
             }
             if let workerConnectionStartedAt {
                 workerConnectionMilliseconds = Int(Date().timeIntervalSince(workerConnectionStartedAt) * 1_000)
             }
-            didReceiveBegin = true
-            beginContinuation?.resume()
-            beginContinuation = nil
+            didReceiveSessionUpdate = true
+            sessionReadyContinuation?.resume()
+            sessionReadyContinuation = nil
 
-        case "Turn":
-            let isFinal = message["end_of_turn"] as? Bool ?? false
-            let isFormatted = message["turn_is_formatted"] as? Bool ?? false
-            guard isFinal, isFormatted,
-                  let turnOrder = (message["turn_order"] as? NSNumber)?.intValue,
-                  let transcript = message["transcript"] as? String,
-                  !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            finalTurns[turnOrder] = transcript
+        case "response.output_text.done":
+            if let outputText = message["text"] as? String,
+               !outputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                finalResponseText = outputText
+            }
 
-        case "Termination":
-            let finalText = finalTurns
-                .sorted { $0.key < $1.key }
-                .map(\.value)
-                .joined(separator: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !finalText.isEmpty else {
+        case "response.done":
+            guard let response = message["response"] as? [String: Any],
+                  response["status"] as? String == "completed" else {
+                fail(DictationCoordinatorError.transcriptionFailed)
+                return
+            }
+            let finalText = finalResponseText.isEmpty
+                ? outputText(from: response)
+                : finalResponseText
+            let trimmedFinalText = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedFinalText.isEmpty else {
                 fail(DictationCoordinatorError.emptyTranscription)
                 return
             }
             let finalizationMilliseconds = finalizationStartedAt.map {
                 Int(Date().timeIntervalSince($0) * 1_000)
             } ?? 0
-            let providerSessionMilliseconds = (message["session_duration_seconds"] as? NSNumber)
-                .map { $0.intValue * 1_000 }
             let transcription = DictationTranscription(
-                text: finalText,
-                asrFinalizationMilliseconds: finalizationMilliseconds,
-                workerConnectionMilliseconds: workerConnectionMilliseconds,
-                providerSessionMilliseconds: providerSessionMilliseconds
+                text: trimmedFinalText,
+                realtimeFinalizationMilliseconds: finalizationMilliseconds,
+                workerConnectionMilliseconds: workerConnectionMilliseconds
             )
             terminalResult = .success(transcription)
             acceptsAudio = false
             finishContinuation?.resume(returning: transcription)
             finishContinuation = nil
+            receiveTask?.cancel()
+            receiveTask = nil
+            webSocketTask?.cancel(with: .normalClosure, reason: nil)
             webSocketTask = nil
 
-        case "Error":
+        case "dictation.error", "error":
             fail(DictationCoordinatorError.transcriptionFailed)
 
         default:
             break
         }
+    }
+
+    private func outputText(from response: [String: Any]) -> String {
+        let outputItems = response["output"] as? [[String: Any]] ?? []
+        return outputItems
+            .flatMap { $0["content"] as? [[String: Any]] ?? [] }
+            .compactMap { $0["text"] as? String }
+            .joined(separator: "\n")
     }
 
     private func fail(_ error: Error) {
@@ -686,9 +631,9 @@ final class AssemblyAIDictationTranscriber: DictationTranscriber {
         acceptsAudio = false
         audioSendTail?.cancel()
         audioSendTail = nil
-        beginContinuation?.resume(throwing: error)
+        sessionReadyContinuation?.resume(throwing: error)
         finishContinuation?.resume(throwing: error)
-        beginContinuation = nil
+        sessionReadyContinuation = nil
         finishContinuation = nil
         receiveTask?.cancel()
         receiveTask = nil
@@ -714,7 +659,7 @@ final class DictationAudioCapture {
         }
         self.onPCM16Chunk = onPCM16Chunk
         self.onAudioPower = onAudioPower
-        let converter = BuddyPCM16AudioConverter(targetSampleRate: 16_000)
+        let converter = BuddyPCM16AudioConverter(targetSampleRate: 24_000)
         self.converter = converter
 
         let inputNode = audioEngine.inputNode
@@ -776,7 +721,6 @@ final class DictationAudioCapture {
 private enum DictationCoordinatorError: LocalizedError {
     case noWorkerSession
     case invalidWorkerResponse
-    case smartPolishUnavailable
     case transcriberAlreadyStarted
     case transcriberUnavailable
     case transcriberAlreadyFinalizing
@@ -791,8 +735,6 @@ private enum DictationCoordinatorError: LocalizedError {
             return "Macky could not start its authenticated dictation session."
         case .invalidWorkerResponse:
             return "The dictation service returned an invalid response."
-        case .smartPolishUnavailable:
-            return "Smart dictation polish is unavailable."
         case .transcriberAlreadyStarted:
             return "A dictation transcription session is already running."
         case .transcriberUnavailable:
@@ -800,7 +742,7 @@ private enum DictationCoordinatorError: LocalizedError {
         case .transcriberAlreadyFinalizing:
             return "Dictation is already finalizing."
         case .unexpectedTranscriptionModel:
-            return "The dictation provider did not start the requested accuracy model."
+            return "The dictation service did not start gpt-realtime-2.1-mini."
         case .transcriptionFailed:
             return "Dictation transcription failed before a final result was available."
         case .emptyTranscription:

@@ -39,18 +39,7 @@ preview_id = "94f18781c0cb41369c37f84f5715d54b"
 MAGIC_LINK_FROM = "onboarding@resend.dev"
 # Public origin of this Worker, used to build the clickable link in the email.
 PUBLIC_BASE_URL = "https://realtime-proxy.speedmac.workers.dev"
-# Dictation development uses AssemblyAI Universal-3.5 Pro Streaming. Set the
-# secret out-of-band before the route can be used:
-#   npx wrangler secret put ASSEMBLYAI_API_KEY
-# The provider's zero-retention opt-out is account-level and requires a paid
-# plan. This development deployment intentionally uses the free-credit account;
-# change this to "production" only after that opt-out is enabled.
-DICTATION_PRIVACY_MODE = "development"
-# Azure deployment used only by optional Smart dictation polish. Literal and
-# Clean insert locally and do not call this route.
-DICTATION_POLISH_MODEL = "gpt-5.6-luna"
-# Before a release deployment, switch DICTATION_PRIVACY_MODE to "production"
-# only after AssemblyAI account-level zero retention has been enabled, then set
-# this confirmation flag to "true". The Worker refuses production dictation
-# traffic otherwise.
-# DICTATION_ZERO_RETENTION_CONFIRMED = "true"
+# Dictation uses the existing Azure AI Foundry gpt-realtime-2.1-mini
+# deployment through the same AZURE_OPENAI_API_KEY secret as /realtime.
+# The model name is intentionally fixed in src/index.ts so dictation cannot
+# silently fall back to another model.

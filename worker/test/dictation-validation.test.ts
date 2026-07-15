@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  isAssemblyAIUpstreamOpeningAllowed,
+  dictationSessionUpdate,
+  isDictationCommitMessage,
+  parseDictationAudioMessage,
   parseDictationStartMessage,
   sanitizeDictationKeyterms,
 } from "../src/index.ts";
@@ -25,7 +27,7 @@ test("dictation start forwards only safe surface configuration", () => {
   });
 });
 
-test("dictation keyterms are deduplicated and capped to AssemblyAI limits", () => {
+test("dictation keyterms are deduplicated and capped to dictation limits", () => {
   const keyterms = sanitizeDictationKeyterms([
     "Macky",
     "Macky",
@@ -52,8 +54,51 @@ test("dictation start rejects unsupported surfaces and formatting modes", () => 
   })), null);
 });
 
-test("release before provider Begin never opens a billable upstream socket", () => {
-  assert.equal(isAssemblyAIUpstreamOpeningAllowed(false, false), true);
-  assert.equal(isAssemblyAIUpstreamOpeningAllowed(false, true), false);
-  assert.equal(isAssemblyAIUpstreamOpeningAllowed(true, false), false);
+test("dictation accepts only bounded audio chunks and one explicit commit command", () => {
+  assert.deepEqual(parseDictationAudioMessage(JSON.stringify({
+    type: "dictation.audio",
+    audio: "AA==",
+  })), {
+    type: "dictation.audio",
+    audio: "AA==",
+  });
+  assert.equal(parseDictationAudioMessage(JSON.stringify({
+    type: "response.create",
+    audio: "AA==",
+  })), null);
+  assert.equal(parseDictationAudioMessage(JSON.stringify({
+    type: "dictation.audio",
+    audio: "x".repeat(64_001),
+  })), null);
+  assert.equal(isDictationCommitMessage("{\"type\":\"dictation.commit\"}"), true);
+  assert.equal(isDictationCommitMessage("{\"type\":\"response.create\"}"), false);
+});
+
+test("dictation configures a text-only tool-free 24 kHz realtime session", () => {
+  const start = parseDictationStartMessage(JSON.stringify({
+    type: "dictation.start",
+    surface_kind: "code",
+    formatting_mode: "literal",
+    keyterms: ["Macky"],
+  }));
+  assert.ok(start);
+
+  const update = dictationSessionUpdate(start);
+  const session = update.session as {
+    model: string;
+    output_modalities: string[];
+    audio: { input: { format: { type: string; rate: number }; turn_detection: null } };
+    tools: unknown[];
+    tool_choice: string;
+    tracing: null;
+  };
+
+  assert.equal(session.model, "gpt-realtime-2.1-mini");
+  assert.deepEqual(session.output_modalities, ["text"]);
+  assert.equal(session.audio.input.format.type, "audio/pcm");
+  assert.equal(session.audio.input.format.rate, 24_000);
+  assert.equal(session.audio.input.turn_detection, null);
+  assert.deepEqual(session.tools, []);
+  assert.equal(session.tool_choice, "none");
+  assert.equal(session.tracing, null);
 });

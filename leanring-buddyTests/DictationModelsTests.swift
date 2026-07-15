@@ -39,28 +39,10 @@ final class DictationModelsTests: XCTestCase {
         )
     }
 
-    func testCleanModeKeepsMeaningfulLikeWhileRemovingIsolatedFiller() {
-        let result = LocalDictationFormatter.format(
-            transcript: "I like this uh new paragraph bullet keep like this period",
-            mode: .clean,
-            surfaceKind: .generic
-        )
-
-        XCTAssertTrue(result.contains("I like this"))
-        XCTAssertTrue(result.contains("keep like this."))
-        XCTAssertFalse(result.contains(" uh "))
-        XCTAssertTrue(result.contains("•"))
-    }
-
-    func testLiteralModeDoesNotRemoveFillers() {
-        let result = LocalDictationFormatter.format(
-            transcript: "um keep this like it is",
-            mode: .literal,
-            surfaceKind: .generic
-        )
-
-        XCTAssertTrue(result.contains("um"))
-        XCTAssertTrue(result.contains("like"))
+    func testAllFormattingModesDescribeRealtimeProcessing() {
+        for mode in DictationFormattingMode.allCases {
+            XCTAssertTrue(mode.detail.contains("Realtime model"))
+        }
     }
 
     func testGlossaryDeduplicatesAndEnforcesProviderLimits() {

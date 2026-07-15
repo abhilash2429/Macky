@@ -87,8 +87,8 @@ to the notch.
   `/auth/verify`.
 
 ### Dedicated dictation
-- `Dictation/DictationCoordinator.swift` — target-safe Ctrl + Fn lifecycle, ASR streaming,
-  finalization, optional Smart polish, and insertion coordination.
+- `Dictation/DictationCoordinator.swift` — target-safe Ctrl + Fn lifecycle, isolated
+  realtime streaming, final text-only formatting, and insertion coordination.
 - `Dictation/DictationModels.swift` — dictation modes, surface classification, glossary,
   and local formatting types.
 - `Dictation/DictationTargetIntegration.swift` — target snapshot, revalidation, and safe insertion.
