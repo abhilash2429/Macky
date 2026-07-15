@@ -68,7 +68,7 @@ current code as the source of truth.
    Spotify, GitHub, …) via MCP                         └──────────────────────────┘
 ```
 
-- The app starts in `leanring-buddy/leanring_buddyApp.swift`, creates `CompanionManager`
+- The app starts in `leanring-buddy/App/leanring_buddyApp.swift`, creates `CompanionManager`
   (the app-level state coordinator), and hosts all visible UI in `NotchPanelController`.
 - `RealtimeClient` owns the persistent WebSocket to the Worker, session setup, the
   heartbeat/reconnect lifecycle, realtime protocol parsing, audio playback, local tool
@@ -78,7 +78,7 @@ current code as the source of truth.
 - The Worker (`worker/src/index.ts`) keeps every secret off the client. The app talks to
   the Worker; the Worker talks to Azure realtime and Composio. The app targets a
   **hosted** Worker by default — its host is defined in **one** place,
-  `WorkerEndpoints.baseHost` (`leanring-buddy/WorkerEndpoints.swift`), which every Worker
+  `WorkerEndpoints.baseHost` (`leanring-buddy/Networking/WorkerEndpoints.swift`), which every Worker
   URL in the app (`AuthManager`, `RealtimeClient`, `CompanionManager`) derives from. Normal
   app users do not deploy a backend; self-hosting means deploying `worker/` and changing
   that single `baseHost`.

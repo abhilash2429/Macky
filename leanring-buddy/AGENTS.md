@@ -21,16 +21,16 @@ to the notch.
 ## 2. Read First (for behavior / architecture work)
 
 1. `../MACKY.md` — product brief and intended behavior.
-2. `leanring_buddyApp.swift` — app entry point.
-3. `CompanionManager.swift` — central state coordinator.
+2. `App/leanring_buddyApp.swift` — app entry point.
+3. `Harness/Session/CompanionManager.swift` — central state coordinator.
 4. The specific file you plan to edit.
 5. Direct callers/callees found with `rg`.
 
-- **Notch / geometry work** — also read `NotchPanelController.swift`, `NotchUIModel.swift`,
-  `NotchContainerView.swift`, `Notchshape.swift`, `AurenStatusBar.swift`, `AurenPanel.swift`,
-  `AurenFileDropPanel.swift`, `WindowPositionManager.swift`.
-- **Realtime / audio / tools** — also read `RealtimeClient.swift`,
-  `BuddyDictationManager.swift`, `AudioConversionSupport.swift`, `VoiceActivityView.swift`,
+- **Notch / geometry work** — also read `Overlay/NotchPanelController.swift`, `Overlay/NotchUIModel.swift`,
+  `Overlay/NotchContainerView.swift`, `Overlay/Notchshape.swift`, `Overlay/AurenStatusBar.swift`,
+  `Overlay/AurenPanel.swift`, `Overlay/AurenFileDropPanel.swift`, `Overlay/WindowPositionManager.swift`.
+- **Realtime / audio / tools** — also read `Harness/Dispatcher/RealtimeClient.swift`,
+  `Harness/Dispatcher/BuddyDictationManager.swift`, `Shared/AudioConversionSupport.swift`, `Overlay/VoiceActivityView.swift`,
   and the specific integration file involved.
 
 ---
@@ -38,55 +38,77 @@ to the notch.
 ## 3. File Map
 
 ### App lifecycle & state
-- `leanring_buddyApp.swift` — sets accessory activation, registers the `Macky://auth` URL
+- `App/leanring_buddyApp.swift` — sets accessory activation, registers the `Macky://auth` URL
   handler, creates and starts `CompanionManager`, and creates `NotchPanelController`.
-- `CompanionManager.swift` — the central `@MainActor` state coordinator: permissions,
+- `Harness/Session/CompanionManager.swift` — the central `@MainActor` state coordinator: permissions,
   shortcut state, voice state, operation state, pending attachments, pending connector
   (Composio Connect) links, and the history shown in the panel.
 
+### Harness
+- `Harness/Dispatcher/RealtimeClient.swift` — the persistent realtime dispatcher,
+  local-tool dispatcher, MCP continuation coordinator, and audio transport.
+- `Harness/Dispatcher/GlobalPushToTalkShortcutMonitor.swift` — the global shortcut event tap.
+- `Harness/Dispatcher/BuddyDictationManager.swift` — realtime assistant microphone capture.
+- `Harness/Registry/ConnectorRegistry.swift` — connector identity and MCP-tool matching catalog.
+- `Harness/Registry/SkillRegistry.swift` — skill identity and connector-dependency catalog.
+- `Harness/Loop/LoopPlaceholder.swift` — reserved for the future loop engine and action sanitizer;
+  it intentionally contains no behavior yet.
+
 ### Notch & panel UI
-- `NotchPanelController.swift` — owns the borderless `NSPanel`, computes closed/open
+- `Overlay/NotchPanelController.swift` — owns the borderless `NSPanel`, computes closed/open
   frames, and hosts SwiftUI without letting `NSHostingView` resize the window.
-- `NotchUIModel.swift` — notch geometry and open/closed state **only** (no voice/tool
+- `Overlay/NotchUIModel.swift` — notch geometry and open/closed state **only** (no voice/tool
   state here).
-- `NotchContainerView.swift`, `AurenStatusBar.swift`, `AurenPanel.swift`,
-  `AurenFileDropPanel.swift`, `Notchshape.swift`, `VoiceActivityView.swift` — the notch UI
+- `Overlay/NotchContainerView.swift`, `Overlay/AurenStatusBar.swift`, `Overlay/AurenPanel.swift`,
+  `Overlay/AurenFileDropPanel.swift`, `Overlay/Notchshape.swift`, `Overlay/VoiceActivityView.swift` — the notch UI
   and panel surfaces, the notch shape path, and the live voice waveform.
-- `AuthView.swift`, `HotkeySettingsView.swift` — onboarding/auth and hotkey settings UI.
-- `DesignSystem.swift` — shared design tokens and button styles.
-- `AppKitExtensions.swift`, `WindowPositionManager.swift` — AppKit helpers and multi-display
+- `Auth/AuthView.swift`, `Settings/HotkeySettingsView.swift` — onboarding/auth and hotkey settings UI.
+- `Overlay/DesignSystem.swift` — shared design tokens and button styles.
+- `Shared/AppKitExtensions.swift`, `Overlay/WindowPositionManager.swift` — AppKit helpers and multi-display
   window placement.
 
 ### Voice pipeline
-- `RealtimeClient.swift` — persistent WebSocket, `session.update` payload, realtime event
+- `Harness/Dispatcher/RealtimeClient.swift` — persistent WebSocket, `session.update` payload, realtime event
   parsing, local function-tool dispatch, Composio MCP registration, audio send/receive,
   heartbeat, and reconnect. Its Worker URLs (`workerRealtimeURL`, `composioConfigURL`)
   derive from the shared `WorkerEndpoints` — they are no longer hardcoded here.
-- `WorkerEndpoints.swift` — the single source of truth for the hosted Worker's host
+- `Networking/WorkerEndpoints.swift` — the single source of truth for the hosted Worker's host
   (`baseHost`) and every derived URL (realtime socket, Composio config/connect/connections,
   auth base). Change `baseHost` here (only) to self-host the backend.
-- `BuddyDictationManager.swift` — captures the mic and streams PCM16 24 kHz mono chunks.
-- `AudioConversionSupport.swift` — audio format conversion helpers.
-- `GlobalPushToTalkShortcutMonitor.swift` — listen-only global CGEvent tap for
+- `Harness/Dispatcher/BuddyDictationManager.swift` — captures the mic and streams PCM16 24 kHz mono chunks.
+- `Shared/AudioConversionSupport.swift` — audio format conversion helpers.
+- `Harness/Dispatcher/GlobalPushToTalkShortcutMonitor.swift` — listen-only global CGEvent tap for
   modifier-only push-to-talk.
 
 ### Auth
-- `AuthManager.swift` — magic-link auth against the Worker; stores the session in
+- `Auth/AuthManager.swift` — magic-link auth against the Worker; stores the session in
   Keychain. Its `workerBaseURL` derives from `WorkerEndpoints.httpsBase` (not hardcoded
   here). Handles the incoming `Macky://auth?token=…` deep link and exchanges the token via
   `/auth/verify`.
 
+### Dedicated dictation
+- `Dictation/DictationCoordinator.swift` — target-safe Ctrl + Fn lifecycle, ASR streaming,
+  finalization, optional Smart polish, and insertion coordination.
+- `Dictation/DictationModels.swift` — dictation modes, surface classification, glossary,
+  and local formatting types.
+- `Dictation/DictationTargetIntegration.swift` — target snapshot, revalidation, and safe insertion.
+
+### Skills and settings
+- `Skills/SkillsWindowController.swift`, `Skills/SkillsWindowView.swift` — the standalone
+  Skills catalog window.
+- `Settings/HotkeySettingsView.swift`, `Settings/DictationSettingsView.swift` — inline settings surfaces.
+
 ### Local integrations (macOS-native, no cloud)
-- `CalendarIntegration.swift` — EventKit (calendar).
-- `RemindersIntegration.swift` — EventKit (reminders).
-- `SystemControlsIntegration.swift` — AppKit / AppleScript / CGEvent system shortcuts.
-- `AppLauncherIntegration.swift` — `NSWorkspace` app launching.
-- `CompanionScreenCaptureUtility.swift` — ScreenCaptureKit for on-demand screen context.
-- `CursorControlIntegration.swift` — standalone CGEvent cursor movement, clicking, dragging,
+- `Connectors/CalendarIntegration.swift` — EventKit (calendar).
+- `Connectors/RemindersIntegration.swift` — EventKit (reminders).
+- `SystemIntegration/SystemControlsIntegration.swift` — AppKit / AppleScript / CGEvent system shortcuts.
+- `SystemIntegration/AppLauncherIntegration.swift` — `NSWorkspace` app launching.
+- `SystemIntegration/CompanionScreenCaptureUtility.swift` — ScreenCaptureKit for on-demand screen context.
+- `SystemIntegration/CursorControlIntegration.swift` — standalone CGEvent cursor movement, clicking, dragging,
   and scrolling.
 
 ### Observability
-- `MackyAnalytics.swift` — thin wrapper over the PostHog SDK. No-ops until a
+- `Analytics/MackyAnalytics.swift` — thin wrapper over the PostHog SDK. No-ops until a
   `POSTHOG_API_KEY` (Info.plist or env) is configured, so dev builds ship nothing. Event
   **call sites** live in `CompanionManager` (turn latency, connector-connect funnel steps)
   and `RealtimeClient` (native + MCP tool success/failure, connect-link requested). Add new
@@ -139,11 +161,11 @@ to the notch.
 
 ## 6. Risky Files (state the exact reason before changing)
 
-- `RealtimeClient.swift` — protocol, heartbeat, tool dispatch, MCP, audio playback.
-- `CompanionManager.swift` — central state transitions.
-- `GlobalPushToTalkShortcutMonitor.swift` — global event tap behavior; bugs here break the
+- `Harness/Dispatcher/RealtimeClient.swift` — protocol, heartbeat, tool dispatch, MCP, audio playback.
+- `Harness/Session/CompanionManager.swift` — central state transitions.
+- `Harness/Dispatcher/GlobalPushToTalkShortcutMonitor.swift` — global event tap behavior; bugs here break the
   core interaction.
-- `NotchPanelController.swift` / `NotchUIModel.swift` — geometry, animation, click-through
+- `Overlay/NotchPanelController.swift` / `Overlay/NotchUIModel.swift` — geometry, animation, click-through
   surface.
 - `DesignSystem.swift` — shared tokens and button styles.
 - `Info.plist` / `leanring-buddy.entitlements` — permissions, URL scheme,
