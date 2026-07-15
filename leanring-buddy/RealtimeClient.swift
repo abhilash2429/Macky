@@ -1808,7 +1808,8 @@ final class RealtimeClient: ObservableObject {
 
         var content: [[String: Any]] = []
         for capture in captures {
-            content.append(["type": "input_text", "text": capture.label])
+            let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
+            content.append(["type": "input_text", "text": capture.label + dimensionInfo])
             let base64Image = capture.imageData.base64EncodedString()
             content.append([
                 "type": "input_image",

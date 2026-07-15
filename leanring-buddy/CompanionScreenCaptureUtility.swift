@@ -109,12 +109,21 @@ enum CompanionScreenCaptureUtility {
             let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
 
             let configuration = SCStreamConfiguration()
-            // Request the display's logical point dimensions, not a fixed 1280 cap.
-            // ScreenCaptureKit usually returns that requested size, but the actual CGImage
-            // dimensions remain the authoritative screenshot coordinate space for visual
-            // guidance. Do NOT multiply by a display scale factor here.
-            configuration.width = Int(displayFrame.width)
-            configuration.height = Int(displayFrame.height)
+            // Match Clicky's screenshot contract: keep the largest image dimension at
+            // 1280 pixels while preserving the display's aspect ratio. The realtime
+            // model receives the resulting pixel dimensions in the attached metadata,
+            // so its coordinates remain tied to the exact image it inspected.
+            let maxScreenshotDimension = 1280
+            let displayWidthInPixels = max(1, display.width)
+            let displayHeightInPixels = max(1, display.height)
+            let displayAspectRatio = CGFloat(displayWidthInPixels) / CGFloat(displayHeightInPixels)
+            if displayWidthInPixels >= displayHeightInPixels {
+                configuration.width = maxScreenshotDimension
+                configuration.height = max(1, Int(CGFloat(maxScreenshotDimension) / displayAspectRatio))
+            } else {
+                configuration.height = maxScreenshotDimension
+                configuration.width = max(1, Int(CGFloat(maxScreenshotDimension) * displayAspectRatio))
+            }
 
             let cgImage = try await SCScreenshotManager.captureImage(
                 contentFilter: filter,
