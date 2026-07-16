@@ -14,10 +14,17 @@ import UniformTypeIdentifiers
 struct NotchContainerView: View {
     @EnvironmentObject var notch: NotchUIModel
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject private var agentCoordinator: AgentCoordinator
     @ObservedObject private var authManager = AuthManager.shared
+
+    init(companionManager: CompanionManager) {
+        self.companionManager = companionManager
+        self._agentCoordinator = ObservedObject(wrappedValue: companionManager.agentCoordinator)
+    }
 
     enum PanelPage {
         case home
+        case agents
         case connectors
         case settings
         case files
@@ -69,6 +76,9 @@ struct NotchContainerView: View {
                     open()
                 }
                 .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+                    // The Agents composer owns its explicit attachment drops. Do not
+                    // redirect those into the general Files page.
+                    guard !(isOpen && panelPage == .agents) else { return false }
                     panelPage = .files
                     open()
                     ingestDroppedProviders(providers)
@@ -80,6 +90,7 @@ struct NotchContainerView: View {
                     // reliably mid-drag, so this is what actually opens the panel.
                     if targeted {
                         collapseTask?.cancel()
+                        guard !(isOpen && panelPage == .agents) else { return }
                         panelPage = .files
                         open()
                     } else {
@@ -104,6 +115,13 @@ struct NotchContainerView: View {
         }
         .onChange(of: companionManager.focusedEditPresentation?.id) { _, _ in
             presentFocusedEditInline()
+        }
+        .onChange(of: agentCoordinator.shouldPresentAgentsPage) { _, shouldPresent in
+            guard shouldPresent else { return }
+            collapseTask?.cancel()
+            panelPage = .agents
+            open()
+            agentCoordinator.consumeAgentsPagePresentation()
         }
     }
 
@@ -150,6 +168,12 @@ struct NotchContainerView: View {
                 companionManager: companionManager,
                 dictationCoordinator: companionManager.dictationCoordinator
             )
+        } else if !agentCoordinator.notices.isEmpty {
+            AgentNoticeBar(
+                statusText: companionManager.agentNoticeStatusText,
+                kind: agentNoticeKind,
+                onOpen: openAgentNotice
+            )
         } else {
             NotchIdleBar()
         }
@@ -166,6 +190,8 @@ struct NotchContainerView: View {
             switch panelPage {
             case .home:
                 AurenPanel(companionManager: companionManager, page: .home, onOpenConnectors: { panelPage = .connectors })
+            case .agents:
+                AgentsPanelView(companionManager: companionManager)
             case .connectors:
                 AurenPanel(companionManager: companionManager, page: .connectors)
             case .settings:
@@ -182,6 +208,26 @@ struct NotchContainerView: View {
         collapseTask?.cancel()
         guard !isOpen else { return }
         notch.open()
+    }
+
+    private func openAgentNotice() {
+        let notices = agentCoordinator.notices
+        let taskID = notices.count == 1 ? notices.first?.taskID : nil
+        if let notice = notices.first, notices.count == 1 {
+            agentCoordinator.dismissNotice(id: notice.id)
+        }
+        agentCoordinator.openAgentsPage(taskID: taskID)
+    }
+
+    private var agentNoticeKind: AgentNoticeKind {
+        let notices = agentCoordinator.notices
+        if notices.contains(where: { $0.kind == .needsInput }) {
+            return .needsInput
+        }
+        if notices.contains(where: { $0.kind == .failed }) {
+            return .failed
+        }
+        return .completed
     }
 
     /// Collapses the expanded panel back to the closed notch bar. `userInitiated` is
@@ -203,7 +249,9 @@ struct NotchContainerView: View {
         guard userInitiated || !companionManager.isAssistantActive else { return }
         guard isOpen else { return }
         notch.close()
-        panelPage = .home
+        if panelPage != .agents {
+            panelPage = .home
+        }
         fileDropURLs = []
     }
 
@@ -325,11 +373,22 @@ private struct MackyPanelHeader: View {
             PanelTabBar(
                 tabs: [
                     .init(id: "home", icon: "house", label: "Home"),
+                    .init(id: "agents", icon: "sparkles.rectangle.stack", label: "Agents"),
                     .init(id: "connectors", icon: "square.grid.2x2", label: "Connectors")
                 ],
-                selectedID: selectedPage == .connectors ? "connectors" : "home",
+                selectedID: {
+                    switch selectedPage {
+                    case .agents: return "agents"
+                    case .connectors: return "connectors"
+                    default: return "home"
+                    }
+                }(),
                 onSelect: { id in
-                    selectedPage = id == "connectors" ? .connectors : .home
+                    switch id {
+                    case "agents": selectedPage = .agents
+                    case "connectors": selectedPage = .connectors
+                    default: selectedPage = .home
+                    }
                 }
             )
 

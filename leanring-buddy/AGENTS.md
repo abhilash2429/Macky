@@ -51,8 +51,11 @@ to the notch.
 - `Harness/Dispatcher/BuddyDictationManager.swift` — realtime assistant microphone capture.
 - `Harness/Registry/ConnectorRegistry.swift` — connector identity and MCP-tool matching catalog.
 - `Harness/Registry/SkillRegistry.swift` — skill identity and connector-dependency catalog.
-- `Harness/Loop/LoopPlaceholder.swift` — reserved for the future loop engine and action sanitizer;
-  it intentionally contains no behavior yet.
+- `Harness/Agents/` — local General Agent models, encrypted persistence, attachment
+  storage, stateless Worker transport, three-job runtime, Realtime bridge, and the
+  sandboxed JavaScript XPC client.
+- `Harness/Loop/LoopPlaceholder.swift` — legacy location marker; the active loop is
+  `Harness/Agents/AgentRuntime.swift`.
 
 ### Notch & panel UI
 - `Overlay/NotchPanelController.swift` — owns the borderless `NSPanel`, computes closed/open
@@ -138,6 +141,15 @@ to the notch.
 - Coordinate-based cursor actions require a fresh current-turn screen capture. Multi-display
   coordinate actions must use the capture's `display_id`, and any standalone cursor action
   invalidates cached coordinates before the next action.
+- Realtime remains the sole voice layer. `AgentRealtimeBridge` registers asynchronous
+  spawn/list/result/cancel/open tools before `RealtimeClient.connect()`, but running
+  background jobs never feed `voiceState`, `operationState`, or realtime tool activity.
+- Agent task state, provider continuation items, results, questions, and artifacts are
+  encrypted locally. Explicit task attachments use encrypted chunked storage. The Worker
+  is stateless and normalizes Azure Responses SSE into Macky's versioned protocol.
+- `AgentRuntime` permits at most three concurrent jobs, queues the rest without product
+  quotas, applies steering/cancellation at safe boundaries, pauses for Mac sleep, and
+  resumes queued/running work after wake or relaunch.
 
 ---
 
@@ -151,6 +163,11 @@ to the notch.
 - The closed notch stays small and unobtrusive. Expansion happens only on hover, for
   onboarding/auth/settings, for file input, or for useful multi-step task output.
 - Attach file/image context **before** `requestResponse()`.
+- Agent attachments are explicit only. Do not route an Agents composer drop through the
+  realtime Files page, expose original source URLs to the model, or store copied files
+  plaintext.
+- Do not merge background-agent execution into Realtime's active-state properties. Only a
+  transient local completion/needs-input notice may occupy the closed notch while voice is idle.
 - Web service integrations go through Composio MCP. Do not add one-off OAuth flows or
   direct API clients for Slack, Gmail, Spotify, GitHub, Notion, Linear, etc. unless
   explicitly asked.

@@ -77,6 +77,38 @@ single-step tasks — play a song, set a reminder, send a quick message — neve
 
 ---
 
+## background agents
+
+realtime remains the sole voice and conversation layer. small and medium actions stay in the realtime session. it delegates only genuinely long-running work — public-web research, multi-document synthesis, artifact generation, and local analysis — to Macky's built-in General Agent.
+
+background work is asynchronous and independent of the realtime websocket. spawning an agent never blocks voice, collapsing the notch never pauses it, and up to three jobs may run concurrently. agents cannot spawn other agents. mac sleep or app termination stops execution; queued/running work resumes when Macky wakes or relaunches.
+
+the General Agent is a local-first harness around a stateless Azure Responses endpoint. the Worker owns the model, reasoning effort, native web search, fixed function schemas, safety prompt, `store: false`, and stream normalization. canonical task state, provider continuation items, results, sources, artifacts, questions, and event history stay encrypted on the Mac. there is no Durable Object, cloud task database, LiteLLM proxy, subscription check, trial, rate limit, daily quota, token quota, search quota, turn quota, or task-duration quota in development.
+
+the only v1 execution tools are:
+
+- read a bounded chunk from an explicitly attached file
+- run JavaScript in a separately sandboxed XPC service with no shell, Python, network, or arbitrary filesystem access
+- create a local artifact
+- ask the user a question that expires after 24 hours
+- finalize a structured result with a spoken summary, full Markdown, sources, artifacts, limitations, and suggested actions
+
+three active jobs, the 5-second JavaScript timeout, explicit attachment limits (10 files / 50 MB), bounded attachment reads, and the no-progress breaker are structural safety guards, not product usage limits.
+
+### agents in the notch
+
+the expanded panel navigation is **Home | Agents | Connectors** inside the existing fixed 680×340 notch panel. Agents replaces the panel content; it is not another macOS window. the page uses Macky's existing design system and heavier scrolling. square task cards show active/recent work, tasks move to history after four hours, and terminal history is retained locally for 30 days.
+
+clicking a card opens its typed thread: progress, local tool steps, sources, artifacts, questions, results, steering, cancellation, restart, export, and confirmed deletion. attachment drops inside the agent composer remain explicit agent attachments and do not route to the general Files page. collapsing and reopening preserves the selected Agents page/thread.
+
+background agents never become `voiceState`, `operationState`, or realtime tool activity. when realtime is idle, the closed notch may show a local completion/needs-input notice. clicking a single notice opens that exact thread; multiple completions are announced as a batch and wait for the user.
+
+### Skills and agents
+
+Skills are immutable, user-configurable instruction packages, not agents or connectors. built-ins are Macky-controlled; users may create, AI-draft, duplicate, enable/disable, and delete user Skills, but a saved Skill is never edited in place. enabled Skill metadata is available to realtime, while full instructions are copied into a background task only when that Skill is explicitly attached. user Skill definitions are encrypted locally.
+
+---
+
 ## the notch states
 
 -- idle — notch looks like a notch. nothing visible.
@@ -153,7 +185,7 @@ GPT-Realtime-2.1 uses a persistent WebSocket, not a request/response. the worker
 
 ## what we're not building in v1
 
-no ambient always-on screen recording. no persistent memory across sessions. no local search engine over past activity. no second brain features.
+no ambient always-on screen recording. no ambient assistant memory across sessions. no local search engine over general activity. no second brain features. encrypted background-agent task records are the narrow exception: recent work is shown for four hours and terminal history is retained for 30 days.
 
 v1 is: voice in, action out, fast, shows you what it's doing, covers the top integrations people actually use. get that right first.
 

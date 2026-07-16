@@ -177,8 +177,13 @@ final class NotchPanelController {
         if companionManager.focusedEditPresentation != nil {
             return focusedEditCompletionFrame(for: screen)
         }
-        guard companionManager.isAssistantActive else { return idleClosedFrame }
-        return activeFrame(for: screen, text: companionManager.activeStatusText)
+        if companionManager.isAssistantActive {
+            return activeFrame(for: screen, text: companionManager.activeStatusText)
+        }
+        if !companionManager.agentCoordinator.notices.isEmpty {
+            return activeFrame(for: screen, text: companionManager.agentNoticeStatusText)
+        }
+        return idleClosedFrame
     }
 
     // MARK: - State observation
@@ -208,6 +213,13 @@ final class NotchPanelController {
         let focusedEditPresentation = companionManager.$focusedEditPresentation.map { _ in () }
 
         Publishers.Merge3(activityA, activityB, focusedEditPresentation)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.applyClosedActivity()
+            }
+            .store(in: &cancellables)
+
+        companionManager.agentCoordinator.$notices
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.applyClosedActivity()

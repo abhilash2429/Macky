@@ -9,7 +9,7 @@ import Foundation
 ///
 /// **Self-hosting:** deploy `worker/` and change `baseHost` below — that is the *only*
 /// place the Worker host is defined in the Swift app now. Everything else derives from it.
-enum WorkerEndpoints {
+nonisolated enum WorkerEndpoints {
     /// The Worker host (no scheme, no trailing slash). The single value to change when
     /// self-hosting the backend.
     static let baseHost = "realtime-proxy.winky-secrets.workers.dev"
@@ -19,6 +19,14 @@ enum WorkerEndpoints {
 
     /// WebSocket URL for the realtime audio proxy (`/realtime`).
     static let realtimeURL = URL(string: "wss://\(baseHost)/realtime")!
+
+    /// Authenticated capability and kill-switch fetch for the development-only
+    /// stateless General Agent (`/agent-config`).
+    static let agentConfigURL = URL(string: "\(httpsBase)/agent-config")!
+
+    /// Authenticated Azure Responses SSE relay for General Agent and skill-draft
+    /// requests (`/agent-response`).
+    static let agentResponseURL = URL(string: "\(httpsBase)/agent-response")!
 
     /// One-time Composio MCP session config fetch (`/composio-config`) → `{ url, key }`.
     /// Requires an `Authorization: Bearer <sessionToken>` header (see `AuthManager`).

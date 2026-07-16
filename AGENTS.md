@@ -73,9 +73,17 @@ current code as the source of truth.
 - `RealtimeClient` owns the persistent WebSocket to the Worker, session setup, the
   heartbeat/reconnect lifecycle, realtime protocol parsing, audio playback, local tool
   registration, MCP call tracking, and context attachment.
+- `AgentCoordinator` / `AgentRuntime` own encrypted local background-agent state and
+  at most three concurrent General Agent jobs. Realtime only spawns/queries them; it
+  remains the sole voice layer and is never blocked by their execution.
+- `MackyAgentExecutor` is a separately sandboxed XPC service for bounded JavaScript.
+  It has no shell, Python, network, or arbitrary filesystem bridge.
 - `BuddyDictationManager` captures microphone audio as PCM16 24 kHz mono chunks.
 - `GlobalPushToTalkShortcutMonitor` owns the global CGEvent tap and hotkey matching.
-- The Worker (`worker/src/index.ts`) keeps every secret off the client. The app talks to
+- The Worker (`worker/src/index.ts`) keeps every secret off the client. In addition to
+  the realtime proxy, authenticated `/agent-config` and `/agent-response` routes expose
+  a stateless, versioned Azure Responses boundary with server-owned tools and normalized
+  SSE. The app talks to
   the Worker; the Worker talks to Azure realtime and Composio. The app targets a
   **hosted** Worker by default — its host is defined in **one** place,
   `WorkerEndpoints.baseHost` (`leanring-buddy/Networking/WorkerEndpoints.swift`), which every Worker
@@ -93,7 +101,8 @@ current code as the source of truth.
 |------|------------|--------------|
 | `leanring-buddy/` | Active macOS app target (SwiftUI + AppKit): notch UI, push-to-talk, realtime client, local tools, auth, permissions. | `leanring-buddy/AGENTS.md` |
 | `leanring-buddy.xcodeproj/` | Xcode project config: targets, build settings, SPM products, signing. | `leanring-buddy.xcodeproj/AGENTS.md` |
-| `worker/` | Cloudflare Worker TypeScript proxy. Owns `/realtime`, `/composio-config`, and the magic-link auth routes. | `worker/AGENTS.md` |
+| `worker/` | Cloudflare Worker proxy. Owns realtime/dictation sockets, stateless General Agent routes, Composio routes, and magic-link auth. | `worker/AGENTS.md` |
+| `MackyAgentExecutor/` | Sandboxed XPC JavaScript helper embedded in the macOS app. | — |
 | `scripts/` | Release automation (`release.sh`) for the macOS app. Production deployment tooling. | `scripts/AGENTS.md` |
 | `MACKY.md` | Product and architecture brief. The source of truth for intended behavior. | — |
 

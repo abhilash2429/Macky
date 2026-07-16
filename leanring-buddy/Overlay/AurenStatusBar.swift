@@ -192,6 +192,71 @@ struct FocusedEditCompletionBar: View {
     }
 }
 
+/// Local background-agent completion shown only while Realtime is idle. This uses
+/// the same closed-notch geometry and typography as the live status bar; it does not
+/// make background work part of the assistant voice/activity state.
+struct AgentNoticeBar: View {
+    @EnvironmentObject var notch: NotchUIModel
+    let statusText: String
+    let kind: AgentNoticeKind
+    let onOpen: () -> Void
+
+    private var symbolName: String {
+        switch kind {
+        case .completed: return "checkmark"
+        case .needsInput: return "questionmark"
+        case .failed: return "exclamationmark"
+        }
+    }
+
+    private var symbolColor: Color {
+        switch kind {
+        case .completed: return DS.Colors.success
+        case .needsInput: return DS.Colors.warning
+        case .failed: return DS.Colors.warningText
+        }
+    }
+
+    var body: some View {
+        let metrics = notch.activeBarMetrics(for: statusText)
+        Button(action: onOpen) {
+            HStack(spacing: 0) {
+                HStack(spacing: 7) {
+                    Image(systemName: symbolName)
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.black.opacity(0.82))
+                        .frame(width: 16, height: 16)
+                        .background(Circle().fill(symbolColor))
+
+                    Text(statusText)
+                        .font(.system(size: DS.Typography.compactStatus, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .padding(.leading, NotchConstants.statusLeadingPad)
+                .padding(.trailing, NotchConstants.statusTrailingGap)
+                .frame(width: metrics.textWidth + NotchConstants.statusLeadingPad + NotchConstants.statusTrailingGap, alignment: .leading)
+                .frame(height: notch.effectiveClosedNotchHeight)
+
+                Rectangle()
+                    .fill(Color.black)
+                    .frame(width: metrics.bridgeWidth)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(DS.Colors.textSecondary)
+                    .frame(width: NotchConstants.waveformBoxSize, height: NotchConstants.waveformBoxSize)
+                    .padding(.trailing, NotchConstants.waveformTrailingPad)
+            }
+            .frame(height: notch.effectiveClosedNotchHeight)
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .accessibilityLabel(statusText)
+    }
+}
+
 /// The closed-notch content while the assistant is idle: just the opaque black
 /// bridge covering the hardware cutout (no logo). Sized to `idleBarMetrics` so the
 /// bridge stays centered on the physical notch and clicks pass through elsewhere.

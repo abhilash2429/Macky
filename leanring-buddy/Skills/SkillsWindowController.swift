@@ -21,6 +21,8 @@ final class SkillsWindowController: NSWindowController {
     static let shared = SkillsWindowController()
 
     private var companionManager: CompanionManager?
+    private let catalog = SkillCatalogStore()
+    private var draftingProvider: SkillDraftingProvider?
 
     private init() {
         let window = NSWindow(
@@ -39,10 +41,15 @@ final class SkillsWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    /// Hands the controller its `CompanionManager` reference so it can build the
-    /// SwiftUI content view. Call once at app launch.
-    func configure(companionManager: CompanionManager) {
+    /// Hands the controller its state and optional AI drafting provider so it can
+    /// build the SwiftUI content view. The provider is intentionally injected;
+    /// this controller never performs network work itself.
+    func configure(
+        companionManager: CompanionManager,
+        draftingProvider: SkillDraftingProvider? = nil
+    ) {
         self.companionManager = companionManager
+        self.draftingProvider = draftingProvider
         setupWindow()
     }
 
@@ -64,7 +71,11 @@ final class SkillsWindowController: NSWindowController {
         window.identifier = NSUserInterfaceItemIdentifier("MackySkillsWindow")
 
         if let companionManager {
-            let skillsView = SkillsWindowView(companionManager: companionManager)
+            let skillsView = SkillsWindowView(
+                companionManager: companionManager,
+                catalog: catalog,
+                draftingProvider: draftingProvider
+            )
             window.contentView = NSHostingView(rootView: skillsView)
         }
 

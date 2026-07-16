@@ -40,6 +40,8 @@ enum MackyAnalytics {
         static let dictationOutcome = "dictation_outcome"
         /// Stage timings from Ctrl + Fn release to final insertion/copy fallback.
         static let dictationTiming = "dictation_timing"
+        /// Content-free lifecycle metadata for local background-agent tasks.
+        static let agentLifecycle = "agent_lifecycle"
     }
 
     /// Steps in the connector-connect funnel, sent as the `step` property on
@@ -149,5 +151,41 @@ enum MackyAnalytics {
             "total_ms": totalMilliseconds,
             "performance_target_exceeded": totalMilliseconds > 700,
         ])
+    }
+
+    /// Agent telemetry deliberately excludes task text, filenames, Skill names,
+    /// source URLs, results, and artifact metadata. `outcome` is a bounded lifecycle
+    /// category such as spawned/completed/failed/cancelled.
+    static func agentLifecycle(
+        outcome: String,
+        agentType: String,
+        durationMilliseconds: Int? = nil,
+        toolCount: Int? = nil,
+        retryCategory: String? = nil
+    ) {
+        var properties: [String: Any] = [
+            "outcome": outcome,
+            "agent_type": agentType,
+        ]
+        if let durationMilliseconds {
+            properties["duration_bucket"] = durationBucket(milliseconds: durationMilliseconds)
+        }
+        if let toolCount {
+            properties["tool_count"] = toolCount
+        }
+        if let retryCategory {
+            properties["retry_category"] = retryCategory
+        }
+        capture(Event.agentLifecycle, properties)
+    }
+
+    private static func durationBucket(milliseconds: Int) -> String {
+        switch milliseconds {
+        case ..<5_000: return "under_5s"
+        case ..<30_000: return "5s_to_30s"
+        case ..<120_000: return "30s_to_2m"
+        case ..<600_000: return "2m_to_10m"
+        default: return "over_10m"
+        }
     }
 }

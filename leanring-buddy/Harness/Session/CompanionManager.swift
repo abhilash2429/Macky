@@ -63,7 +63,7 @@ final class CompanionManager: ObservableObject {
     private static let panelOnboardingDefaultsKey = "mackyPanelOnboardingComplete"
     private static let enabledSkillIDsDefaultsKey = "mackyEnabledSkillIDs"
     private static let foregroundAppContextEnabledDefaultsKey = "mackyForegroundAppContextEnabled"
-    private static let maxRecentInteractions = 5
+    private static let maxRecentInteractions = 12
     private static let maxHistoryEntries = 20
 
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -133,6 +133,13 @@ final class CompanionManager: ObservableObject {
     let dictationCoordinator = DictationCoordinator()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let realtimeClient = RealtimeClient()
+    let agentCoordinator = AgentCoordinator()
+
+    private lazy var agentRealtimeBridge = AgentRealtimeBridge(
+        coordinator: agentCoordinator,
+        enabledSkillIDs: { [weak self] in self?.enabledSkillIDs ?? [] },
+        conversationHistory: { [weak self] in self?.recentInteractions ?? [] }
+    )
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
@@ -144,6 +151,10 @@ final class CompanionManager: ObservableObject {
     /// refreshes the moment OAuth finishes, instead of waiting on the panel's next
     /// `onAppear`.
     private var connectorConnectedObserver: NSObjectProtocol?
+    private var workspaceWillSleepObserver: NSObjectProtocol?
+    private var workspaceDidWakeObserver: NSObjectProtocol?
+    private var agentStartupTask: Task<Void, Never>?
+    private var agentSleepPauseTask: Task<Void, Never>?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
 
     private var lastNarration: String?
@@ -201,14 +212,40 @@ final class CompanionManager: ObservableObject {
         startPermissionPolling()
         observeAppActivation()
         observeConnectorConnected()
+        observeSystemSleepAndWake()
         bindAudioPowerLevel()
         bindDictationCoordinator()
         bindShortcutTransitions()
         bindRealtimeClient()
+        agentRealtimeBridge.registerTools(on: realtimeClient)
+        syncRealtimeSkillMetadata()
         realtimeClient.connect()
+        agentStartupTask?.cancel()
+        agentStartupTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.agentCoordinator.start()
+            } catch {
+                print("⚠️ Companion: background agents unavailable: \(error.localizedDescription)")
+            }
+        }
     }
 
-    func stop() {
+    var agentNoticeStatusText: String {
+        let notices = agentCoordinator.notices
+        let count = notices.count
+        guard count > 0 else { return "" }
+        if count == 1 { return notices[0].title }
+        return notices.allSatisfy { $0.kind == .completed }
+            ? "\(count) agents finished"
+            : "\(count) agent updates"
+    }
+
+    func stop() async {
+        let startupTask = agentStartupTask
+        agentStartupTask = nil
+        startupTask?.cancel()
+        await startupTask?.value
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         dictationCoordinator.cancel()
@@ -217,6 +254,8 @@ final class CompanionManager: ObservableObject {
         shortcutTransitionCancellable?.cancel()
         audioPowerCancellable?.cancel()
         realtimeActivityCancellables.removeAll()
+        agentSleepPauseTask?.cancel()
+        agentSleepPauseTask = nil
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
         if let observer = didBecomeActiveObserver {
@@ -227,6 +266,16 @@ final class CompanionManager: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
             connectorConnectedObserver = nil
         }
+        let workspaceNotifications = NSWorkspace.shared.notificationCenter
+        if let observer = workspaceWillSleepObserver {
+            workspaceNotifications.removeObserver(observer)
+            workspaceWillSleepObserver = nil
+        }
+        if let observer = workspaceDidWakeObserver {
+            workspaceNotifications.removeObserver(observer)
+            workspaceDidWakeObserver = nil
+        }
+        await agentCoordinator.stop()
     }
 
     /// Refreshes connected toolkits the moment a `Macky://connected?toolkit=…` deep link
@@ -257,11 +306,45 @@ final class CompanionManager: ObservableObject {
         guard SkillRegistry.identity(forID: id) != nil else { return }
         enabledSkillIDs.insert(id)
         persistEnabledSkillIDs()
+        syncRealtimeSkillMetadata()
+    }
+
+    private func observeSystemSleepAndWake() {
+        guard workspaceWillSleepObserver == nil, workspaceDidWakeObserver == nil else { return }
+        let workspaceNotifications = NSWorkspace.shared.notificationCenter
+        workspaceWillSleepObserver = workspaceNotifications.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.agentSleepPauseTask?.cancel()
+                self.agentSleepPauseTask = Task { [weak self] in
+                    await self?.agentCoordinator.pauseForSystemSleep()
+                }
+            }
+        }
+        workspaceDidWakeObserver = workspaceNotifications.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let pauseTask = self.agentSleepPauseTask
+                self.agentSleepPauseTask = Task { [weak self] in
+                    await pauseTask?.value
+                    await self?.agentCoordinator.resumeAfterSystemWake()
+                }
+            }
+        }
     }
 
     func disableSkill(_ id: String) {
         enabledSkillIDs.remove(id)
         persistEnabledSkillIDs()
+        syncRealtimeSkillMetadata()
     }
 
     func toggleSkill(_ id: String) {
@@ -270,6 +353,11 @@ final class CompanionManager: ObservableObject {
 
     private func persistEnabledSkillIDs() {
         UserDefaults.standard.set(Array(enabledSkillIDs), forKey: Self.enabledSkillIDsDefaultsKey)
+    }
+
+    private func syncRealtimeSkillMetadata() {
+        let enabledSkills = enabledSkillIDs.compactMap { SkillRegistry.identity(forID: $0) }
+        realtimeClient.setEnabledSkillMetadata(enabledSkills)
     }
 
     func attachDroppedText(_ text: String, name: String) {

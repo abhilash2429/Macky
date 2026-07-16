@@ -119,12 +119,14 @@ final class RealtimeClient: ObservableObject {
     /// Macky must not create a redundant response after `response.done`.
     private var isAwaitingModelOutputAfterMCPResult = false
     private var didReceiveModelOutputAfterMCPResult = false
-    /// The single authoritative count of in-flight tool calls — native and MCP
-    /// combined. `isToolActive` is derived from this (via `adjustInFlight`), so a
-    /// native call starting inside an MCP call's cosmetic-fade window (or vice
-    /// versa) can never have the spinner cleared out from under it: the flag only
-    /// drops to false when *every* in-flight call, of either kind, has finished.
+    /// The authoritative turn-lifecycle count of in-flight tool calls — native and
+    /// MCP combined. Turn completion waits for this even when a local control tool
+    /// deliberately opts out of visible activity state.
     private var inFlightCallCount = 0
+    /// Subset of in-flight calls that should occupy Macky's visible tool/activity
+    /// state. Background-agent control calls still block turn completion, but do
+    /// not increment this count.
+    private var visibleInFlightCallCount = 0
 
     /// True between the first audio delta and the matching done event, so we
     /// only fire `onResponseAudioStarted` once per response.
@@ -229,9 +231,13 @@ final class RealtimeClient: ObservableObject {
         let name: String
         let description: String
         let schema: [String: Any]
+        let reportsActivity: Bool
         let handler: ([String: Any]) async throws -> String
     }
     private var registeredTools: [String: RegisteredTool] = [:]
+    /// Compact local catalog only. Full Skill instructions are attached by the
+    /// AgentRealtimeBridge after the user explicitly selects a Skill id.
+    private var enabledSkillMetadataInstructions = ""
     private let focusedTextIntegration = FocusedTextIntegration()
 
     // MARK: - Audio Output (model voice playback)
@@ -879,6 +885,7 @@ final class RealtimeClient: ObservableObject {
     func registerTool(
         name: String,
         description: String,
+        reportsActivity: Bool = true,
         schema: [String: Any],
         handler: @escaping ([String: Any]) async throws -> String
     ) {
@@ -886,8 +893,45 @@ final class RealtimeClient: ObservableObject {
             name: name,
             description: description,
             schema: schema,
+            reportsActivity: reportsActivity,
             handler: handler
         )
+    }
+
+    /// Re-sends the live session configuration after a runtime-owned tool catalog
+    /// changes (for example, when the local agent bridge registers its tools or the
+    /// enabled Skill metadata changes). Before `session.created`, the normal initial
+    /// update remains authoritative, so this is deliberately a no-op.
+    func refreshSessionConfiguration() {
+        guard sessionUpdateSent else { return }
+        sendSessionUpdate()
+    }
+
+    func setEnabledSkillMetadata(_ skills: [SkillIdentity]) {
+        let sortedSkills = skills.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+        let updatedInstructions: String
+        if sortedSkills.isEmpty {
+            updatedInstructions = ""
+        } else {
+            let lines = sortedSkills.map { skill in
+                let compatibleAgents = skill.compatibleAgentTypes.isEmpty
+                    ? "any"
+                    : skill.compatibleAgentTypes.joined(separator: ", ")
+                return "- \(skill.id): \(skill.displayName) — \(skill.summary) (compatible: \(compatibleAgents))"
+            }
+            updatedInstructions = """
+
+            # Enabled Skills
+            The following local Skill ids may be explicitly attached through spawn_agents:
+            \(lines.joined(separator: "\n"))
+            Include a skill_id only when the user explicitly asks to use that Skill or selected it for the task. Do not attach every enabled Skill automatically.
+            """
+        }
+        guard updatedInstructions != enabledSkillMetadataInstructions else { return }
+        enabledSkillMetadataInstructions = updatedInstructions
+        refreshSessionConfiguration()
     }
 
     // MARK: - Connection Lifecycle
@@ -1325,7 +1369,7 @@ final class RealtimeClient: ObservableObject {
         guard hasUnfinalizedUserTurn,
               !hasActiveResponse,
               !isResponseCancelPending,
-              !isToolActive,
+              inFlightCallCount == 0,
               activeMCPCallIDs.isEmpty,
               !needsMCPContinuation,
               !isMCPContinuationResponsePending,
@@ -1523,6 +1567,21 @@ final class RealtimeClient: ObservableObject {
         - Drafting text is not sending it. Never send a message, submit a form, or publish content unless the user \
         explicitly requested that final action and the relevant send tool succeeds.
 
+        # Background Agents
+        - Keep direct answers, normal connector actions, Calendar/Reminders, system controls, focused edits, and other \
+        small or medium tasks in this realtime session. Do not delegate work merely because a tool is available.
+        - Use spawn_agents when the user explicitly asks for an agent/background task, or when the request needs \
+        genuinely long-running public-web research, multi-document synthesis, artifact generation, local analysis \
+        code, or independent parallel investigations. Use one agent by default and at most three only when the work \
+        has clearly independent branches.
+        - Agent spawning is asynchronous. After spawn_agents succeeds, acknowledge the number of agents started in \
+        one short sentence and remain available for normal conversation. Never wait silently for an agent and never \
+        claim its work is complete until get_agent_result reports a terminal result.
+        - Background agents never receive connector, Calendar, Reminders, cursor-control, Accessibility, or arbitrary \
+        filesystem authority. Do not delegate an external action that this realtime session can perform directly.
+        - The user steers an agent by typing in its Agents thread, not by voice. You may open the Agents page, list \
+        tasks, retrieve a completed result, or cancel an agent when the user clearly asks.
+
         # Product-Specific Tool Rules
         - To start a specific song, artist, album, or playlist by name, use play_spotify_track. For transport on \
         already-open music (pause, resume, skip, previous, or "what's playing"), use control_music.
@@ -1536,13 +1595,14 @@ final class RealtimeClient: ObservableObject {
     /// accurate "now" to anchor relative dates against — without it, a model that
     /// computes an absolute date for a calendar/reminder instead of saying
     /// "today"/"tomorrow" can silently land on the wrong day with no error surfaced.
-    private static func sessionInstructions(now: Date = Date()) -> String {
+    private func sessionInstructions(now: Date = Date()) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
         // e.g. "Saturday, 20 June 2026, 3:40 PM PDT"
         formatter.dateFormat = "EEEE, d MMMM yyyy, h:mm a zzz"
-        return mackySystemPrompt + "\n\nThe current date and time is \(formatter.string(from: now)). " +
+        return Self.mackySystemPrompt + enabledSkillMetadataInstructions
+            + "\n\nThe current date and time is \(formatter.string(from: now)). " +
             "Use this as \"now\" when the user refers to relative dates or times like \"today\", " +
             "\"tomorrow\", \"this evening\", or \"next Friday\"."
     }
@@ -1591,7 +1651,7 @@ final class RealtimeClient: ObservableObject {
             "type": "session.update",
             "session": [
                 "type": "realtime",
-                "instructions": Self.sessionInstructions(),
+                "instructions": sessionInstructions(),
                 "output_modalities": ["audio"],
                 // Low is the Realtime 2.1 production baseline: it preserves Macky's
                 // responsiveness while the prompt directs deeper private reasoning only
@@ -1613,14 +1673,17 @@ final class RealtimeClient: ObservableObject {
 
     /// The single writer of `isToolActive`. Both the native-tool path
     /// (`dispatchFunctionCall`) and the MCP path (`handleMCPOutputItem`) route
-    /// their start/finish through here so the spinner is governed by one shared
-    /// in-flight count rather than two independent rules. `isToolActive` is true
-    /// iff at least one call (native or MCP) is in flight, which closes the race
+    /// their start/finish through here so turn completion uses one shared in-flight
+    /// count. `isToolActive` is true only when at least one visible call is in flight,
+    /// which closes the race
     /// where a stale MCP cleanup flipped the flag off while a native call it knew
     /// nothing about was still running (and the symmetric case).
-    private func adjustInFlight(_ delta: Int) {
+    private func adjustInFlight(_ delta: Int, reportsActivity: Bool = true) {
         inFlightCallCount = max(0, inFlightCallCount + delta)
-        isToolActive = inFlightCallCount > 0
+        if reportsActivity {
+            visibleInFlightCallCount = max(0, visibleInFlightCallCount + delta)
+        }
+        isToolActive = visibleInFlightCallCount > 0
     }
 
     // MARK: - Function Calling
@@ -1644,15 +1707,23 @@ final class RealtimeClient: ObservableObject {
         // A tool is now confirmed running: surface the model's buffered narration
         // (if any) and raise the spinner. The generation guards the delayed clear
         // below against a newer chained tool call taking over in the meantime.
-        activityGeneration += 1
-        let generation = activityGeneration
-        currentActivity = pendingNarration
-        pendingNarration = nil
-        adjustInFlight(+1)
+        let generation: Int?
+        adjustInFlight(+1, reportsActivity: tool.reportsActivity)
+        if tool.reportsActivity {
+            activityGeneration += 1
+            generation = activityGeneration
+            currentActivity = pendingNarration
+            pendingNarration = nil
+        } else {
+            generation = nil
+            pendingNarration = nil
+        }
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.onToolCallStarted?(name)
+            if tool.reportsActivity {
+                self.onToolCallStarted?(name)
+            }
             let output: String
             var didThrow = false
             do {
@@ -1666,7 +1737,9 @@ final class RealtimeClient: ObservableObject {
             // {"error": …} payload (handlers report soft failures that way too).
             let succeeded = !didThrow && !output.contains("\"error\"")
             MackyAnalytics.toolCall(name: name, isMCP: false, success: succeeded)
-            self.onToolCallEnded?()
+            if tool.reportsActivity {
+                self.onToolCallEnded?()
+            }
 
             self.sendJSON([
                 "type": "conversation.item.create",
@@ -1685,13 +1758,15 @@ final class RealtimeClient: ObservableObject {
             // other call (native or MCP) is still running. Briefly show a "✓ …"
             // confirmation — cosmetic, it does not gate settling — unless a newer tool
             // call has taken over (guarded by the generation).
-            self.adjustInFlight(-1)
-            guard self.activityGeneration == generation else { return }
-            self.currentActivity = Self.successPhrase(for: output)
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            guard self.activityGeneration == generation else { return }
-            self.currentActivity = nil
-            self.settleIfIdle()
+            self.adjustInFlight(-1, reportsActivity: tool.reportsActivity)
+            if let generation {
+                guard self.activityGeneration == generation else { return }
+                self.currentActivity = Self.successPhrase(for: output)
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                guard self.activityGeneration == generation else { return }
+                self.currentActivity = nil
+                self.settleIfIdle()
+            }
         }
     }
 
@@ -2255,7 +2330,7 @@ final class RealtimeClient: ObservableObject {
         guard !hasActiveResponse,
               !isReceivingResponseAudio,
               scheduledPlaybackBufferCount == 0,
-              !isToolActive,
+              inFlightCallCount == 0,
               activeMCPCallIDs.isEmpty,
               !needsMCPContinuation,
               !isMCPContinuationResponsePending,

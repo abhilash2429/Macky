@@ -24,6 +24,8 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
 | Method & path | What it does |
 |---------------|--------------|
 | `GET /realtime` | WebSocket upgrade. Proxies bytes between the Swift client and the Azure AI Foundry realtime endpoint (`…/openai/v1/realtime?model=gpt-realtime-2.1`) using `AZURE_OPENAI_API_KEY`. Both sockets are wired together and torn down as a pair. |
+| `GET /agent-config` | Requires `Authorization: Bearer <sessionToken>`. Returns the flat development-only General Agent protocol-v1 capability document and server-owned kill switch. It advertises `sol-medium`, both supported operations, optional native web search, and the five fixed local tool names. |
+| `POST /agent-response` | Requires `Authorization: Bearer <sessionToken>`. Strictly accepts one bounded protocol-v1 General Agent request with optional continuation items and matching local tool outputs. It builds a stateless Azure Responses request to deployed `gpt-5.6-sol` with medium reasoning, encrypted reasoning continuation, five server-owned strict function schemas, and optional native web search. Azure SSE is incrementally normalized to Macky protocol-v1 events; raw provider events and sensitive upstream error bodies never reach the app. |
 | `GET /composio-config` | Requires `Authorization: Bearer <sessionToken>`. Resolves the caller's session (see §5), creates a Composio Tool Router session for that session's `composioUserId`, and returns `{ url, key }`, which the Swift client wires into the realtime `session.update` as an `mcp` tool entry. No `toolkits` allowlist is sent (full catalog via search); `manage_connections` is enabled with `enable_wait_for_connections: false` so a voice turn never blocks on OAuth. 401s with no/invalid session. |
 | `POST /composio-connect` | Requires `Authorization: Bearer <sessionToken>`. Body/query `{ toolkit }`. Looks up an existing auth config for the toolkit (created in the Composio dashboard) and creates a hosted connect `link` for the session's `composioUserId`, with `callback_url` pointing at `/auth/connected` so the browser bounces back into the app after OAuth. Returns `{ toolkit, redirect_url }`. |
 | `GET /composio-connections` | Requires `Authorization: Bearer <sessionToken>`. Lists the session's `composioUserId`'s ACTIVE connected accounts. Returns `{ connected: ["gmail", …] }`. |
@@ -39,7 +41,9 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
 
 ## 3. Files
 
-- `src/index.ts` — all route handlers and proxy logic.
+- `src/index.ts` — all route handlers and proxy logic; exported validation/payload helpers for dictation and agent route tests.
+- `test/agent-validation.test.ts` — Node tests for the strict General Agent contract and its Azure Responses payload.
+- `test/dictation-validation.test.ts` — Node tests for bounded dictation WebSocket messages and session configuration.
 - `wrangler.toml` — Worker name (`realtime-proxy`), entrypoint, compatibility date, the
   `AUTH_TOKENS` / `SESSIONS` KV namespace bindings, and the `MAGIC_LINK_FROM` /
   `PUBLIC_BASE_URL` vars.
@@ -51,7 +55,7 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
 
 **Secrets** (set with `npx wrangler secret put <NAME>`, never in source or `wrangler.toml`):
 
-- `AZURE_OPENAI_API_KEY` — used by `/realtime` and `/dictation/realtime` to authenticate to Azure.
+- `AZURE_OPENAI_API_KEY` — used by `/realtime`, `/dictation/realtime`, and `/agent-response` to authenticate to Azure.
 - `COMPOSIO_API_KEY` — used by `/composio-config` and Composio user provisioning.
 - `RESEND_API_KEY` — used to deliver magic-link emails via the Resend HTTP API.
 
@@ -99,12 +103,17 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
   `/auth/anonymous`) is best-effort: a Composio hiccup must not block login or the
   first-run bootstrap.
 - Dictation has a deliberately separate authenticated WebSocket route. It opens only after local target validation, uses one short-lived text-only realtime session, and accepts no client event that could create a response with tools or audio. The Worker owns the Azure session configuration and closes the upstream session when the app closes its dictation socket.
+- The General Agent API is intentionally development-only and stateless. `GET /agent-config` is the client-visible capability document and kill switch; `POST /agent-response` enforces the same enabled flag so stale clients cannot bypass it. It does not add KV, Durable Object, subscription, quota, trial, or rate-limit state.
+- Agent requests use only `protocol_version: 1`, `agent: "general"`, a non-empty structurally bounded `input`, optional `operation: "general" | "skill-draft"`, optional `web_search`, optional allow-listed `continuation_items`, and optional `tool_outputs`. Reject every unknown top-level or nested field, duplicate function-call `call_id`, duplicate tool-output `call_id`, and missing or ambiguous output matches.
+- The Worker, not the caller, owns the Azure model, medium reasoning, safety instructions, `store: false`, streaming, encrypted reasoning inclusion, disabled parallel tool calls, and the strict schemas for `read_attachment`, `run_javascript`, `create_artifact`, `ask_question`, and `final_result`. Never accept caller-provided tool definitions, remote MCP entries, or provider overrides.
+- Stateless Azure input preserves continuation order and inserts each matching `function_call_output` immediately after its `function_call`; tool outputs are never collected at the end. Normal text is progress only, local tool calls resume in a later stateless request, and `final_result` is the sole task-completion signal.
+- The agent SSE normalizer may incrementally parse Azure event framing, but must never forward raw provider events or sensitive provider error details. It emits only protocol-v1 Macky text, continuation, tool-call, completed, and generic error data objects. Do not log prompts, responses, tool data, Azure error bodies, bearer tokens, or session tokens; log only a generic failure and non-sensitive upstream status when necessary.
 
 ---
 
 ## 6. Ask Before
 
-- Adding or renaming a route.
+- Adding or renaming a route (the approved `/agent-config` and `/agent-response` routes above are the only General Agent routes).
 - Changing the Azure realtime URL, the `model` query parameter, or the auth header.
 - Changing the Composio session payload or returned config shape.
 - Changing how `SESSIONS` records are created/resolved, or the `{ sessionToken,
@@ -124,6 +133,7 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
 - **Deploy** only when explicitly requested: `npx wrangler deploy`.
 - TypeScript-only changes can be type-checked without deploying.
 - Dictation validation fixtures: `node --experimental-transform-types --test test/dictation-validation.test.ts`.
+- Agent validation fixtures: `node --experimental-transform-types --test test/agent-validation.test.ts`.
 
 ---
 
