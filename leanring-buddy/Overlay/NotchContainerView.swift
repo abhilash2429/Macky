@@ -146,7 +146,10 @@ struct NotchContainerView: View {
                 onCopy: { companionManager.copyFocusedEditText() }
             )
         } else if companionManager.isAssistantActive {
-            AurenStatusBar(companionManager: companionManager)
+            AurenStatusBar(
+                companionManager: companionManager,
+                dictationCoordinator: companionManager.dictationCoordinator
+            )
         } else {
             NotchIdleBar()
         }

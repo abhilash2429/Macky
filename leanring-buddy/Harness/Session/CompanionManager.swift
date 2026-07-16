@@ -167,6 +167,9 @@ final class CompanionManager: ObservableObject {
     }
 
     var activeStatusText: String {
+        if dictationCoordinator.isActive {
+            return dictationCoordinator.statusText
+        }
         switch operationState {
         case .idle:
             return ""

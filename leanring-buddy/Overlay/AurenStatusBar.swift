@@ -14,6 +14,7 @@ import SwiftUI
 struct AurenStatusBar: View {
     @EnvironmentObject var notch: NotchUIModel
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var dictationCoordinator: DictationCoordinator
 
     var body: some View {
         // Same geometry the controller used to size the host window, so the
@@ -36,19 +37,13 @@ struct AurenStatusBar: View {
                 .fill(Color.black)
                 .frame(width: m.bridgeWidth)
 
-            // RIGHT — dot-matrix spinner while thinking, voice waveform otherwise
-            HStack {
-                if companionManager.voiceState == .processing || companionManager.toolCallActive {
-                    DotMatrixLoaderView()
-                        .frame(width: 23, height: 23)
-                } else {
-                    VoiceActivityView(
-                        companionManager: companionManager,
-                        realtimeClient: companionManager.realtimeClient
-                    )
-                    .frame(width: 24, height: 20)
-                }
-            }
+            // RIGHT — a semantic state glyph. Recording, dictation preparation,
+            // model thinking, tool execution, speech, and attention states must
+            // not collapse into the same generic spinner.
+            NotchRightActivityView(
+                companionManager: companionManager,
+                dictationCoordinator: dictationCoordinator
+            )
             .frame(
                 width: NotchConstants.waveformBoxSize,
                 height: NotchConstants.waveformBoxSize,
@@ -105,9 +100,65 @@ struct FocusedEditCompletionBar: View {
         case .safetyNotice:
             return "Couldn't edit"
         case .copyAvailable:
-            return "Copy ready"
+            return "Ready to copy"
         case .textEdit, .terminalCommand:
             return "Done"
+        }
+    }
+
+    @ViewBuilder
+    private var trailingAccessory: some View {
+        if presentation.canCopy {
+            Button(action: onCopy) {
+                Image(systemName: "doc.on.doc.fill")
+                    .font(.system(size: DS.Typography.compactStatus, weight: .semibold))
+                    .foregroundStyle(Color.orange.opacity(0.95))
+                    .frame(
+                        width: NotchConstants.focusedEditActionButtonSize,
+                        height: NotchConstants.focusedEditActionButtonSize
+                    )
+                    .background(Circle().fill(Color.orange.opacity(0.18)))
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .nativeTooltip("Copy dictated text")
+            .accessibilityLabel("Copy dictated text")
+        } else if presentation.canUndo {
+            Button(action: onUndo) {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: DS.Typography.compactStatus, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(
+                        width: NotchConstants.focusedEditActionButtonSize,
+                        height: NotchConstants.focusedEditActionButtonSize
+                    )
+                    .background(Circle().fill(Color.white.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .nativeTooltip("Undo last text edit")
+            .accessibilityLabel("Undo last text edit")
+        } else {
+            Image(systemName: passiveAccessorySymbol)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(isFailure ? Color.orange.opacity(0.95) : Color.white.opacity(0.72))
+                .frame(
+                    width: NotchConstants.focusedEditActionButtonSize,
+                    height: NotchConstants.focusedEditActionButtonSize
+                )
+                .background(Circle().fill((isFailure ? Color.orange : Color.white).opacity(0.12)))
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var passiveAccessorySymbol: String {
+        switch presentation.kind {
+        case .terminalCommand:
+            return "terminal"
+        case .safetyNotice:
+            return "exclamationmark"
+        case .textEdit, .undo, .copyAvailable:
+            return "checkmark"
         }
     }
 
@@ -134,41 +185,7 @@ struct FocusedEditCompletionBar: View {
                 .fill(Color.black)
                 .frame(width: metrics.bridgeWidth)
 
-            Group {
-                if presentation.canCopy {
-                    Button(action: onCopy) {
-                        Image(systemName: "doc.on.doc")
-                            .font(.system(size: DS.Typography.compactStatus, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .frame(
-                                width: NotchConstants.focusedEditUndoButtonSize,
-                                height: NotchConstants.focusedEditUndoButtonSize
-                            )
-                            .background(Circle().fill(Color.white.opacity(0.12)))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Copy dictated text")
-                } else if presentation.canUndo {
-                    Button(action: onUndo) {
-                        Image(systemName: "arrow.uturn.backward")
-                            .font(.system(size: DS.Typography.compactStatus, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .frame(
-                                width: NotchConstants.focusedEditUndoButtonSize,
-                                height: NotchConstants.focusedEditUndoButtonSize
-                            )
-                            .background(Circle().fill(Color.white.opacity(0.12)))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Undo last text edit")
-                } else {
-                    Color.clear
-                        .frame(
-                            width: NotchConstants.focusedEditUndoButtonSize,
-                            height: NotchConstants.focusedEditUndoButtonSize
-                        )
-                }
-            }
+            trailingAccessory
             .frame(width: metrics.rightFlankWidth, height: notch.effectiveClosedNotchHeight, alignment: .leading)
         }
         .frame(height: notch.effectiveClosedNotchHeight, alignment: .center)

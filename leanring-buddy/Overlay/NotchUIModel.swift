@@ -50,16 +50,17 @@ enum NotchConstants {
     static let statusLeadingPad: CGFloat = 18
     /// Gap between the status text and the cutout bridge.
     static let statusTrailingGap: CGFloat = 8
-    /// Inset to the right of the waveform on the active bar's right flank.
-    static let waveformTrailingPad: CGFloat = 8
+    /// Inset to the right of the active indicator on the closed bar's right flank.
+    /// This keeps the richer state glyphs from crowding the outer notch edge.
+    static let waveformTrailingPad: CGFloat = 10
     /// FIXED width of the status-text slot on the active bar. The active notch is a
     /// constant footprint across every state (Listening / Thinking / Speaking /
     /// executing) — the text truncates with "…" inside this slot instead of resizing
     /// the notch. Sized to comfortably fit the standard state words.
     static let activeStatusTextWidth: CGFloat = 104
-    static let waveformBoxSize: CGFloat = 26
-    static let focusedEditUndoButtonSize: CGFloat = 28
-    static let focusedEditUndoTrailingPad: CGFloat = 8
+    static let waveformBoxSize: CGFloat = 34
+    static let focusedEditActionButtonSize: CGFloat = 30
+    static let focusedEditActionTrailingPad: CGFloat = 10
 
     // MARK: - Open/close morph timing
 
@@ -147,7 +148,7 @@ final class NotchUIModel: ObservableObject {
     }
 
     /// The focused-edit completion bar shares the expanded left text flank with
-    /// the live status bar, while reserving a compact undo button on the right.
+    /// the live status bar, while reserving a compact action control on the right.
     /// The physical notch bridge stays centered; the extra leading padding grows
     /// the UI to the left rather than crowding text against its outer edge.
     func focusedEditCompletionBarMetrics() -> ActiveBarMetrics {
@@ -155,8 +156,8 @@ final class NotchUIModel: ObservableObject {
         let leftFlank = NotchConstants.statusLeadingPad
             + NotchConstants.activeStatusTextWidth
             + NotchConstants.statusTrailingGap
-        let rightFlank = NotchConstants.focusedEditUndoButtonSize
-            + NotchConstants.focusedEditUndoTrailingPad
+        let rightFlank = NotchConstants.focusedEditActionButtonSize
+            + NotchConstants.focusedEditActionTrailingPad
         return ActiveBarMetrics(
             totalWidth: leftFlank + bridge + rightFlank,
             leftFlankWidth: leftFlank,
