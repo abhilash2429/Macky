@@ -25,7 +25,10 @@ enum DictationLifecycle: Equatable {
 final class DictationCoordinator: ObservableObject {
     private static let formattingModeDefaultsKey = "macky.dictation.formattingMode"
     private static let glossaryDefaultsKey = "macky.dictation.glossary"
-    private static let maximumPreconnectionAudioBytes = 24_000 // 500 ms at PCM16 24 kHz mono.
+    // Retain audio captured while the shortcut is held until the on-demand session
+    // becomes ready. Ten seconds covers the Worker's connection deadlines without
+    // allowing an unhealthy connection to grow memory without bound.
+    private static let maximumPreconnectionAudioBytes = 480_000
 
     @Published private(set) var lifecycle: DictationLifecycle = .idle
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
@@ -172,13 +175,10 @@ final class DictationCoordinator: ObservableObject {
             return
         }
         guard transcriberReady else {
-            // Audio is never forwarded after Ctrl + Fn is released. If the
-            // on-demand provider handshake did not finish while held, discard the
-            // local preconnection buffer rather than sending delayed microphone data.
-            connectionTask?.cancel()
-            transcriber.cancel()
-            targetIntegration.discardPreparation()
-            finishWithoutInsertion(dictationID: dictationID)
+            // Capture has stopped, but audio recorded while Ctrl + Fn was held is
+            // still valid. Keep the connection alive so `openTranscriptionConnection`
+            // can flush that bounded buffer and commit as soon as the session is ready.
+            lifecycle = .finalizing
             return
         }
         finalizeTranscription(dictationID: dictationID)
@@ -478,9 +478,9 @@ final class RealtimeDictationTranscriber: DictationTranscriber {
         let previousTail = audioSendTail
         audioSendTail = Task { [weak self] in
             _ = await previousTail?.value
-            // `acceptsAudio` prevents new capture callbacks from queuing data
-            // after key release. A chunk already queued while Ctrl + Fn was
-            // held must still reach the Worker before the explicit commit.
+            // Only chunks captured while Ctrl + Fn was held are queued here. They
+            // still need to reach the Worker before the explicit commit, including
+            // buffered chunks flushed immediately after a slow connection becomes ready.
             guard let self, !self.didRequestCommit else { return }
             do {
                 try await webSocketTask.send(.string(audioMessage))

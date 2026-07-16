@@ -15,8 +15,65 @@ export interface Env {
   // domain; switch to an address on your own verified Resend domain later.
   MAGIC_LINK_FROM: string;
   // Public origin of this Worker, used to build the clickable https link in the
-  // email (e.g. https://realtime-proxy.speedmac.workers.dev).
+  // email (e.g. https://realtime-proxy.winky-secrets.workers.dev).
   PUBLIC_BASE_URL: string;
+}
+
+/// Compatibility exports for Durable Object namespaces created by older Worker
+/// versions. The visual/session routes were intentionally removed from the current
+/// product, but retaining the classes keeps their stored data intact and lets the
+/// current Worker deploy without a destructive delete-class migration.
+export class MackySessionObject implements DurableObject {
+  constructor(private state: DurableObjectState) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const sessionId = url.searchParams.get("sessionId") || "default";
+
+    if (request.method === "GET" && url.pathname === "/state") {
+      return jsonResponse(await this.snapshot(sessionId));
+    }
+
+    if (request.method === "POST" && url.pathname === "/event") {
+      const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+      if (!body || body.version !== 1 || typeof body.type !== "string" || !body.type) {
+        return jsonResponse({ error: "invalid event" }, 400);
+      }
+      const snapshot = await this.snapshot(sessionId);
+      snapshot.recentEvents.push(body);
+      snapshot.recentEvents = snapshot.recentEvents.slice(-50);
+      snapshot.updatedAt = typeof body.timestamp === "string"
+        ? body.timestamp
+        : new Date().toISOString();
+      await this.state.storage.put(sessionId, snapshot);
+      return jsonResponse({ ok: true });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+
+  private async snapshot(sessionId: string): Promise<LegacySessionSnapshot> {
+    const existing = await this.state.storage.get<LegacySessionSnapshot>(sessionId);
+    return existing ?? {
+      sessionId,
+      recentEvents: [],
+      updatedAt: new Date().toISOString(),
+    };
+  }
+}
+
+interface LegacySessionSnapshot {
+  sessionId: string;
+  recentEvents: Record<string, unknown>[];
+  updatedAt: string;
+}
+
+export class VisualConversationSessionObject implements DurableObject {
+  constructor(_state: DurableObjectState) {}
+
+  async fetch(): Promise<Response> {
+    return new Response("Not found", { status: 404 });
+  }
 }
 
 /// A Composio identity bound to an opaque `sessionToken` the app carries in the

@@ -129,10 +129,11 @@ struct NotchRightActivityView: View {
                 }
 
             case .dictationFinalizing:
-                DictationFinalizingIndicator()
+                ThinkingPulseIndicator()
 
             case .thinking:
-                ThinkingPulseIndicator()
+                DotMatrixLoaderView()
+                    .frame(width: 23, height: 23)
 
             case .executing:
                 ExecutionRailIndicator()
@@ -194,31 +195,6 @@ private struct ConnectionSweepIndicator: View {
             }
         }
         .frame(width: 20, height: 20)
-    }
-}
-
-private struct DictationFinalizingIndicator: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isPulsing = false
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(.white.opacity(0.34), lineWidth: 1)
-                .frame(width: 19, height: 19)
-                .scaleEffect(reduceMotion ? 0.82 : (isPulsing ? 1 : 0.64))
-                .opacity(reduceMotion ? 0.6 : (isPulsing ? 0.15 : 0.75))
-
-            Image(systemName: "text.cursor")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white.opacity(0.9))
-        }
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 0.86).repeatForever(autoreverses: true)) {
-                isPulsing = true
-            }
-        }
     }
 }
 

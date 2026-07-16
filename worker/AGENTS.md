@@ -72,7 +72,7 @@ would hit Cloudflare's CPU-time limit; pure proxying does not.
   but only delivers to the address the Resend account signed up with; switch to an address
   on a verified Resend domain to email anyone.
 - `PUBLIC_BASE_URL` — public origin of the Worker, used to build the clickable email link
-  (`https://realtime-proxy.speedmac.workers.dev`).
+  (`https://realtime-proxy.winky-secrets.workers.dev`).
 
 ---
 
