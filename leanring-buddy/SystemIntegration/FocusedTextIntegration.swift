@@ -442,7 +442,7 @@ final class FocusedTextIntegration {
             isBrowser: isBrowser,
             requiresPasteForTextEdits: !isTerminal && (
                 isBrowser
-                    || !AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString)
+                    || !Self.isAttributeSettable(kAXValueAttribute, on: element)
             ),
             capturedAt: Date()
         )
@@ -601,10 +601,20 @@ final class FocusedTextIntegration {
         return (value as? NSNumber)?.boolValue
     }
 
+    private static func isAttributeSettable(_ attribute: String, on element: AXUIElement) -> Bool {
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success else {
+            return false
+        }
+        return settable.boolValue
+    }
+
     private static func elementAttribute(_ attribute: String, from element: AXUIElement) -> AXUIElement? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value as! AXUIElement
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return unsafeBitCast(value, to: AXUIElement.self)
     }
 
     private static func enableBrowserAccessibility(for applicationElement: AXUIElement) {

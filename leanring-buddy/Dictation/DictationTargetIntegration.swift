@@ -167,7 +167,7 @@ final class DictationTargetIntegration {
             originalValue: value,
             selectedRange: selectedRange,
             isTerminal: isTerminal,
-            requiresPaste: !isTerminal && (isBrowser || !AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString)),
+            requiresPaste: !isTerminal && (isBrowser || !isAttributeSettable(kAXValueAttribute, on: element)),
             preparation: preparation,
             capturedAt: Date()
         )
@@ -285,16 +285,28 @@ final class DictationTargetIntegration {
         return (value as? NSNumber)?.boolValue
     }
 
+    private func isAttributeSettable(_ attribute: String, on element: AXUIElement) -> Bool {
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success else {
+            return false
+        }
+        return settable.boolValue
+    }
+
     private func elementAttribute(_ attribute: String, from element: AXUIElement) -> AXUIElement? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value as? AXUIElement
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return unsafeBitCast(value, to: AXUIElement.self)
     }
 
     private func selectedRange(from element: AXUIElement) -> CFRange? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
-              let axValue = value as? AXValue else { return nil }
+              let value,
+              CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let axValue = unsafeBitCast(value, to: AXValue.self)
         var range = CFRange(location: kCFNotFound, length: 0)
         guard AXValueGetValue(axValue, .cfRange, &range) else { return nil }
         return range
@@ -305,8 +317,12 @@ final class DictationTargetIntegration {
         var sizeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
               AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
-              let positionAXValue = positionValue as? AXValue,
-              let sizeAXValue = sizeValue as? AXValue else { return nil }
+              let positionValue,
+              let sizeValue,
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+        let positionAXValue = unsafeBitCast(positionValue, to: AXValue.self)
+        let sizeAXValue = unsafeBitCast(sizeValue, to: AXValue.self)
         var position = CGPoint.zero
         var size = CGSize.zero
         guard AXValueGetValue(positionAXValue, .cgPoint, &position),

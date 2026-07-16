@@ -77,9 +77,9 @@ final class DictationCoordinator: ObservableObject {
     private var activeDictationID: UUID?
 
     init(
-        targetIntegration: DictationTargetIntegration = DictationTargetIntegration(),
-        audioCapture: DictationAudioCapture = DictationAudioCapture(),
-        transcriber: DictationTranscriber = RealtimeDictationTranscriber()
+        targetIntegration: DictationTargetIntegration,
+        audioCapture: DictationAudioCapture,
+        transcriber: DictationTranscriber
     ) {
         self.targetIntegration = targetIntegration
         self.audioCapture = audioCapture
@@ -88,6 +88,14 @@ final class DictationCoordinator: ObservableObject {
             rawValue: UserDefaults.standard.string(forKey: Self.formattingModeDefaultsKey) ?? ""
         ) ?? .literal
         self.glossaryText = UserDefaults.standard.string(forKey: Self.glossaryDefaultsKey) ?? ""
+    }
+
+    convenience init() {
+        self.init(
+            targetIntegration: DictationTargetIntegration(),
+            audioCapture: DictationAudioCapture(),
+            transcriber: RealtimeDictationTranscriber()
+        )
     }
 
     func begin() {
@@ -530,7 +538,7 @@ final class RealtimeDictationTranscriber: DictationTranscriber {
         if let terminalResult {
             return try terminalResult.get()
         }
-        try await withCheckedThrowingContinuation { continuation in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<DictationTranscription, Error>) in
             finishContinuation = continuation
         }
     }
