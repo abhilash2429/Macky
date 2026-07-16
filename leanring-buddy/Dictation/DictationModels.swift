@@ -50,9 +50,9 @@ enum DictationFormattingMode: String, CaseIterable, Codable, Identifiable {
         case .literal:
             return "Realtime model preserves literal wording and renders explicit commands only."
         case .clean:
-            return "Realtime model applies conservative punctuation and cleanup."
+            return "Realtime model applies conservative cleanup and formats clearly dictated items as a numbered list."
         case .smart:
-            return "Realtime model applies app-aware polish while preserving facts and identifiers."
+            return "Realtime model applies app-aware polish and infers useful structure such as numbered lists."
         }
     }
 }

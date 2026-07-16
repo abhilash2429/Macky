@@ -60,7 +60,7 @@ struct DictationSettingsView: View {
                     .foregroundColor(DS.Colors.textTertiary)
             }
 
-            Text("Azure gpt-realtime-2.1-mini receives held microphone audio, this glossary, and a broad surface category, then returns one final text-only result. Macky never sends focused-field text, selections, titles, URLs, recipients, or page contents. Literal, Clean, and Smart formatting all happen inside that isolated dictation session.")
+            Text("Azure gpt-realtime-2.1-mini receives held microphone audio, this glossary, and a broad category derived from the app that was frontmost when dictation began. Smart uses that category for app-aware polish; Clean and Smart can format clearly dictated items as numbered lists. Macky never sends focused-field text, selections, titles, URLs, recipients, or page contents.")
                 .font(.system(size: DS.PanelTypography.size(10)))
                 .foregroundColor(DS.Colors.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)

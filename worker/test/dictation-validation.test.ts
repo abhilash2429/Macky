@@ -102,3 +102,61 @@ test("dictation configures a text-only tool-free 24 kHz realtime session", () =>
   assert.equal(session.tool_choice, "none");
   assert.equal(session.tracing, null);
 });
+
+test("clean dictation infers numbered lists without changing ordinary inline series", () => {
+  const start = parseDictationStartMessage(JSON.stringify({
+    type: "dictation.start",
+    surface_kind: "generic",
+    formatting_mode: "clean",
+    keyterms: [],
+  }));
+  assert.ok(start);
+
+  const update = dictationSessionUpdate(start);
+  const instructions = (update.session as { instructions: string }).instructions;
+
+  assert.match(instructions, /format each item on its own line as a numbered list/i);
+  assert.match(instructions, /Do not turn an ordinary sentence containing several nouns into a list/i);
+  assert.match(instructions, /"1\. ", "2\. "/);
+});
+
+test("smart dictation instructions are app-surface aware", () => {
+  const chatStart = parseDictationStartMessage(JSON.stringify({
+    type: "dictation.start",
+    surface_kind: "chat",
+    formatting_mode: "smart",
+    keyterms: [],
+  }));
+  const documentStart = parseDictationStartMessage(JSON.stringify({
+    type: "dictation.start",
+    surface_kind: "document",
+    formatting_mode: "smart",
+    keyterms: [],
+  }));
+  assert.ok(chatStart);
+  assert.ok(documentStart);
+
+  const chatInstructions = (dictationSessionUpdate(chatStart).session as { instructions: string }).instructions;
+  const documentInstructions = (dictationSessionUpdate(documentStart).session as { instructions: string }).instructions;
+
+  assert.match(chatInstructions, /current app was classified locally as chat/i);
+  assert.match(chatInstructions, /concise conversational prose/i);
+  assert.match(documentInstructions, /current app was classified locally as a document editor/i);
+  assert.match(documentInstructions, /polished paragraphs/i);
+  assert.notEqual(chatInstructions, documentInstructions);
+});
+
+test("code and terminal safety overrides smart list formatting", () => {
+  const start = parseDictationStartMessage(JSON.stringify({
+    type: "dictation.start",
+    surface_kind: "terminal",
+    formatting_mode: "smart",
+    keyterms: [],
+  }));
+  assert.ok(start);
+
+  const instructions = (dictationSessionUpdate(start).session as { instructions: string }).instructions;
+
+  assert.match(instructions, /Never add list markers to a command/i);
+  assert.match(instructions, /safety overrides every formatting mode/i);
+});

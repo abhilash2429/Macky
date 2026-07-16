@@ -861,23 +861,30 @@ export function dictationSessionUpdate(start: DictationStartMessage): Record<str
 
 function dictationInstructions(start: DictationStartMessage): string {
   const styleRule = start.formattingMode === "literal"
-    ? "Literal mode: preserve wording and syntax. Render only explicit spoken layout and punctuation commands."
+    ? "Literal mode: preserve wording and syntax. Render only explicit spoken layout and punctuation commands. Do not infer a list."
     : start.formattingMode === "clean"
-      ? "Clean mode: add intended punctuation and remove only unmistakable false starts or fillers. Preserve every meaningful word, including like."
-      : start.surfaceKind === "email"
-        ? "Smart email: use polished paragraphs, but never invent a subject, recipient, greeting, or sign-off."
-        : start.surfaceKind === "chat"
-          ? "Smart chat: use concise conversational prose."
-          : start.surfaceKind === "document"
-            ? "Smart document: use paragraphs and bullets only when explicitly spoken."
-            : "Smart generic text: add natural punctuation and remove only unmistakable false starts or fillers.";
+      ? "Clean mode: add intended punctuation, capitalization, and line breaks, and remove only unmistakable false starts or filler sounds. Preserve every meaningful word, including intentional uses of like. When the speaker clearly dictates two or more separate items, format each item on its own line as a numbered list even if they did not literally say number one, number two, and so on. Do not turn an ordinary sentence containing several nouns into a list."
+      : "Smart mode: infer useful structure from the speech while preserving meaning. When the speaker dictates two or more separate items, tasks, steps, options, requirements, or ideas, format them as a numbered list by default even if list markers were not spoken. Keep ordinary inline series inside a sentence when they are not separate items.";
+  const smartSurfaceRule = start.formattingMode !== "smart"
+    ? ""
+    : start.surfaceKind === "email"
+      ? "The current app was classified locally as email. Use polished, readable paragraphs and concise numbered lists when multiple separate points are dictated, but never invent a subject, recipient, greeting, or sign-off."
+      : start.surfaceKind === "chat"
+        ? "The current app was classified locally as chat. Use concise conversational prose; keep short messages compact, but use a numbered list when multiple separate items are dictated."
+        : start.surfaceKind === "document"
+          ? "The current app was classified locally as a document editor. Use polished paragraphs, headings only when clearly requested, and numbered lists for multiple separate items."
+          : start.surfaceKind === "code"
+            ? "The current app was classified locally as a code editor. Preserve code, identifiers, syntax, indentation commands, and line structure literally."
+            : start.surfaceKind === "terminal"
+              ? "The current app was classified locally as a terminal. Preserve commands, flags, paths, identifiers, punctuation, and whitespace commands literally. Never add list markers to a command."
+              : "The current app was classified locally as a generic text field. Use polished prose and numbered lists for multiple separate items.";
   const surfaceRule = start.surfaceKind === "code" || start.surfaceKind === "terminal"
-    ? "This is code or Terminal text. Preserve syntax, identifiers, punctuation, whitespace commands, and code literally."
+    ? "Code and Terminal safety overrides every formatting mode: preserve syntax, identifiers, punctuation, whitespace commands, and code literally."
     : "";
   const keyterms = start.keyterms.length > 0
     ? `Recognize these local keyterms exactly when spoken: ${start.keyterms.join(", ")}.`
     : "";
-  return `Return only the final insertion text. Do not explain, greet, narrate, call tools, use Markdown fences, or emit audio. Never invent, remove, or alter facts, names, numbers, dates, URLs, email addresses, code, recipients, greetings, or sign-offs. Render explicit spoken commands such as new paragraph, new line, bullet, comma, and period only when they are clearly commands. ${styleRule} ${surfaceRule} ${keyterms}`;
+  return `Return only the final insertion text. Do not explain, greet, narrate, call tools, use Markdown fences, or emit audio. Never invent, remove, or alter facts, names, numbers, dates, URLs, email addresses, code, recipients, greetings, or sign-offs. Render explicit spoken commands such as new paragraph, new line, bullet, comma, and period only when they are clearly commands. Numbered lists must use plain-text markers in the form "1. ", "2. ", and so on, with one item per line. ${styleRule} ${smartSurfaceRule} ${surfaceRule} ${keyterms}`;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
