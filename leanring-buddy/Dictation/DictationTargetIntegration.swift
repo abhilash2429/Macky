@@ -17,6 +17,8 @@ import Foundation
 final class DictationTargetIntegration {
     private static let snapshotLifetime: TimeInterval = 180
     private static let maximumEditableValueLength = 32_000
+    private static let focusedElementProbeCount = 6
+    private static let focusedElementProbeDelay = Duration.milliseconds(50)
 
     private struct Snapshot {
         let applicationName: String
@@ -118,6 +120,36 @@ final class DictationTargetIntegration {
             enableBrowserAccessibility(for: applicationElement)
             try await Task.sleep(for: .milliseconds(120))
         }
+
+        for probeIndex in 0 ..< Self.focusedElementProbeCount {
+            do {
+                return try captureValidatedSnapshot(
+                    application: application,
+                    bundleIdentifier: bundleIdentifier,
+                    applicationElement: applicationElement,
+                    isBrowser: isBrowser
+                )
+            } catch let error as DictationTargetError {
+                guard DictationFocusPreparationPolicy.shouldRetry(error, isBrowser: isBrowser),
+                      probeIndex < Self.focusedElementProbeCount - 1 else {
+                    throw error
+                }
+                try await Task.sleep(for: Self.focusedElementProbeDelay)
+            }
+        }
+
+        throw DictationTargetError.noFocusedField
+    }
+
+    private func captureValidatedSnapshot(
+        application: NSRunningApplication,
+        bundleIdentifier: String,
+        applicationElement: AXUIElement,
+        isBrowser: Bool
+    ) throws -> Snapshot {
+        guard isStillFrontmost(application) else {
+            throw DictationTargetError.focusChangedBeforeRecording
+        }
         guard let element = elementAttribute(kAXFocusedUIElementAttribute, from: applicationElement) else {
             throw DictationTargetError.noFocusedField
         }
@@ -171,6 +203,12 @@ final class DictationTargetIntegration {
             preparation: preparation,
             capturedAt: Date()
         )
+    }
+
+    private func isStillFrontmost(_ application: NSRunningApplication) -> Bool {
+        guard let frontmostApplication = NSWorkspace.shared.frontmostApplication else { return false }
+        return frontmostApplication.processIdentifier == application.processIdentifier
+            && frontmostApplication.bundleIdentifier == application.bundleIdentifier
     }
 
     private func validate(_ snapshot: Snapshot, expectedValue: String? = nil) throws {
@@ -298,6 +336,9 @@ final class DictationTargetIntegration {
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let value,
               CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        // AXUIElement is an opaque Core Foundation object. A conditional Swift
+        // cast is not a dependable bridge here and can make every focused-field
+        // lookup fail; retain the verified CF object as AXUIElement instead.
         return unsafeBitCast(value, to: AXUIElement.self)
     }
 
@@ -364,9 +405,37 @@ final class DictationTargetIntegration {
     }
 }
 
-private enum DictationTargetError: LocalizedError {
+enum DictationFocusPreparationPolicy {
+    static func shouldRetry(_ error: DictationTargetError, isBrowser: Bool) -> Bool {
+        switch error {
+        case .noFocusedField:
+            return true
+        case .browserPageTextNotEditable, .fieldIsNotWritable:
+            // Chromium/Electron can report an AXWebArea briefly while it builds
+            // the editable control tree after AXManualAccessibility is enabled.
+            return isBrowser
+        case .accessibilityPermissionRequired,
+                .noExternalFocusedApplication,
+                .focusChangedBeforeRecording,
+                .secureField,
+                .fieldIsTooLarge,
+                .snapshotUnavailable,
+                .snapshotExpired,
+                .focusChanged,
+                .fieldChanged,
+                .cursorUnavailable,
+                .emptyText,
+                .writeCouldNotBeVerified,
+                .pasteFailed:
+            return false
+        }
+    }
+}
+
+enum DictationTargetError: LocalizedError {
     case accessibilityPermissionRequired
     case noExternalFocusedApplication
+    case focusChangedBeforeRecording
     case noFocusedField
     case secureField
     case fieldIsNotWritable
@@ -387,6 +456,8 @@ private enum DictationTargetError: LocalizedError {
             return "Dictation needs Accessibility permission to validate the focused field."
         case .noExternalFocusedApplication:
             return "Focus an app outside Macky, then try dictation again."
+        case .focusChangedBeforeRecording:
+            return "Focus changed before Macky could verify the field. Keep the cursor in the intended field and try again."
         case .noFocusedField:
             return "Focus an editable text field or Terminal prompt before dictating."
         case .secureField:
