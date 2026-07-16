@@ -71,7 +71,6 @@ final class DictationCoordinator: ObservableObject {
     private var bufferedAudioChunks: [Data] = []
     private var bufferedAudioByteCount = 0
     private var capturedAudioByteCount = 0
-    private var didDetectAudibleSpeech = false
     private var transcriberReady = false
     private var releaseRequested = false
     private var releaseDate: Date?
@@ -112,7 +111,6 @@ final class DictationCoordinator: ObservableObject {
         bufferedAudioChunks = []
         bufferedAudioByteCount = 0
         capturedAudioByteCount = 0
-        didDetectAudibleSpeech = false
         transcriberReady = false
 
         startTask = Task { [weak self] in
@@ -134,7 +132,6 @@ final class DictationCoordinator: ObservableObject {
                         DispatchQueue.main.async {
                             guard let self, self.isCurrentDictation(dictationID) else { return }
                             self.currentAudioPowerLevel = power
-                            if power >= 0.015 { self.didDetectAudibleSpeech = true }
                         }
                     }
                 )
@@ -167,7 +164,10 @@ final class DictationCoordinator: ObservableObject {
             cancel()
             return
         }
-        guard capturedAudioByteCount > 0, didDetectAudibleSpeech else {
+        // Commit any capture long enough for the realtime service. Loudness is
+        // intentionally not judged locally: quiet speech and processed mic routes
+        // can sit below a fixed RMS threshold even though transcription is valid.
+        guard capturedAudioByteCount >= 4_800 else {
             connectionTask?.cancel()
             transcriber.cancel()
             targetIntegration.discardPreparation()
@@ -358,6 +358,7 @@ final class DictationCoordinator: ObservableObject {
         )
         onFocusedEditPresentation?(presentation)
         lastErrorMessage = detail
+        _ = audioCapture.stop()
         targetIntegration.discardPreparation()
         transcriber.cancel()
         lifecycle = .error(detail)
@@ -380,7 +381,6 @@ final class DictationCoordinator: ObservableObject {
         bufferedAudioChunks = []
         bufferedAudioByteCount = 0
         capturedAudioByteCount = 0
-        didDetectAudibleSpeech = false
         transcriberReady = false
         releaseRequested = false
         releaseDate = nil
@@ -652,7 +652,11 @@ final class RealtimeDictationTranscriber: DictationTranscriber {
 
 @MainActor
 final class DictationAudioCapture {
-    private let audioEngine = AVAudioEngine()
+    /// A fresh input-only engine is created for every hold and released on stop.
+    /// Dictation never plays audio, so enabling Apple's duplex voice-processing
+    /// unit only creates an unused downlink whose timeline can fail and starve the
+    /// microphone callback.
+    private var audioEngine: AVAudioEngine?
     private var converter: BuddyPCM16AudioConverter?
     private var onPCM16Chunk: ((Data) -> Void)?
     private var onAudioPower: ((CGFloat) -> Void)?
@@ -670,13 +674,9 @@ final class DictationAudioCapture {
         let converter = BuddyPCM16AudioConverter(targetSampleRate: 24_000)
         self.converter = converter
 
+        let audioEngine = AVAudioEngine()
+        self.audioEngine = audioEngine
         let inputNode = audioEngine.inputNode
-        do {
-            try inputNode.setVoiceProcessingEnabled(true)
-        } catch {
-            // Voice processing is best-effort. Some devices/routes reject it;
-            // dictation still uses raw mono PCM16 rather than failing capture.
-        }
         let inputFormat = inputNode.outputFormat(forBus: 0)
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 800, format: inputFormat) { [weak self] buffer, _ in
@@ -687,18 +687,29 @@ final class DictationAudioCapture {
             self.onAudioPower?(Self.audioPower(from: buffer))
         }
         audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+        } catch {
+            tearDownAudioEngine(audioEngine)
+            throw error
+        }
     }
 
     @discardableResult
     func stop() -> Bool {
-        guard onPCM16Chunk != nil else { return false }
+        guard let audioEngine else { return false }
+        tearDownAudioEngine(audioEngine)
+        return true
+    }
+
+    private func tearDownAudioEngine(_ audioEngine: AVAudioEngine) {
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
+        audioEngine.reset()
+        self.audioEngine = nil
         onPCM16Chunk = nil
         onAudioPower = nil
         converter = nil
-        return true
     }
 
     private func requestMicrophonePermissionIfNeeded() async -> Bool {

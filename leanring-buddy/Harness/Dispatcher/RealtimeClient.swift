@@ -168,10 +168,9 @@ final class RealtimeClient: ObservableObject {
     private var isResponseCancelled = false
     /// Count of audio chunks appended since the last commit (diagnostics).
     private var appendedAudioChunkCount = 0
-    /// Becomes true when a push-to-talk capture includes audible speech. Audio is
-    /// still streamed in full so quiet syllables are preserved; this only prevents
-    /// an entirely silent press/release from creating a model turn.
-    private var didDetectAudibleSpeech = false
+    /// Total PCM16 bytes appended since the last commit. The realtime service
+    /// requires at least 100 ms of audio; at 24 kHz mono PCM16 that is 4,800 bytes.
+    private var appendedAudioByteCount = 0
     /// Set when a mic chunk (or the commit) can't be sent because the socket is down
     /// mid-utterance. The turn is discarded on commit so a reconnect does not answer
     /// an incomplete utterance. Reset at the start of each capture (`clearAudioBuffer`)
@@ -239,8 +238,8 @@ final class RealtimeClient: ObservableObject {
 
     /// Dedicated engine for playing the model's voice. Kept separate from the
     /// mic-capture engine in BuddyDictationManager. Started lazily on first audio.
-    private let outputAudioEngine = AVAudioEngine()
-    private let outputPlayerNode = AVAudioPlayerNode()
+    private var outputAudioEngine = AVAudioEngine()
+    private var outputPlayerNode = AVAudioPlayerNode()
     /// The model streams PCM16 24kHz mono; we play it as Float32 at the same rate.
     private let outputAudioFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -249,6 +248,9 @@ final class RealtimeClient: ObservableObject {
         interleaved: false
     )!
     private var isOutputEngineRunning = false
+    private var outputHardwareSampleRate: Double?
+    private var outputHardwareChannelCount: AVAudioChannelCount?
+    private var outputEngineConfigurationObserver: NSObjectProtocol?
 
     init() {
         let configuration = URLSessionConfiguration.default
@@ -261,6 +263,29 @@ final class RealtimeClient: ObservableObject {
         registerCalendarTools()
         registerRemindersTools()
         registerAppLauncherTool()
+
+        // macOS stops and uninitializes an AVAudioEngine when the output device
+        // changes sample rate/channel count (Bluetooth route changes, docks,
+        // sleep/wake, etc.). Keep the observer broad because the engine itself
+        // is rebuilt after a configuration change.
+        outputEngineConfigurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let changedEngine = notification.object as? AVAudioEngine,
+                  changedEngine === self.outputAudioEngine else { return }
+            Task { @MainActor [weak self] in
+                self?.recoverOutputEngineAfterConfigurationChange()
+            }
+        }
+    }
+
+    deinit {
+        if let outputEngineConfigurationObserver {
+            NotificationCenter.default.removeObserver(outputEngineConfigurationObserver)
+        }
     }
 
     // MARK: - Tool Registration
@@ -1959,7 +1984,7 @@ final class RealtimeClient: ObservableObject {
             print("📤 RealtimeClient: sending first audio chunk (\(pcm16Data.count) bytes)")
         }
         appendedAudioChunkCount += 1
-        didDetectAudibleSpeech = didDetectAudibleSpeech || Self.containsAudibleSpeech(pcm16Data)
+        appendedAudioByteCount += pcm16Data.count
         sendJSON([
             "type": "input_audio_buffer.append",
             "audio": pcm16Data.base64EncodedString()
@@ -1971,7 +1996,7 @@ final class RealtimeClient: ObservableObject {
     /// can't be committed with the new utterance.
     func clearAudioBuffer() {
         appendedAudioChunkCount = 0
-        didDetectAudibleSpeech = false
+        appendedAudioByteCount = 0
         audioDroppedDuringUtterance = false
         sendJSON(["type": "input_audio_buffer.clear"])
     }
@@ -1985,39 +2010,21 @@ final class RealtimeClient: ObservableObject {
             print("⚠️ RealtimeClient: audio dropped during reconnect — not committing partial utterance")
             audioDroppedDuringUtterance = false
             appendedAudioChunkCount = 0
-            didDetectAudibleSpeech = false
+            appendedAudioByteCount = 0
             return false
         }
-        guard appendedAudioChunkCount > 0, didDetectAudibleSpeech else {
-            print("⚠️ RealtimeClient: commit skipped — no audible speech detected")
+        let minimumCommitByteCount = 4_800
+        guard appendedAudioByteCount >= minimumCommitByteCount else {
+            print("⚠️ RealtimeClient: commit skipped — only \(appendedAudioByteCount) audio bytes captured (minimum \(minimumCommitByteCount))")
             appendedAudioChunkCount = 0
-            didDetectAudibleSpeech = false
+            appendedAudioByteCount = 0
             return false
         }
         print("📤 RealtimeClient: commit audio (\(appendedAudioChunkCount) chunks)")
         appendedAudioChunkCount = 0
-        didDetectAudibleSpeech = false
+        appendedAudioByteCount = 0
         sendJSON(["type": "input_audio_buffer.commit"])
         return true
-    }
-
-    /// Returns true when a PCM16 chunk has enough RMS energy to plausibly contain
-    /// speech. The threshold is deliberately low (-42 dBFS) so quiet speech passes
-    /// while an untouched microphone's near-silence does not create a response.
-    private static func containsAudibleSpeech(_ pcm16Data: Data) -> Bool {
-        let sampleCount = pcm16Data.count / MemoryLayout<Int16>.size
-        guard sampleCount > 0 else { return false }
-
-        let meanSquare: Double = pcm16Data.withUnsafeBytes { bytes in
-            var sum = 0.0
-            for offset in stride(from: 0, to: sampleCount * MemoryLayout<Int16>.size, by: MemoryLayout<Int16>.size) {
-                let sample = bytes.loadUnaligned(fromByteOffset: offset, as: Int16.self).littleEndian
-                let normalized = Double(sample) / Double(Int16.max)
-                sum += normalized * normalized
-            }
-            return sum / Double(sampleCount)
-        }
-        return sqrt(meanSquare) >= 0.008
     }
 
     /// Asks the model to generate a response to the committed audio.
@@ -2072,7 +2079,20 @@ final class RealtimeClient: ObservableObject {
 
     /// Lazily starts the playback engine. Returns false if it couldn't start.
     private func startOutputEngineIfNeeded() -> Bool {
-        guard !isOutputEngineRunning else { return true }
+        // `isOutputEngineRunning` is our bookkeeping, not the system's source
+        // of truth. AVAudioEngine can stop underneath us after a route change.
+        // Scheduling onto that stale graph is what causes invalid sample-time
+        // errors in Apple's downlink voice processor.
+        if isOutputEngineRunning,
+           outputAudioEngine.isRunning,
+           outputPlayerNode.isPlaying,
+           outputHardwareFormatStillMatches() {
+            return true
+        }
+
+        if isOutputEngineRunning || outputAudioEngine.isRunning {
+            resetOutputEngine()
+        }
 
         outputAudioEngine.attach(outputPlayerNode)
         outputAudioEngine.connect(
@@ -2086,12 +2106,51 @@ final class RealtimeClient: ObservableObject {
         do {
             try outputAudioEngine.start()
             outputPlayerNode.play()
-            isOutputEngineRunning = true
+            isOutputEngineRunning = outputAudioEngine.isRunning && outputPlayerNode.isPlaying
+            let hardwareFormat = outputAudioEngine.outputNode.outputFormat(forBus: 0)
+            outputHardwareSampleRate = hardwareFormat.sampleRate
+            outputHardwareChannelCount = hardwareFormat.channelCount
             return true
         } catch {
             print("⚠️ RealtimeClient: failed to start output audio engine: \(error)")
+            isOutputEngineRunning = false
             return false
         }
+    }
+
+    /// Rebuilds the output graph after macOS changes the hardware route or
+    /// sample rate. Apple documents that the engine stops/uninitializes on a
+    /// configuration change; the old player timeline must not be reused.
+    private func recoverOutputEngineAfterConfigurationChange() {
+        print("🔁 RealtimeClient: output audio configuration changed; rebuilding output engine")
+        resetOutputEngine()
+    }
+
+    /// Stops and replaces the player graph so no buffers retain timestamps from
+    /// the previous hardware configuration or cancelled response.
+    private func resetOutputEngine() {
+        outputPlayerNode.stop()
+        outputAudioEngine.stop()
+        isOutputEngineRunning = false
+        outputHardwareSampleRate = nil
+        outputHardwareChannelCount = nil
+
+        playbackGeneration += 1
+        scheduledPlaybackBufferCount = 0
+        isReceivingResponseAudio = false
+        isAudioStreamComplete = false
+        playbackAudioLevel = 0
+
+        outputAudioEngine = AVAudioEngine()
+        outputPlayerNode = AVAudioPlayerNode()
+    }
+
+    private func outputHardwareFormatStillMatches() -> Bool {
+        guard let outputHardwareSampleRate,
+              let outputHardwareChannelCount else { return false }
+        let currentFormat = outputAudioEngine.outputNode.outputFormat(forBus: 0)
+        return abs(currentFormat.sampleRate - outputHardwareSampleRate) < 0.5
+            && currentFormat.channelCount == outputHardwareChannelCount
     }
 
     /// Installs a tap on the output mixer that publishes the playback RMS level
@@ -2133,7 +2192,9 @@ final class RealtimeClient: ObservableObject {
         if isAwaitingModelOutputAfterMCPResult {
             didReceiveModelOutputAfterMCPResult = true
         }
-        guard startOutputEngineIfNeeded() else { return }
+        guard startOutputEngineIfNeeded(),
+              outputAudioEngine.isRunning,
+              outputPlayerNode.isPlaying else { return }
 
         if !isReceivingResponseAudio {
             isReceivingResponseAudio = true
@@ -2220,15 +2281,10 @@ final class RealtimeClient: ObservableObject {
         isResponseCancelled = true
 
         guard isOutputEngineRunning else { return }
-        outputPlayerNode.stop()
-        outputPlayerNode.play() // re-arm so the next response can schedule buffers
-        isReceivingResponseAudio = false
-        // Invalidate the cancelled response's playback session: bump the
-        // generation so its buffer completion handlers no-op, and reset the
-        // counters so the next response starts clean.
-        playbackGeneration += 1
-        scheduledPlaybackBufferCount = 0
-        isAudioStreamComplete = false
+        // A stopped AVAudioPlayerNode has a new timeline. Rebuild the graph
+        // instead of immediately scheduling onto that reset timeline; this
+        // avoids the invalid-sample-time failure during rapid barge-in.
+        resetOutputEngine()
     }
 
     /// Converts raw little-endian PCM16 mono into a Float32 buffer the player

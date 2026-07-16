@@ -73,6 +73,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
+        audioEngine.reset()
         realtimePCM16ChunkHandler = nil
         currentAudioPowerLevel = 0
         print("🎙️ BuddyDictationManager: realtime audio streaming stopped")
