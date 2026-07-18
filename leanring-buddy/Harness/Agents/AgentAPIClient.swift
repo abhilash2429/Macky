@@ -14,11 +14,11 @@ final class AgentAPIClient: AgentAPIServing, @unchecked Sendable {
 
     init(
         baseURL: URL = URL(string: WorkerEndpoints.httpsBase)!,
-        urlSession: URLSession = .shared,
+        urlSession: URLSession? = nil,
         sessionTokenProvider: AgentSessionTokenProviding = AgentAuthSessionTokenProvider()
     ) {
         self.baseURL = baseURL
-        self.urlSession = urlSession
+        self.urlSession = urlSession ?? Self.makeURLSession()
         self.sessionTokenProvider = sessionTokenProvider
     }
 
@@ -26,12 +26,7 @@ final class AgentAPIClient: AgentAPIServing, @unchecked Sendable {
         _ = definition
         let url = baseURL.appendingPathComponent("agent-config")
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        await addAuthorization(to: &request)
-        let (data, response) = try await urlSession.data(for: request)
-        try validate(response: response)
+        let data = try await configurationData(url: url, allowSessionRefresh: true)
         do {
             return try JSONDecoder().decode(AgentRemoteConfiguration.self, from: data)
         } catch {
@@ -47,27 +42,11 @@ final class AgentAPIClient: AgentAPIServing, @unchecked Sendable {
                     return
                 }
                 do {
-                    let url = self.baseURL.appendingPathComponent("agent-response")
-                    var request = URLRequest(url: url)
-                    request.httpMethod = "POST"
-                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    request.httpBody = try JSONEncoder().encode(agentRequest)
-                    await self.addAuthorization(to: &request)
-
-                    let (bytes, response) = try await self.urlSession.bytes(for: request)
-                    try self.validate(response: response)
-                    var dataLines: [String] = []
-                    for try await line in bytes.lines {
-                        try Task.checkCancellation()
-                        if line.isEmpty {
-                            try self.yieldSSEEvent(from: dataLines, to: continuation)
-                            dataLines = []
-                        } else if line.hasPrefix("data:") {
-                            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-                        }
-                    }
-                    try self.yieldSSEEvent(from: dataLines, to: continuation)
+                    try await self.consumeResponseStream(
+                        agentRequest,
+                        continuation: continuation,
+                        allowSessionRefresh: true
+                    )
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
@@ -79,18 +58,95 @@ final class AgentAPIClient: AgentAPIServing, @unchecked Sendable {
         }
     }
 
-    private func addAuthorization(to request: inout URLRequest) async {
-        guard let sessionToken = await sessionTokenProvider.sessionToken(), !sessionToken.isEmpty else {
+    private static func makeURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        // The Worker sends an SSE comment every ten seconds. This longer inactivity
+        // window covers connection setup without imposing the default short resource limit.
+        configuration.timeoutIntervalForRequest = 120
+        configuration.timeoutIntervalForResource = 7 * 24 * 60 * 60
+        configuration.waitsForConnectivity = true
+        return URLSession(configuration: configuration)
+    }
+
+    private func configurationData(url: URL, allowSessionRefresh: Bool) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let authorizationToken = await addAuthorization(to: &request)
+        let (data, response) = try await urlSession.data(for: request)
+        if Self.statusCode(response) == 401,
+           allowSessionRefresh,
+           let authorizationToken,
+           await sessionTokenProvider.refreshSessionToken(rejecting: authorizationToken) != nil {
+            return try await configurationData(url: url, allowSessionRefresh: false)
+        }
+        try validate(response: response)
+        return data
+    }
+
+    private func consumeResponseStream(
+        _ agentRequest: AgentResponseRequest,
+        continuation: AsyncThrowingStream<AgentResponseStreamEvent, Error>.Continuation,
+        allowSessionRefresh: Bool
+    ) async throws {
+        let url = baseURL.appendingPathComponent("agent-response")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(agentRequest)
+        let authorizationToken = await addAuthorization(to: &request)
+
+        let (bytes, response) = try await urlSession.bytes(for: request)
+        if Self.statusCode(response) == 401,
+           allowSessionRefresh,
+           let authorizationToken,
+           await sessionTokenProvider.refreshSessionToken(rejecting: authorizationToken) != nil {
+            try await consumeResponseStream(
+                agentRequest,
+                continuation: continuation,
+                allowSessionRefresh: false
+            )
             return
         }
+        try validate(response: response)
+        if let httpResponse = response as? HTTPURLResponse,
+           let requestID = httpResponse.value(forHTTPHeaderField: "X-Macky-Request-ID") {
+            print("🧠 AgentAPIClient: response stream opened requestID=\(requestID)")
+        }
+
+        var dataLines: [String] = []
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            if line.isEmpty {
+                try yieldSSEEvent(from: dataLines, to: continuation)
+                dataLines = []
+            } else if line.hasPrefix("data:") {
+                dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+            }
+        }
+        try yieldSSEEvent(from: dataLines, to: continuation)
+    }
+
+    private func addAuthorization(to request: inout URLRequest) async -> String? {
+        guard let sessionToken = await sessionTokenProvider.sessionToken(), !sessionToken.isEmpty else {
+            return nil
+        }
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        return sessionToken
     }
 
     private func validate(response: URLResponse) throws {
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200..<300).contains(httpResponse.statusCode) else {
-            throw AgentAPIClientError.unsuccessfulResponse
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AgentAPIClientError.invalidResponse
         }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw AgentAPIClientError.unsuccessfulResponse(statusCode: httpResponse.statusCode)
+        }
+    }
+
+    private static func statusCode(_ response: URLResponse) -> Int? {
+        (response as? HTTPURLResponse)?.statusCode
     }
 
     private func yieldSSEEvent(
@@ -117,6 +173,11 @@ struct AgentAuthSessionTokenProvider: AgentSessionTokenProviding {
     func sessionToken() async -> String? {
         let authManager = await MainActor.run { AuthManager.shared }
         return await authManager.ensureSessionToken()
+    }
+
+    func refreshSessionToken(rejecting rejectedToken: String) async -> String? {
+        let authManager = await MainActor.run { AuthManager.shared }
+        return await authManager.refreshSessionToken(rejecting: rejectedToken)
     }
 }
 
@@ -178,7 +239,8 @@ final class AgentFakeJavaScriptExecutor: AgentJavaScriptExecuting {
 
 enum AgentAPIClientError: LocalizedError, Equatable {
     case invalidURL
-    case unsuccessfulResponse
+    case invalidResponse
+    case unsuccessfulResponse(statusCode: Int)
     case invalidConfiguration
     case invalidStreamEvent
     case deallocated
@@ -187,8 +249,10 @@ enum AgentAPIClientError: LocalizedError, Equatable {
         switch self {
         case .invalidURL:
             return "The General Agent Worker URL is invalid."
-        case .unsuccessfulResponse:
-            return "The General Agent Worker request was unsuccessful."
+        case .invalidResponse:
+            return "The General Agent Worker returned an invalid HTTP response."
+        case .unsuccessfulResponse(let statusCode):
+            return "The General Agent Worker request failed with HTTP \(statusCode)."
         case .invalidConfiguration:
             return "The General Agent Worker returned an invalid configuration."
         case .invalidStreamEvent:

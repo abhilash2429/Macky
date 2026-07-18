@@ -465,11 +465,12 @@ struct AgentRemoteConfiguration: Codable, Equatable, Sendable {
     }
 }
 
-/// The two continuation shapes allowed by the stateless v1 request. Keeping this a
+/// The three continuation shapes allowed by the stateless v1 request. Keeping this a
 /// closed enum prevents arbitrary provider output or tool records reaching the Worker.
 enum AgentContinuationItem: Codable, Equatable, Sendable {
     case reasoning(id: String, encryptedContent: String)
     case functionCall(id: String, callID: String, name: AgentToolName, arguments: String)
+    case message(id: String, text: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -478,11 +479,20 @@ enum AgentContinuationItem: Codable, Equatable, Sendable {
         case callID = "call_id"
         case name
         case arguments
+        case role
+        case status
+        case content
     }
 
     private enum Kind: String, Codable {
         case reasoning
         case functionCall = "function_call"
+        case message
+    }
+
+    private struct MessageContent: Codable, Equatable {
+        let type: String
+        let text: String
     }
 
     init(from decoder: Decoder) throws {
@@ -501,6 +511,24 @@ enum AgentContinuationItem: Codable, Equatable, Sendable {
                 name: try container.decode(AgentToolName.self, forKey: .name),
                 arguments: try container.decode(String.self, forKey: .arguments)
             )
+        case .message:
+            let role = try container.decode(String.self, forKey: .role)
+            let status = try container.decode(String.self, forKey: .status)
+            let content = try container.decode([MessageContent].self, forKey: .content)
+            guard role == "assistant",
+                  status == "completed",
+                  content.count == 1,
+                  content[0].type == "output_text" else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .content,
+                    in: container,
+                    debugDescription: "Agent message continuation items require one assistant output_text value."
+                )
+            }
+            self = .message(
+                id: try container.decode(String.self, forKey: .id),
+                text: content[0].text
+            )
         }
     }
 
@@ -517,12 +545,30 @@ enum AgentContinuationItem: Codable, Equatable, Sendable {
             try container.encode(callID, forKey: .callID)
             try container.encode(name, forKey: .name)
             try container.encode(arguments, forKey: .arguments)
+        case let .message(id, text):
+            try container.encode(Kind.message, forKey: .type)
+            try container.encode(id, forKey: .id)
+            try container.encode("completed", forKey: .status)
+            try container.encode("assistant", forKey: .role)
+            try container.encode(
+                [MessageContent(type: "output_text", text: text)],
+                forKey: .content
+            )
         }
     }
 
     var functionCall: (id: String, callID: String, name: AgentToolName, arguments: String)? {
         guard case let .functionCall(id, callID, name, arguments) = self else { return nil }
         return (id, callID, name, arguments)
+    }
+
+    var isResponseContinuation: Bool {
+        switch self {
+        case .reasoning, .message:
+            return true
+        case .functionCall:
+            return false
+        }
     }
 }
 
@@ -634,11 +680,11 @@ struct AgentResponseStreamEvent: Codable, Equatable, Sendable {
                 )
             }
         case .continuation:
-            guard case .reasoning? = continuationItem else {
+            guard continuationItem?.isResponseContinuation == true else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .continuationItem,
                     in: container,
-                    debugDescription: "Continuation events require a reasoning item."
+                    debugDescription: "Continuation events require a reasoning or assistant message item."
                 )
             }
         case .toolCall:
@@ -690,6 +736,14 @@ protocol AgentAPIServing: Sendable {
 
 protocol AgentSessionTokenProviding: Sendable {
     func sessionToken() async -> String?
+    func refreshSessionToken(rejecting rejectedToken: String) async -> String?
+}
+
+extension AgentSessionTokenProviding {
+    func refreshSessionToken(rejecting rejectedToken: String) async -> String? {
+        _ = rejectedToken
+        return nil
+    }
 }
 
 protocol AgentStatePersisting: Sendable {
@@ -712,6 +766,7 @@ enum AgentRuntimeError: LocalizedError, Equatable {
     case missingAttempt(UUID)
     case invalidToolCall
     case responseEndedWithoutResult
+    case remoteResponseUnavailable
     case javaScriptExecutorUnavailable
     case invalidQuestion
     case invalidSteering
@@ -737,6 +792,8 @@ enum AgentRuntimeError: LocalizedError, Equatable {
             return "The agent sent an invalid tool request."
         case .responseEndedWithoutResult:
             return "The agent response ended before it produced a final result."
+        case .remoteResponseUnavailable:
+            return "The agent response service was temporarily unavailable."
         case .javaScriptExecutorUnavailable:
             return "JavaScript execution is not available in this build."
         case .invalidQuestion:

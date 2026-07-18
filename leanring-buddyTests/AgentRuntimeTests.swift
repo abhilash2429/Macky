@@ -223,4 +223,107 @@ final class AgentRuntimeTests: XCTestCase {
         XCTAssertEqual(requests.first?.toolOutputs.first?.providerCallID, localCallID)
         XCTAssertTrue(requests.first?.toolOutputs.first?.output.contains("42") ?? false)
     }
+
+    func testRuntimeRetriesATransientStreamFailureBeforeAnyOutput() async throws {
+        let task = AgentTask(
+            agentID: AgentRegistry.general.id,
+            instruction: "Retry one transient failure",
+            source: AgentSource(kind: .text),
+            skillSnapshots: [],
+            attachments: []
+        )
+        let job = AgentJob(taskID: task.id, instruction: task.instruction)
+        let finalResult = AgentFinalResultRequest(summary: "Completed after retry")
+        let finalToolCall = AgentToolCall(
+            providerCallID: "call_final_after_retry",
+            name: .finalResult,
+            arguments: try String(decoding: JSONEncoder().encode(finalResult), as: UTF8.self)
+        )
+        let apiClient = RetryingAgentAPIClient(
+            failuresBeforeSuccess: 1,
+            successfulEvents: [AgentResponseStreamEvent(
+                kind: .toolCall,
+                continuationItem: .functionCall(
+                    id: "fc_final_after_retry",
+                    callID: finalToolCall.providerCallID,
+                    name: finalToolCall.name,
+                    arguments: finalToolCall.arguments
+                ),
+                toolCall: finalToolCall
+            )]
+        )
+        let localStore = AgentLocalStore(persistence: AgentInMemoryPersistence())
+        _ = try await localStore.load()
+        try await localStore.create(task: task, jobs: [job])
+        let javaScriptExecutor = await MainActor.run { AgentUnavailableJavaScriptExecutor() }
+        let runtime = AgentRuntime(
+            store: localStore,
+            apiClient: apiClient,
+            attachmentStore: AgentAttachmentStore(
+                rootDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            ),
+            javaScriptExecutor: javaScriptExecutor
+        )
+
+        await runtime.enqueue(jobIDs: [job.id])
+        for _ in 0..<400 {
+            let currentSnapshot = await localStore.snapshot()
+            if currentSnapshot.tasks.first?.status == .completed {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let snapshot = await localStore.snapshot()
+        let streamAttemptCount = await apiClient.streamAttemptCount()
+        XCTAssertEqual(snapshot.tasks.first?.status, .completed)
+        XCTAssertEqual(streamAttemptCount, 2)
+    }
+}
+
+private actor RetryingAgentAPIClient: AgentAPIServing {
+    private let failuresBeforeSuccess: Int
+    private let successfulEvents: [AgentResponseStreamEvent]
+    private var attempts = 0
+
+    init(failuresBeforeSuccess: Int, successfulEvents: [AgentResponseStreamEvent]) {
+        self.failuresBeforeSuccess = failuresBeforeSuccess
+        self.successfulEvents = successfulEvents
+    }
+
+    func fetchConfiguration(for definition: AgentDefinition) async throws -> AgentRemoteConfiguration {
+        AgentRemoteConfiguration(
+            enabled: true,
+            developmentOnly: true,
+            agentID: definition.id,
+            displayName: definition.displayName,
+            model: definition.model,
+            operations: [.general, .skillDraft],
+            webSearch: true,
+            tools: definition.toolContracts.map(\.name)
+        )
+    }
+
+    func streamResponse(
+        _ request: AgentResponseRequest
+    ) async -> AsyncThrowingStream<AgentResponseStreamEvent, Error> {
+        _ = request
+        attempts += 1
+        let shouldFail = attempts <= failuresBeforeSuccess
+        let events = successfulEvents
+        return AsyncThrowingStream { continuation in
+            if shouldFail {
+                continuation.finish(throwing: URLError(.timedOut))
+                return
+            }
+            for event in events {
+                continuation.yield(event)
+            }
+            continuation.finish()
+        }
+    }
+
+    func streamAttemptCount() -> Int {
+        attempts
+    }
 }

@@ -153,9 +153,21 @@ export interface AgentFunctionCallContinuationItem {
   arguments: string;
 }
 
+export interface AgentMessageContinuationItem {
+  type: "message";
+  id: string;
+  status: "completed";
+  role: "assistant";
+  content: Array<{
+    type: "output_text";
+    text: string;
+  }>;
+}
+
 export type AgentContinuationItem =
   | AgentReasoningContinuationItem
-  | AgentFunctionCallContinuationItem;
+  | AgentFunctionCallContinuationItem
+  | AgentMessageContinuationItem;
 
 export interface AgentToolOutput {
   call_id: string;
@@ -177,7 +189,7 @@ export type AgentSSEEvent =
   | {
       protocol_version: 1;
       kind: "continuation";
-      continuation_item: AgentReasoningContinuationItem;
+      continuation_item: AgentReasoningContinuationItem | AgentMessageContinuationItem;
     }
   | {
       protocol_version: 1;
@@ -203,6 +215,7 @@ const generalAgentResponsesURL =
 const maximumAgentInputCharacters = 1_048_576;
 const maximumAgentOpaqueStringCharacters = 8_388_608;
 const genericAgentStreamErrorDetail = "Agent response unavailable.";
+const agentHeartbeatIntervalMilliseconds = 10_000;
 const generalAgentToolNames: AgentToolName[] = [
   "read_attachment",
   "run_javascript",
@@ -378,6 +391,31 @@ export function parseAgentContinuationItem(value: unknown): AgentContinuationIte
     };
   }
 
+  if (value.type === "message") {
+    if (!hasOnlyKeys(value, ["type", "id", "status", "role", "content"])
+      || !isBoundedAgentString(value.id)
+      || value.status !== "completed"
+      || value.role !== "assistant"
+      || !Array.isArray(value.content)
+      || value.content.length !== 1) {
+      return null;
+    }
+    const content = value.content[0];
+    if (!isPlainRecord(content)
+      || !hasOnlyKeys(content, ["type", "text"])
+      || content.type !== "output_text"
+      || !isBoundedAgentString(content.text)) {
+      return null;
+    }
+    return {
+      type: "message",
+      id: value.id,
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: content.text }],
+    };
+  }
+
   return null;
 }
 
@@ -475,10 +513,7 @@ export function parseAgentResponseRequest(value: unknown): AgentResponseRequest 
 export function azureAgentResponseRequest(
   agentRequest: AgentResponseRequest
 ): Record<string, unknown> {
-  const input: unknown[] = [{
-    role: "user",
-    content: [{ type: "input_text", text: agentRequest.input }],
-  }];
+  const input: unknown[] = [];
   const toolOutputsByCallID = new Map(
     agentRequest.toolOutputs.map((toolOutput) => [toolOutput.call_id, toolOutput])
   );
@@ -493,6 +528,10 @@ export function azureAgentResponseRequest(
       output: toolOutput.output,
     });
   }
+  input.push({
+    role: "user",
+    content: [{ type: "input_text", text: agentRequest.input }],
+  });
   const tools: unknown[] = [...generalAgentFunctionTools];
   if (agentRequest.webSearch) {
     tools.push({ type: "web_search" });
@@ -541,7 +580,7 @@ export function normalizeAzureAgentSSEData(
   if (providerEvent.type === "response.output_item.done") {
     const continuationItem = sanitizeProviderContinuationItem(providerEvent.item);
     if (!continuationItem) return [];
-    if (continuationItem.type === "reasoning") {
+    if (continuationItem.type === "reasoning" || continuationItem.type === "message") {
       return [{
         protocol_version: agentProtocolVersion,
         kind: "continuation",
@@ -681,6 +720,23 @@ function sanitizeProviderContinuationItem(value: unknown): AgentContinuationItem
       arguments: value.arguments,
     };
   }
+  if (value.type === "message"
+    && isBoundedAgentString(value.id)
+    && value.status === "completed"
+    && value.role === "assistant"
+    && Array.isArray(value.content)) {
+    const outputText = value.content.find((content) => isPlainRecord(content)
+      && content.type === "output_text"
+      && isBoundedAgentString(content.text));
+    if (!isPlainRecord(outputText) || !isBoundedAgentString(outputText.text)) return null;
+    return {
+      type: "message",
+      id: value.id,
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: outputText.text }],
+    };
+  }
   return null;
 }
 
@@ -722,7 +778,8 @@ function agentSafetyInstructions(operation: AgentOperation): string {
     "Never request, expose, retain, or transmit credentials, session tokens, private keys, or other secrets.",
     "Do not perform purchases, payments, account or security changes, deletions, publishing, messaging, or other external side effects.",
     "Do not claim access to local files, apps, browser state, or services unless a current tool result explicitly provides it.",
-    "A normal text message is a progress update only and never signals task completion.",
+    "A normal text message is a progress update only and never signals task completion. Keep each progress update to one short active-present line that describes the user-visible action without internal tool names, ids, queue state, or protocol details.",
+    "Before web search or a local function call, emit one concise progress line ending with a newline. Do not produce a long prose summary outside final_result.",
     "A local tool call other than final_result intentionally pauses this response; Macky continues the task in a later stateless request with the preserved call and matching output.",
     "Use ask_question only when user input is required. Task completion must happen through exactly one final_result call.",
     operationInstruction,
@@ -834,36 +891,93 @@ async function handleAgentResponse(request: Request, env: Env): Promise<Response
     return jsonResponse({ error: "invalid agent response request" }, 400);
   }
 
-  let azureResponse: Response;
-  try {
-    azureResponse = await fetch(generalAgentResponsesURL, {
-      method: "POST",
-      headers: {
-        "api-key": env.AZURE_OPENAI_API_KEY,
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
-      body: JSON.stringify(azureAgentResponseRequest(agentRequest)),
-    });
-  } catch {
-    // Do not log the prompt, token, upstream body, or exception: any can carry
-    // sensitive provider/client context.
-    console.error("Azure agent response request failed");
-    return jsonResponse({ error: "agent response unavailable" }, 502);
-  }
+  const requestID = crypto.randomUUID();
+  const startedAt = Date.now();
+  const encoder = new TextEncoder();
+  let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let cancelled = false;
 
-  const contentType = azureResponse.headers.get("Content-Type") ?? "";
-  if (!azureResponse.ok || !azureResponse.body || !contentType.startsWith("text/event-stream")) {
-    console.error("Azure agent response stream rejected", azureResponse.status);
-    return jsonResponse({ error: "agent response unavailable" }, 502);
-  }
+  const responseStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enqueue = (value: string | Uint8Array) => {
+        if (cancelled) return;
+        controller.enqueue(typeof value === "string" ? encoder.encode(value) : value);
+      };
+      const finish = () => {
+        if (heartbeatTimer !== null) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+        if (!cancelled) controller.close();
+      };
 
-  return new Response(normalizeAzureAgentSSEStream(azureResponse.body), {
-    status: azureResponse.status,
+      // Flush response headers immediately and keep the SSE request alive while
+      // Azure reasons, searches, or waits before producing an allow-listed event.
+      enqueue(": connected\n\n");
+      heartbeatTimer = setInterval(() => {
+        try {
+          enqueue(": keep-alive\n\n");
+        } catch {
+          cancelled = true;
+        }
+      }, agentHeartbeatIntervalMilliseconds);
+
+      void (async () => {
+        try {
+          const azureResponse = await fetch(generalAgentResponsesURL, {
+            method: "POST",
+            headers: {
+              "api-key": env.AZURE_OPENAI_API_KEY,
+              "Content-Type": "application/json",
+              Accept: "text/event-stream",
+            },
+            body: JSON.stringify(azureAgentResponseRequest(agentRequest)),
+            signal: request.signal,
+          });
+          const contentType = azureResponse.headers.get("Content-Type") ?? "";
+          if (!azureResponse.ok || !azureResponse.body || !contentType.startsWith("text/event-stream")) {
+            console.error("Azure agent response stream rejected", requestID, azureResponse.status);
+            enqueue(agentSSEFrame(agentStreamErrorEvent()));
+            return;
+          }
+
+          upstreamReader = normalizeAzureAgentSSEStream(azureResponse.body).getReader();
+          while (!cancelled) {
+            const chunk = await upstreamReader.read();
+            if (chunk.done) break;
+            enqueue(chunk.value);
+          }
+        } catch {
+          if (!cancelled && !request.signal.aborted) {
+            // Prompts, tokens, upstream bodies, and exception details may be sensitive.
+            console.error("Azure agent response request failed", requestID);
+            enqueue(agentSSEFrame(agentStreamErrorEvent()));
+          }
+        } finally {
+          console.log("Agent response stream finished", requestID, Date.now() - startedAt);
+          finish();
+        }
+      })();
+    },
+    async cancel(reason) {
+      cancelled = true;
+      if (heartbeatTimer !== null) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      await upstreamReader?.cancel(reason);
+    },
+  });
+
+  return new Response(responseStream, {
+    status: 200,
     headers: {
       "Cache-Control": "no-cache, no-transform",
       "Content-Type": "text/event-stream; charset=utf-8",
       "X-Content-Type-Options": "nosniff",
+      "X-Macky-Agent-Protocol": String(agentProtocolVersion),
+      "X-Macky-Request-ID": requestID,
     },
   });
 }

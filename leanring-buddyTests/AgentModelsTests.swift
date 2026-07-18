@@ -42,6 +42,7 @@ final class AgentModelsTests: XCTestCase {
             webSearch: true,
             continuationItems: [
                 .reasoning(id: "rs_1", encryptedContent: "encrypted-reasoning"),
+                .message(id: "msg_1", text: "Checking the release notes"),
                 .functionCall(
                     id: "fc_1",
                     callID: "call_1",
@@ -67,12 +68,17 @@ final class AgentModelsTests: XCTestCase {
         XCTAssertNil(object["java_script_results"])
 
         let continuationItems = try XCTUnwrap(object["continuation_items"] as? [[String: Any]])
-        XCTAssertEqual(continuationItems.count, 2)
+        XCTAssertEqual(continuationItems.count, 3)
         XCTAssertEqual(continuationItems[0]["type"] as? String, "reasoning")
         XCTAssertEqual(continuationItems[0]["encrypted_content"] as? String, "encrypted-reasoning")
-        XCTAssertEqual(continuationItems[1]["type"] as? String, "function_call")
-        XCTAssertEqual(continuationItems[1]["call_id"] as? String, "call_1")
-        XCTAssertEqual(continuationItems[1]["name"] as? String, "run_javascript")
+        XCTAssertEqual(continuationItems[1]["type"] as? String, "message")
+        XCTAssertEqual(continuationItems[1]["status"] as? String, "completed")
+        XCTAssertEqual(continuationItems[1]["role"] as? String, "assistant")
+        let messageContent = try XCTUnwrap(continuationItems[1]["content"] as? [[String: Any]])
+        XCTAssertEqual(messageContent.first?["text"] as? String, "Checking the release notes")
+        XCTAssertEqual(continuationItems[2]["type"] as? String, "function_call")
+        XCTAssertEqual(continuationItems[2]["call_id"] as? String, "call_1")
+        XCTAssertEqual(continuationItems[2]["name"] as? String, "run_javascript")
 
         let toolOutputs = try XCTUnwrap(object["tool_outputs"] as? [[String: Any]])
         XCTAssertEqual(toolOutputs.count, 1)
@@ -130,6 +136,20 @@ final class AgentModelsTests: XCTestCase {
         )
         XCTAssertEqual(javaScriptObject["source"] as? String, "return input;")
         XCTAssertTrue(javaScriptObject["input_json"] is NSNull)
+    }
+
+    func testNormalizedAssistantMessageSSEDecodesAsContinuation() throws {
+        let data = Data(
+            #"{"protocol_version":1,"kind":"continuation","continuation_item":{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Checking the sources"}]}}"#.utf8
+        )
+
+        let event = try JSONDecoder().decode(AgentResponseStreamEvent.self, from: data)
+
+        guard case let .message(id, text)? = event.continuationItem else {
+            return XCTFail("Expected an assistant message continuation item.")
+        }
+        XCTAssertEqual(id, "msg_1")
+        XCTAssertEqual(text, "Checking the sources")
     }
 
     func testArtifactAndFinalResultToolArgumentsUseV1CodingKeys() throws {
@@ -233,6 +253,39 @@ final class AgentModelsTests: XCTestCase {
         XCTAssertEqual(Set(sequences).count, sequences.count)
     }
 
+    func testRetentionDoesNotRefreshTerminalTaskActivityTimestamps() async throws {
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let store = AgentLocalStore(
+            persistence: AgentInMemoryPersistence(),
+            now: { fixedDate }
+        )
+        _ = try await store.load()
+        let task = AgentTask(
+            agentID: AgentRegistry.general.id,
+            instruction: "Expire this completed task",
+            source: AgentSource(kind: .text),
+            skillSnapshots: [],
+            attachments: [],
+            createdAt: fixedDate
+        )
+        let job = AgentJob(taskID: task.id, instruction: task.instruction, createdAt: fixedDate)
+        try await store.create(task: task, jobs: [job])
+        let attempt = try await store.beginAttempt(for: job.id)
+        _ = try await store.finalize(
+            AgentFinalResultRequest(summary: "Done"),
+            taskID: task.id,
+            jobID: job.id,
+            attemptID: attempt.id
+        )
+
+        _ = try await store.enforceRetention(
+            at: fixedDate.addingTimeInterval(AgentRetentionPolicy.historyLifetime + 1)
+        )
+
+        let snapshot = await store.snapshot()
+        XCTAssertTrue(snapshot.tasks.isEmpty)
+    }
+
     func testQueuedCancellationDoesNotInventAnAttemptIdentifier() async throws {
         let store = AgentLocalStore(persistence: AgentInMemoryPersistence())
         _ = try await store.load()
@@ -303,6 +356,68 @@ final class AgentModelsTests: XCTestCase {
         XCTAssertTrue(remainingSteering.isEmpty)
         let snapshot = await store.snapshot()
         XCTAssertEqual(snapshot.events.filter { $0.kind == .steeringApplied }.count, 1)
+    }
+
+    func testTaskSteeringIsQueuedForEveryActiveChildJob() async throws {
+        let store = AgentLocalStore(persistence: AgentInMemoryPersistence())
+        _ = try await store.load()
+        let task = AgentTask(
+            agentID: AgentRegistry.general.id,
+            instruction: "Investigate in parallel",
+            source: AgentSource(kind: .text),
+            skillSnapshots: [],
+            attachments: []
+        )
+        let jobs = [
+            AgentJob(taskID: task.id, instruction: "Check the client"),
+            AgentJob(taskID: task.id, instruction: "Check the Worker")
+        ]
+        try await store.create(task: task, jobs: jobs)
+
+        try await store.queueSteering(taskID: task.id, text: "Include failure cases")
+
+        for job in jobs {
+            let pendingSteering = try await store.pendingSteering(for: job.id)
+            XCTAssertEqual(pendingSteering.map(\.text), ["Include failure cases"])
+        }
+    }
+
+    func testExecutionContextContainsOnlyTheCurrentChildJobThread() async throws {
+        let store = AgentLocalStore(persistence: AgentInMemoryPersistence())
+        _ = try await store.load()
+        let task = AgentTask(
+            agentID: AgentRegistry.general.id,
+            instruction: "Investigate in parallel",
+            source: AgentSource(kind: .text),
+            skillSnapshots: [],
+            attachments: []
+        )
+        let firstJob = AgentJob(taskID: task.id, instruction: "Check the client")
+        let secondJob = AgentJob(taskID: task.id, instruction: "Check the Worker")
+        try await store.create(task: task, jobs: [firstJob, secondJob])
+        let firstAttempt = try await store.beginAttempt(for: firstJob.id)
+        let secondAttempt = try await store.beginAttempt(for: secondJob.id)
+        try await store.appendResponseText(
+            taskID: task.id,
+            jobID: firstJob.id,
+            attemptID: firstAttempt.id,
+            text: "Client progress"
+        )
+        try await store.appendResponseText(
+            taskID: task.id,
+            jobID: secondJob.id,
+            attemptID: secondAttempt.id,
+            text: "Worker progress"
+        )
+
+        let firstContext = try await store.executionContext(
+            taskID: task.id,
+            jobID: firstJob.id,
+            attemptID: firstAttempt.id
+        )
+
+        XCTAssertTrue(firstContext.priorEvents.contains { $0.message == "Client progress" })
+        XCTAssertFalse(firstContext.priorEvents.contains { $0.message == "Worker progress" })
     }
 
     func testArtifactCreationIsIdempotentForAProviderCall() async throws {

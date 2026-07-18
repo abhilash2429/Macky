@@ -13,6 +13,7 @@ struct AgentsPanelView: View {
 
     @State private var isCreatingTask = false
     @State private var draftInstruction = ""
+    @State private var draftChildInstructions: [String] = []
     @State private var draftAttachmentURLs: [URL] = []
     @State private var draftSkillIDs = Set<String>()
     @State private var composerText = ""
@@ -211,6 +212,40 @@ struct AgentsPanelView: View {
                     }
                 }
 
+            if !draftChildInstructions.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("PARALLEL AGENTS")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .tracking(1)
+                        .foregroundStyle(DS.Colors.textTertiary)
+
+                    ForEach(draftChildInstructions.indices, id: \.self) { index in
+                        HStack(spacing: 5) {
+                            TextField(
+                                "Agent \(index + 1) instruction",
+                                text: Binding(
+                                    get: { draftChildInstructions[index] },
+                                    set: { draftChildInstructions[index] = $0 }
+                                )
+                            )
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 9, design: .rounded))
+                            .padding(.horizontal, 8)
+                            .frame(height: 26)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(DS.Colors.surface2))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(DS.Colors.borderSubtle))
+
+                            Button {
+                                draftChildInstructions.remove(at: index)
+                            } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .dsIconButtonStyle(size: 22, tooltip: "Remove agent", tooltipAlignment: .trailing)
+                        }
+                    }
+                }
+            }
+
             if !availableSkills.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
@@ -248,13 +283,26 @@ struct AgentsPanelView: View {
                 }
                 .dsTertiaryButtonStyle()
 
+                if draftChildInstructions.count < AgentParentGroup.maximumJobCount {
+                    Button {
+                        if draftChildInstructions.isEmpty {
+                            draftChildInstructions = ["", ""]
+                        } else {
+                            draftChildInstructions.append("")
+                        }
+                    } label: {
+                        Label("Parallel", systemImage: "square.stack.3d.up")
+                    }
+                    .dsTertiaryButtonStyle()
+                }
+
                 Spacer()
 
                 Button("Start") {
                     Task { await submitDraft() }
                 }
                 .dsOutlinedButtonStyle(isFullWidth: false)
-                .disabled(draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSubmitDraft)
             }
         }
         .padding(.horizontal, 4)
@@ -265,7 +313,8 @@ struct AgentsPanelView: View {
     }
 
     private func taskThread(_ task: AgentTask) -> some View {
-        VStack(spacing: 7) {
+        let threadBottomID = "agent-thread-bottom-\(task.id.uuidString)"
+        return VStack(spacing: 7) {
             HStack(spacing: 7) {
                 Button {
                     coordinator.selectedTaskID = nil
@@ -290,30 +339,46 @@ struct AgentsPanelView: View {
                 threadActions(task)
             }
 
-            ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 7) {
-                    threadRow(icon: "text.quote", title: "Request", detail: task.instruction)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 7) {
+                        threadRow(icon: "text.quote", title: "Request", detail: task.instruction)
 
-                    let taskJobs = coordinator.jobs(for: task.id)
-                    if taskJobs.count > 1 {
-                        jobGroupView(taskJobs)
+                        let taskJobs = coordinator.jobs(for: task.id)
+                        if taskJobs.count > 1 {
+                            jobGroupView(taskJobs)
+                        }
+
+                        ForEach(eventDisplays(for: task.id)) { event in
+                            eventRow(event)
+                        }
+
+                        ForEach(coordinator.results(for: task.id)) { result in
+                            resultView(result, task: task)
+                        }
+
+                        ForEach(coordinator.artifacts(for: task.id)) { artifact in
+                            artifactRow(artifact, task: task)
+                        }
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id(threadBottomID)
                     }
-
-                    ForEach(eventDisplays(for: task.id)) { event in
-                        eventRow(event)
-                    }
-
-                    ForEach(coordinator.results(for: task.id)) { result in
-                        resultView(result)
-                    }
-
-                    ForEach(coordinator.artifacts(for: task.id)) { artifact in
-                        artifactRow(artifact)
+                    .padding(.trailing, 4)
+                }
+                .scrollIndicators(.visible)
+                .onChange(of: coordinator.events.count) { _, _ in
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo(threadBottomID, anchor: .bottom)
                     }
                 }
-                .padding(.trailing, 4)
+                .onChange(of: coordinator.results.count) { _, _ in
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo(threadBottomID, anchor: .bottom)
+                    }
+                }
             }
-            .scrollIndicators(.visible)
 
             if let errorMessage {
                 Text(errorMessage)
@@ -381,55 +446,241 @@ struct AgentsPanelView: View {
     }
 
     private func eventRow(_ event: AgentEventDisplay) -> some View {
-        threadRow(
-            icon: eventIcon(event.kind),
-            title: eventTitle(event.kind),
-            detail: event.detail
-        )
+        HStack(alignment: .top, spacing: 8) {
+            Group {
+                switch event.state {
+                case .active:
+                    ProgressView()
+                        .controlSize(.mini)
+                case .completed:
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(DS.Colors.success)
+                case .failed:
+                    Image(systemName: "exclamationmark")
+                        .foregroundStyle(DS.Colors.warningText)
+                case .info:
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 5))
+                        .foregroundStyle(DS.Colors.textTertiary)
+                }
+            }
+            .frame(width: 13, height: 13)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(event.title)
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(DS.Colors.textSecondary)
+                if !event.detail.isEmpty {
+                    Text(event.detail)
+                        .font(.system(size: 9, design: .rounded))
+                        .foregroundStyle(DS.Colors.textTertiary)
+                        .lineLimit(event.kind == .responseTextReceived ? 4 : 2)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
     }
 
     private func eventDisplays(for taskID: UUID) -> [AgentEventDisplay] {
         var displays: [AgentEventDisplay] = []
         var pendingResponseID: UUID?
+        var pendingResponseJobID: UUID?
         var pendingResponseText = ""
+        let taskJobs = coordinator.jobs(for: taskID)
+        let jobNumbers = Dictionary(uniqueKeysWithValues: taskJobs.enumerated().map { index, job in
+            (job.id, index + 1)
+        })
 
         func flushResponseText() {
             guard let responseID = pendingResponseID, !pendingResponseText.isEmpty else { return }
+            let agentPrefix = jobPrefix(
+                for: pendingResponseJobID,
+                jobNumbers: jobNumbers,
+                jobCount: taskJobs.count
+            )
             displays.append(
                 AgentEventDisplay(
                     id: responseID,
+                    jobID: pendingResponseJobID,
                     kind: .responseTextReceived,
-                    detail: pendingResponseText
+                    title: agentPrefix + "Working",
+                    detail: cleanedProgressText(pendingResponseText),
+                    state: .completed
                 )
             )
             pendingResponseText = ""
             pendingResponseID = nil
+            pendingResponseJobID = nil
         }
 
         for event in coordinator.events(for: taskID) {
             if event.kind == .responseTextReceived {
+                if pendingResponseJobID != nil, pendingResponseJobID != event.jobID {
+                    flushResponseText()
+                }
                 pendingResponseID = pendingResponseID ?? event.id
+                pendingResponseJobID = event.jobID
                 pendingResponseText += event.message ?? ""
                 continue
             }
             flushResponseText()
-            displays.append(
-                AgentEventDisplay(
-                    id: event.id,
-                    kind: event.kind,
-                    detail: event.message ?? event.metadataDescription
-                )
-            )
+            guard let display = eventDisplay(
+                event,
+                jobNumbers: jobNumbers,
+                jobCount: taskJobs.count
+            ) else { continue }
+            displays.append(display)
         }
         flushResponseText()
+
+        for job in taskJobs where job.status == .running {
+            guard let lastIndex = displays.lastIndex(where: { $0.jobID == job.id }) else { continue }
+            displays[lastIndex].state = .active
+        }
         return displays
     }
 
-    private func resultView(_ result: AgentResult) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(result.partial ? "Partial result" : "Result", systemImage: result.partial ? "circle.lefthalf.filled" : "checkmark.circle.fill")
+    private func eventDisplay(
+        _ event: AgentEvent,
+        jobNumbers: [UUID: Int],
+        jobCount: Int
+    ) -> AgentEventDisplay? {
+        let prefix = jobPrefix(for: event.jobID, jobNumbers: jobNumbers, jobCount: jobCount)
+        let title: String
+        let detail: String
+        let state: AgentProgressState
+
+        switch event.kind {
+        case .taskCreated, .jobQueued, .attemptStarted, .attachmentChunkProvided,
+             .artifactCreated, .waiting, .resultFinalized, .completed:
+            return nil
+        case .responseTextReceived:
+            return nil
+        case .toolRequested:
+            title = prefix + toolProgressTitle(event.metadata["tool"])
+            detail = ""
+            state = .completed
+        case .questionAsked:
+            title = prefix + "Needs input"
+            detail = event.message ?? ""
+            state = .info
+        case .questionAnswered:
+            title = prefix + "Answer received"
+            detail = ""
+            state = .completed
+        case .questionExpired:
+            title = prefix + "Question expired"
+            detail = ""
+            state = .failed
+        case .steeringQueued:
+            title = prefix + "New direction queued"
+            detail = event.message ?? ""
+            state = .info
+        case .steeringApplied:
+            title = prefix + "Direction applied"
+            detail = event.message ?? ""
+            state = .completed
+        case .cancellationRequested:
+            title = prefix + "Stopping"
+            detail = ""
+            state = .active
+        case .cancelled:
+            if event.metadata["result_id"] != nil { return nil }
+            title = prefix + "Cancelled"
+            detail = event.message ?? ""
+            state = .failed
+        case .failed:
+            if event.metadata["result_id"] != nil { return nil }
+            title = prefix + "Stopped"
+            detail = event.message ?? ""
+            state = .failed
+        case .interrupted:
+            title = prefix + "Paused"
+            detail = event.message ?? ""
+            state = .info
+        case .restarted:
+            title = prefix + "Restarted"
+            detail = event.message ?? ""
+            state = .completed
+        }
+
+        return AgentEventDisplay(
+            id: event.id,
+            jobID: event.jobID,
+            kind: event.kind,
+            title: title,
+            detail: detail,
+            state: state
+        )
+    }
+
+    private func jobPrefix(
+        for jobID: UUID?,
+        jobNumbers: [UUID: Int],
+        jobCount: Int
+    ) -> String {
+        guard jobCount > 1, let jobID, let number = jobNumbers[jobID] else { return "" }
+        return "Agent \(number) · "
+    }
+
+    private func toolProgressTitle(_ rawToolName: String?) -> String {
+        guard let rawToolName, let toolName = AgentToolName(rawValue: rawToolName) else {
+            return "Working"
+        }
+        switch toolName {
+        case .attachmentChunk:
+            return "Reading attachment"
+        case .runJavaScript:
+            return "Running local analysis"
+        case .artifact:
+            return "Creating artifact"
+        case .question:
+            return "Preparing a question"
+        case .finalResult:
+            return "Finalizing result"
+        }
+    }
+
+    private func cleanedProgressText(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 700 else { return trimmed }
+        return String(trimmed.prefix(700)) + "…"
+    }
+
+    private func resultPresentation(
+        _ result: AgentResult
+    ) -> (title: String, icon: String, color: Color) {
+        switch result.status {
+        case .completed:
+            return result.partial
+                ? ("Partial result", "circle.lefthalf.filled", DS.Colors.textPrimary)
+                : ("Result", "checkmark.circle.fill", DS.Colors.success)
+        case .cancelled:
+            return ("Cancelled", "xmark.circle", DS.Colors.textTertiary)
+        case .failed:
+            return ("Stopped", "exclamationmark.triangle.fill", DS.Colors.warningText)
+        case .interrupted:
+            return ("Interrupted", "pause.circle", DS.Colors.warning)
+        }
+    }
+
+    private func resultView(_ result: AgentResult, task: AgentTask) -> some View {
+        let taskJobs = coordinator.jobs(for: task.id)
+        let jobIndex = taskJobs.firstIndex { $0.id == result.jobID }
+        let agentPrefix: String
+        if taskJobs.count > 1, let jobIndex {
+            agentPrefix = "Agent \(jobIndex + 1) · "
+        } else {
+            agentPrefix = ""
+        }
+        let presentation = resultPresentation(result)
+        return VStack(alignment: .leading, spacing: 6) {
+            Label(agentPrefix + presentation.title, systemImage: presentation.icon)
                 .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundStyle(DS.Colors.textPrimary)
+                .foregroundStyle(presentation.color)
 
             Text(LocalizedStringKey(result.markdown))
                 .font(.system(size: 10, design: .rounded))
@@ -472,14 +723,22 @@ struct AgentsPanelView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(DS.Colors.borderSubtle))
     }
 
-    private func artifactRow(_ artifact: AgentArtifact) -> some View {
-        HStack(spacing: 8) {
+    private func artifactRow(_ artifact: AgentArtifact, task: AgentTask) -> some View {
+        let taskJobs = coordinator.jobs(for: task.id)
+        let jobIndex = taskJobs.firstIndex { $0.id == artifact.jobID }
+        let agentPrefix: String
+        if taskJobs.count > 1, let jobIndex {
+            agentPrefix = "Agent \(jobIndex + 1) · "
+        } else {
+            agentPrefix = ""
+        }
+        return HStack(spacing: 8) {
             Image(systemName: "doc")
                 .foregroundStyle(DS.Colors.textSecondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(artifact.name)
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
-                Text(artifact.mediaType)
+                Text(agentPrefix + artifact.mediaType)
                     .font(.system(size: 8, design: .rounded))
                     .foregroundStyle(DS.Colors.textTertiary)
             }
@@ -501,9 +760,16 @@ struct AgentsPanelView: View {
 
             ForEach(jobs) { job in
                 HStack(spacing: 7) {
-                    Circle()
-                        .fill(jobStatusColor(job.status))
-                        .frame(width: 6, height: 6)
+                    if job.status == .running {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .frame(width: 10, height: 10)
+                    } else {
+                        Circle()
+                            .fill(jobStatusColor(job.status))
+                            .frame(width: 6, height: 6)
+                            .frame(width: 10, height: 10)
+                    }
                     Text(job.instruction)
                         .font(.system(size: 9, weight: .medium, design: .rounded))
                         .foregroundStyle(DS.Colors.textSecondary)
@@ -659,7 +925,8 @@ struct AgentsPanelView: View {
                 instruction: draftInstruction,
                 source: AgentSource(kind: .text),
                 attachmentURLs: draftAttachmentURLs,
-                skillSnapshots: snapshots
+                skillSnapshots: snapshots,
+                childInstructions: draftChildInstructions
             )
             resetDraft()
             isCreatingTask = false
@@ -744,8 +1011,18 @@ struct AgentsPanelView: View {
 
     private func resetDraft() {
         draftInstruction = ""
+        draftChildInstructions = []
         draftAttachmentURLs = []
         draftSkillIDs = []
+    }
+
+    private var canSubmitDraft: Bool {
+        guard !draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        return draftChildInstructions.allSatisfy {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     private func canCompose(_ status: AgentTaskStatus) -> Bool {
@@ -782,25 +1059,6 @@ struct AgentsPanelView: View {
         }
     }
 
-    private func eventIcon(_ kind: AgentEventKind) -> String {
-        switch kind {
-        case .toolRequested: return "wrench.and.screwdriver"
-        case .attachmentChunkProvided: return "doc.text.magnifyingglass"
-        case .artifactCreated: return "doc.badge.plus"
-        case .questionAsked, .questionAnswered: return "bubble.left"
-        case .completed, .resultFinalized: return "checkmark.circle"
-        case .failed: return "exclamationmark.triangle"
-        case .cancelled, .cancellationRequested, .interrupted: return "pause.circle"
-        default: return "circle.fill"
-        }
-    }
-
-    private func eventTitle(_ kind: AgentEventKind) -> String {
-        kind.rawValue
-            .replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression)
-            .capitalized
-    }
-
     private func noticeIcon(_ kind: AgentNoticeKind) -> String {
         switch kind {
         case .completed: return "checkmark.circle.fill"
@@ -824,17 +1082,18 @@ struct AgentsPanelView: View {
     }
 }
 
-private extension AgentEvent {
-    var metadataDescription: String {
-        metadata
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key): \($0.value)" }
-            .joined(separator: " · ")
-    }
-}
-
 private struct AgentEventDisplay: Identifiable {
     let id: UUID
+    let jobID: UUID?
     let kind: AgentEventKind
+    let title: String
     let detail: String
+    var state: AgentProgressState
+}
+
+private enum AgentProgressState {
+    case active
+    case completed
+    case failed
+    case info
 }

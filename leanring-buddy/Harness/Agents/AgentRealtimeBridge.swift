@@ -128,6 +128,7 @@ final class AgentRealtimeBridge {
                 childInstructions: childInstructions
             )
             let jobCount = childInstructions.isEmpty ? 1 : childInstructions.count
+            coordinator.openAgentsPage(taskID: task.id)
             return Self.jsonString([
                 "status": "spawned",
                 "task_id": task.id.uuidString,
@@ -160,7 +161,18 @@ final class AgentRealtimeBridge {
     }
 
     private func taskList(includeHistory: Bool) -> [[String: Any]] {
-        let sourceTasks = includeHistory ? coordinator.historyTasks : coordinator.recentTasks
+        let sourceTasks: [AgentTask]
+        if includeHistory {
+            sourceTasks = coordinator.historyTasks
+        } else {
+            let activeTasks = coordinator.tasks.filter {
+                [.queued, .running, .waiting].contains($0.status)
+            }
+            let activeTaskIDs = Set(activeTasks.map(\.id))
+            sourceTasks = activeTasks + coordinator.recentTasks.filter {
+                !activeTaskIDs.contains($0.id)
+            }
+        }
         return sourceTasks.map { task in
             [
                 "task_id": task.id.uuidString,
@@ -181,8 +193,11 @@ final class AgentRealtimeBridge {
         }
         let taskResults = coordinator.results(for: taskID)
         let resultValues: [[String: Any]] = taskResults.map { result in
-            [
+            let job = coordinator.jobs(for: taskID).first { $0.id == result.jobID }
+            return [
                 "result_id": result.id.uuidString,
+                "job_id": result.jobID.uuidString,
+                "job_instruction": job?.instruction ?? "",
                 "status": result.status.rawValue,
                 "summary": result.summary,
                 "markdown": result.markdown,

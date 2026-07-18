@@ -79,6 +79,13 @@ test("continuation items and matching tool outputs are strictly allow-listed", (
     name: "read_attachment",
     arguments: "{\"attachment_id\":\"00000000-0000-4000-8000-000000000001\",\"offset\":0,\"byte_count\":128}",
   };
+  const messageItem = {
+    type: "message",
+    id: "message-1",
+    status: "completed",
+    role: "assistant",
+    content: [{ type: "output_text", text: "Checking the sources" }],
+  };
   const toolOutput = {
     call_id: "provider-call-1",
     output: "{\"content\":\"hello\"}",
@@ -86,13 +93,14 @@ test("continuation items and matching tool outputs are strictly allow-listed", (
 
   assert.deepEqual(parseAgentContinuationItem(reasoningItem), reasoningItem);
   assert.deepEqual(parseAgentContinuationItem(functionCallItem), functionCallItem);
+  assert.deepEqual(parseAgentContinuationItem(messageItem), messageItem);
   assert.deepEqual(parseAgentToolOutput(toolOutput), toolOutput);
   assert.deepEqual(parseAgentResponseRequest({
     protocol_version: 1,
     agent: "general",
     operation: "skill-draft",
     input: "Continue from the local tool result.",
-    continuation_items: [reasoningItem, functionCallItem],
+    continuation_items: [reasoningItem, messageItem, functionCallItem],
     tool_outputs: [toolOutput],
   }), {
     protocolVersion: 1,
@@ -100,7 +108,7 @@ test("continuation items and matching tool outputs are strictly allow-listed", (
     operation: "skill-draft",
     input: "Continue from the local tool result.",
     webSearch: false,
-    continuationItems: [reasoningItem, functionCallItem],
+    continuationItems: [reasoningItem, messageItem, functionCallItem],
     toolOutputs: [toolOutput],
   });
 });
@@ -259,10 +267,6 @@ test("Azure payload interleaves two tool outputs in continuation order", () => {
 
   assert.equal(payload.model, "gpt-5.6-sol");
   assert.deepEqual(payload.input, [
-    {
-      role: "user",
-      content: [{ type: "input_text", text: "Draft a release-note skill." }],
-    },
     { type: "reasoning", id: "reasoning-1", encrypted_content: "encrypted" },
     {
       type: "function_call",
@@ -288,6 +292,10 @@ test("Azure payload interleaves two tool outputs in continuation order", () => {
       type: "function_call_output",
       call_id: "provider-call-2",
       output: "{\"artifact_id\":\"artifact-2\"}",
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Draft a release-note skill." }],
     },
   ]);
   assert.equal(payload.instructions.includes("Macky's General Agent"), true);
@@ -428,6 +436,31 @@ test("Azure event data is normalized to allow-listed Macky events", () => {
       type: "reasoning",
       id: "reasoning-1",
       encrypted_content: "encrypted",
+    },
+  }]);
+
+  assert.deepEqual(normalizeAzureAgentSSEData(JSON.stringify({
+    type: "response.output_item.done",
+    item: {
+      type: "message",
+      id: "message-1",
+      status: "completed",
+      role: "assistant",
+      content: [{
+        type: "output_text",
+        text: "Checking the sources",
+        annotations: [],
+      }],
+    },
+  })), [{
+    protocol_version: 1,
+    kind: "continuation",
+    continuation_item: {
+      type: "message",
+      id: "message-1",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Checking the sources" }],
     },
   }]);
 

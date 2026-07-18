@@ -9,7 +9,8 @@ import Foundation
 /// unbounded pending queue. It contains no task-duration, search, usage, or turn cap.
 actor AgentRuntime {
     static let maximumConcurrentJobs = 3
-    private static let responseTextFlushByteCount = 4 * 1_024
+    private static let responseTextFlushByteCount = 1_024
+    private static let maximumTransientResponseRetries = 2
 
     private let store: AgentLocalStore
     private let apiClient: AgentAPIServing
@@ -89,6 +90,7 @@ actor AgentRuntime {
             if activeJobTasks[job.id] != nil {
                 requestedCancellationJobIDs.insert(job.id)
                 try await store.recordCancellationRequested(jobID: job.id)
+                activeJobTasks[job.id]?.cancel()
             } else {
                 try await store.cancel(jobID: job.id)
             }
@@ -153,7 +155,23 @@ actor AgentRuntime {
                 try? await store.cancel(jobID: jobID, attemptID: attemptID)
             }
         } catch {
-            try? await store.fail(jobID: jobID, attemptID: attemptID, detail: error.localizedDescription)
+            if Task.isCancelled, requestedCancellationJobIDs.remove(jobID) != nil {
+                try? await store.cancel(jobID: jobID, attemptID: attemptID)
+            } else if Task.isCancelled, isStopping || isPausedForSystemSleep {
+                try? await store.queueAfterLifecycleInterruption(
+                    jobID: jobID,
+                    attemptID: attemptID,
+                    detail: isStopping
+                        ? "Macky closed before this task finished"
+                        : "Mac sleep paused this task"
+                )
+            } else if Task.isCancelled {
+                try? await store.cancel(jobID: jobID, attemptID: attemptID)
+            } else if requestedCancellationJobIDs.remove(jobID) != nil {
+                try? await store.cancel(jobID: jobID, attemptID: attemptID)
+            } else {
+                try? await store.fail(jobID: jobID, attemptID: attemptID, detail: error.localizedDescription)
+            }
         }
         release(jobID: jobID)
     }
@@ -169,7 +187,7 @@ actor AgentRuntime {
         guard let definition = definitions[initialContext.task.agentID] else {
             throw AgentRuntimeError.unknownAgent(initialContext.task.agentID)
         }
-        let configuration = try await apiClient.fetchConfiguration(for: definition)
+        let configuration = try await fetchConfiguration(for: definition)
         try validate(configuration: configuration, for: definition)
 
         var continuationItems = initialContext.job.continuationItems ?? []
@@ -179,6 +197,7 @@ actor AgentRuntime {
         var previousToolSignature: String?
         var repeatedToolCount = 0
         var completionWithoutFinalCount = 0
+        var transientResponseRetryCount = 0
 
         if requestedCancellationJobIDs.remove(jobID) != nil {
             try await store.cancel(jobID: jobID, attemptID: attemptID)
@@ -250,21 +269,23 @@ actor AgentRuntime {
             let steeringInstructionIDs = Set(steeringInstructions.map(\.id))
             var didAcknowledgeSteering = steeringInstructionIDs.isEmpty
 
-            for try await event in stream {
-                try Task.checkCancellation()
-                if !didAcknowledgeSteering, event.kind != .error {
-                    try await store.markSteeringApplied(
-                        jobID: jobID,
-                        instructionIDs: steeringInstructionIDs
-                    )
-                    steeringInstructions = []
-                    didAcknowledgeSteering = true
-                }
-                switch event.kind {
+            do {
+                for try await event in stream {
+                    try Task.checkCancellation()
+                    if !didAcknowledgeSteering, event.kind != .error {
+                        try await store.markSteeringApplied(
+                            jobID: jobID,
+                            instructionIDs: steeringInstructionIDs
+                        )
+                        steeringInstructions = []
+                        didAcknowledgeSteering = true
+                    }
+                    switch event.kind {
                 case .text:
                     if let text = event.text, !text.isEmpty {
                         bufferedResponseText += text
-                        if bufferedResponseText.utf8.count >= Self.responseTextFlushByteCount {
+                        if bufferedResponseText.utf8.count >= Self.responseTextFlushByteCount
+                            || bufferedResponseText.contains("\n") {
                             try await store.appendResponseText(
                                 taskID: executionContext.task.id,
                                 jobID: jobID,
@@ -381,10 +402,33 @@ actor AgentRuntime {
                         )
                         bufferedResponseText = ""
                     }
-                    throw AgentRuntimeError.responseEndedWithoutResult
-                }
+                    throw AgentRuntimeError.remoteResponseUnavailable
+                    }
 
-                if shouldRequestFollowup { break }
+                    if shouldRequestFollowup { break }
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if !bufferedResponseText.isEmpty {
+                    try await store.appendResponseText(
+                        taskID: executionContext.task.id,
+                        jobID: jobID,
+                        attemptID: attemptID,
+                        text: bufferedResponseText
+                    )
+                    bufferedResponseText = ""
+                }
+                if transientResponseRetryCount < Self.maximumTransientResponseRetries,
+                   Self.isTransientResponseFailure(error) {
+                    transientResponseRetryCount += 1
+                    runtimeGuidance = [
+                        "The previous provider connection ended before returning task output. Retry the same work without claiming it completed."
+                    ]
+                    try await Task.sleep(for: .seconds(transientResponseRetryCount))
+                    continue
+                }
+                throw error
             }
 
             // URLSession cancellation can finish an AsyncThrowingStream without
@@ -400,9 +444,11 @@ actor AgentRuntime {
                 )
             }
             if shouldRequestFollowup {
+                transientResponseRetryCount = 0
                 continue
             }
             if responseCompleted {
+                transientResponseRetryCount = 0
                 completionWithoutFinalCount += 1
                 guard completionWithoutFinalCount < 3 else {
                     throw AgentRuntimeError.noProgress
@@ -410,6 +456,14 @@ actor AgentRuntime {
                 runtimeGuidance = [
                     "The previous response ended without calling final_result. Continue the task and finish only through final_result."
                 ]
+                continue
+            }
+            if transientResponseRetryCount < Self.maximumTransientResponseRetries {
+                transientResponseRetryCount += 1
+                runtimeGuidance = [
+                    "The previous provider stream closed before returning task output. Retry the same work without claiming it completed."
+                ]
+                try await Task.sleep(for: .seconds(transientResponseRetryCount))
                 continue
             }
             throw AgentRuntimeError.responseEndedWithoutResult
@@ -423,6 +477,22 @@ actor AgentRuntime {
             jobID: jobID,
             attemptID: attemptID
         )
+    }
+
+    private func fetchConfiguration(for definition: AgentDefinition) async throws -> AgentRemoteConfiguration {
+        var retryCount = 0
+        while true {
+            do {
+                return try await apiClient.fetchConfiguration(for: definition)
+            } catch {
+                guard retryCount < Self.maximumTransientResponseRetries,
+                      Self.isTransientResponseFailure(error) else {
+                    throw error
+                }
+                retryCount += 1
+                try await Task.sleep(for: .seconds(retryCount))
+            }
+        }
     }
 
     private func validate(configuration: AgentRemoteConfiguration, for definition: AgentDefinition) throws {
@@ -575,6 +645,30 @@ actor AgentRuntime {
         instructions.append(contentsOf: newInstructions.filter { !existingIDs.contains($0.id) })
     }
 
+    private static func isTransientResponseFailure(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut,
+                 .cannotFindHost,
+                 .cannotConnectToHost,
+                 .networkConnectionLost,
+                 .dnsLookupFailed,
+                 .notConnectedToInternet,
+                 .resourceUnavailable,
+                 .dataNotAllowed:
+                return true
+            default:
+                return false
+            }
+        }
+        if let apiError = error as? AgentAPIClientError,
+           case .unsuccessfulResponse(let statusCode) = apiError {
+            return statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode >= 500
+        }
+        guard let runtimeError = error as? AgentRuntimeError else { return false }
+        return runtimeError == .remoteResponseUnavailable
+    }
+
     private static func makeInput(
         context: AgentExecutionContext,
         steeringInstructions: [AgentSteeringInstruction],
@@ -612,15 +706,6 @@ actor AgentRuntime {
         }
         if !questionHistory.isEmpty {
             sections.append("User answers:\n\(questionHistory.joined(separator: "\n\n"))")
-        }
-
-        let visibleEvents = context.priorEvents.compactMap { event -> String? in
-            guard let message = event.message,
-                  !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return "\(event.kind.rawValue): \(message)"
-        }
-        if !visibleEvents.isEmpty {
-            sections.append("Task thread so far:\n\(visibleEvents.joined(separator: "\n"))")
         }
 
         if !steeringInstructions.isEmpty {

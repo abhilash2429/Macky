@@ -217,7 +217,6 @@ final class CompanionManager: ObservableObject {
         bindDictationCoordinator()
         bindShortcutTransitions()
         bindRealtimeClient()
-        agentRealtimeBridge.registerTools(on: realtimeClient)
         syncRealtimeSkillMetadata()
         realtimeClient.connect()
         agentStartupTask?.cancel()
@@ -225,6 +224,8 @@ final class CompanionManager: ObservableObject {
             guard let self else { return }
             do {
                 try await self.agentCoordinator.start()
+                self.agentRealtimeBridge.registerTools(on: self.realtimeClient)
+                self.realtimeClient.refreshSessionConfiguration()
             } catch {
                 print("⚠️ Companion: background agents unavailable: \(error.localizedDescription)")
             }

@@ -137,8 +137,8 @@ actor AgentLocalStore {
             task: task,
             job: job,
             attempt: attempt,
-            priorEvents: state.events.filter { $0.taskID == taskID },
-            questions: state.questions.filter { $0.taskID == taskID }
+            priorEvents: state.events.filter { $0.taskID == taskID && $0.jobID == jobID },
+            questions: state.questions.filter { $0.taskID == taskID && $0.jobID == jobID }
         )
     }
 
@@ -341,22 +341,26 @@ actor AgentLocalStore {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { throw AgentRuntimeError.invalidSteering }
         let candidateStatuses: [AgentJobStatus] = [.running, .queued, .waiting]
-        guard let jobIndex = state.jobs.firstIndex(where: {
-            $0.taskID == taskID && candidateStatuses.contains($0.status)
-        }) else {
+        let jobIndices = state.jobs.indices.filter {
+            state.jobs[$0].taskID == taskID && candidateStatuses.contains(state.jobs[$0].status)
+        }
+        guard !jobIndices.isEmpty else {
             throw AgentRuntimeError.missingTask(taskID)
         }
-        let steering = AgentSteeringInstruction(text: trimmedText, requestedAt: now())
-        state.jobs[jobIndex].pendingSteering.append(steering)
-        state.jobs[jobIndex].updatedAt = now()
+        let requestedAt = now()
+        for jobIndex in jobIndices {
+            let steering = AgentSteeringInstruction(text: trimmedText, requestedAt: requestedAt)
+            state.jobs[jobIndex].pendingSteering.append(steering)
+            state.jobs[jobIndex].updatedAt = requestedAt
+            appendEvent(
+                taskID: taskID,
+                jobID: state.jobs[jobIndex].id,
+                kind: .steeringQueued,
+                message: trimmedText,
+                metadata: ["steering_id": steering.id.uuidString]
+            )
+        }
         refreshTaskStatus(taskID: taskID)
-        appendEvent(
-            taskID: taskID,
-            jobID: state.jobs[jobIndex].id,
-            kind: .steeringQueued,
-            message: trimmedText,
-            metadata: ["steering_id": steering.id.uuidString]
-        )
         try await persistAndPublish()
     }
 
@@ -602,7 +606,7 @@ actor AgentLocalStore {
         }
         guard didChange else { return [] }
         for task in state.tasks {
-            refreshTaskStatus(taskID: task.id)
+            didChange = refreshTaskStatus(taskID: task.id) || didChange
         }
         try await persistAndPublish()
         return jobIDsToRestart
@@ -644,7 +648,7 @@ actor AgentLocalStore {
         }
 
         for task in state.tasks {
-            refreshTaskStatus(taskID: task.id)
+            didChange = refreshTaskStatus(taskID: task.id) || didChange
         }
 
         let historyCutoff = retentionDate.addingTimeInterval(-AgentRetentionPolicy.historyLifetime)
@@ -735,8 +739,9 @@ actor AgentLocalStore {
         try await persistAndPublish()
     }
 
-    private func refreshTaskStatus(taskID: UUID) {
-        guard let taskIndex = state.tasks.firstIndex(where: { $0.id == taskID }) else { return }
+    @discardableResult
+    private func refreshTaskStatus(taskID: UUID) -> Bool {
+        guard let taskIndex = state.tasks.firstIndex(where: { $0.id == taskID }) else { return false }
         let taskJobs = state.jobs.filter { $0.taskID == taskID }
         let newStatus: AgentTaskStatus
         if taskJobs.allSatisfy({ $0.status == .completed }) {
@@ -754,8 +759,12 @@ actor AgentLocalStore {
         } else {
             newStatus = .cancelled
         }
-        state.tasks[taskIndex].status = newStatus
-        state.tasks[taskIndex].updatedAt = now()
+        if state.tasks[taskIndex].status != newStatus {
+            state.tasks[taskIndex].status = newStatus
+            state.tasks[taskIndex].updatedAt = now()
+            return true
+        }
+        return false
     }
 
     private func appendEvent(
@@ -766,6 +775,7 @@ actor AgentLocalStore {
         message: String? = nil,
         metadata: [String: String] = [:]
     ) {
+        let eventDate = now()
         let event = AgentEvent(
             sequence: state.nextEventSequence,
             taskID: taskID,
@@ -774,10 +784,13 @@ actor AgentLocalStore {
             kind: kind,
             message: message,
             metadata: metadata,
-            createdAt: now()
+            createdAt: eventDate
         )
         state.nextEventSequence += 1
         state.events.append(event)
+        if let taskIndex = state.tasks.firstIndex(where: { $0.id == taskID }) {
+            state.tasks[taskIndex].updatedAt = eventDate
+        }
     }
 
     private func persistAndPublish() async throws {

@@ -25,13 +25,26 @@ final class AgentSkillDraftingProvider: SkillDraftingProvider, @unchecked Sendab
             throw AgentSkillDraftingProviderError.invalidPrompt
         }
 
+        var retryCount = 0
+        while true {
+            do {
+                return try await requestDraft(for: trimmedPrompt)
+            } catch {
+                guard retryCount < 2, Self.isTransientFailure(error) else { throw error }
+                retryCount += 1
+                try await Task.sleep(for: .seconds(retryCount))
+            }
+        }
+    }
+
+    private func requestDraft(for prompt: String) async throws -> SkillDraft {
         let configuration = try await apiClient.fetchConfiguration(for: agentDefinition)
         try validate(configuration)
 
         let request = AgentResponseRequest(
             agent: agentDefinition.id,
             operation: .skillDraft,
-            input: Self.makePrompt(for: trimmedPrompt),
+            input: Self.makePrompt(for: prompt),
             webSearch: false
         )
 
@@ -61,6 +74,33 @@ final class AgentSkillDraftingProvider: SkillDraftingProvider, @unchecked Sendab
         }
 
         throw AgentSkillDraftingProviderError.responseEndedWithoutDraft
+    }
+
+    private static func isTransientFailure(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut,
+                 .cannotFindHost,
+                 .cannotConnectToHost,
+                 .networkConnectionLost,
+                 .dnsLookupFailed,
+                 .notConnectedToInternet,
+                 .resourceUnavailable,
+                 .dataNotAllowed:
+                return true
+            default:
+                return false
+            }
+        }
+        if let apiError = error as? AgentAPIClientError,
+           case .unsuccessfulResponse(let statusCode) = apiError {
+            return statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode >= 500
+        }
+        if let draftingError = error as? AgentSkillDraftingProviderError,
+           case .streamFailure = draftingError {
+            return true
+        }
+        return false
     }
 
     private func validate(_ configuration: AgentRemoteConfiguration) throws {
