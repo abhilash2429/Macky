@@ -28,7 +28,7 @@ struct SkillsWindowView: View {
 
     init(
         companionManager: CompanionManager,
-        catalog: SkillCatalogStore = SkillCatalogStore(),
+        catalog: SkillCatalogStore,
         draftingProvider: SkillDraftingProvider? = nil
     ) {
         self.companionManager = companionManager

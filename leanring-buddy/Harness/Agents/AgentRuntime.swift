@@ -118,8 +118,9 @@ actor AgentRuntime {
         guard !isStopping, !isPausedForSystemSleep else { return }
         while activeJobTasks.count < Self.maximumConcurrentJobs, !queuedJobIDs.isEmpty {
             let jobID = queuedJobIDs.removeFirst()
-            let task = Task { [weak self] in
-                await self?.run(jobID: jobID)
+            let task: Task<Void, Never> = Task { [weak self] in
+                guard let self else { return }
+                await self.run(jobID: jobID)
             }
             activeJobTasks[jobID] = task
         }

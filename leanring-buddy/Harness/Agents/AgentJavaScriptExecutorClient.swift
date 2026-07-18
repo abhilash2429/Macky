@@ -62,7 +62,7 @@ final class AgentJavaScriptExecutorClient: AgentJavaScriptExecuting {
 
         let responseData = try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            try await pendingExecution.waitForResponse(requestData: requestData)
+            return try await pendingExecution.waitForResponse(requestData: requestData)
         } onCancel: {
             Task { @MainActor in
                 pendingExecution.cancelForTask()
@@ -177,7 +177,7 @@ final class AgentJavaScriptExecutorClient: AgentJavaScriptExecuting {
 }
 
 @MainActor
-private final class AgentJavaScriptExecutionGate {
+fileprivate final class AgentJavaScriptExecutionGate {
     private final class Waiter {
         enum State {
             case waiting
@@ -189,7 +189,7 @@ private final class AgentJavaScriptExecutionGate {
         var state: State = .waiting
     }
 
-    private final class Lease {
+    fileprivate final class Lease {
         private weak var gate: AgentJavaScriptExecutionGate?
         private var isReleased = false
 
@@ -197,7 +197,7 @@ private final class AgentJavaScriptExecutionGate {
             self.gate = gate
         }
 
-        func release() {
+        fileprivate func release() {
             guard !isReleased else { return }
             isReleased = true
             gate?.release()
@@ -207,7 +207,7 @@ private final class AgentJavaScriptExecutionGate {
     private var isOccupied = false
     private var waiters: [Waiter] = []
 
-    func acquire() async throws -> Lease {
+    fileprivate func acquire() async throws -> Lease {
         let waiter = Waiter()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -262,7 +262,7 @@ private final class AgentJavaScriptExecutionGate {
         continuation.resume(throwing: CancellationError())
     }
 
-    private func release() {
+    fileprivate func release() {
         guard isOccupied else { return }
         isOccupied = false
 

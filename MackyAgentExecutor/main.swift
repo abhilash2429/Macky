@@ -21,7 +21,7 @@ private final class AgentJavaScriptExecutorServiceDelegate: NSObject, NSXPCListe
     }
 }
 
-let serviceDelegate = AgentJavaScriptExecutorServiceDelegate()
-let serviceListener = NSXPCListener.service()
+private let serviceDelegate = AgentJavaScriptExecutorServiceDelegate()
+private let serviceListener = NSXPCListener.service()
 serviceListener.delegate = serviceDelegate
 serviceListener.resume()

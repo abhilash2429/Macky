@@ -526,14 +526,15 @@ actor AgentAttachmentStore: AgentAttachmentAccessing {
         }
 
         func protectedByteCount(for chunkIndex: UInt32) throws -> Int64 {
-            plaintextByteCount(for: chunkIndex) + AgentAttachmentStore.encryptedChunkCombinedOverheadByteCount
+            try plaintextByteCount(for: chunkIndex)
+                + AgentAttachmentStore.encryptedChunkCombinedOverheadByteCount
         }
 
         func recordOffset(for chunkIndex: UInt32) throws -> Int64 {
             guard chunkIndex < chunkCount else {
                 throw AgentAttachmentError.unreadableContainer
             }
-            let fullChunkRecordByteCount = AgentAttachmentStore.encryptedChunkLengthByteCount
+            let fullChunkRecordByteCount = Int64(AgentAttachmentStore.encryptedChunkLengthByteCount)
                 + plaintextChunkByteCount
                 + AgentAttachmentStore.encryptedChunkCombinedOverheadByteCount
             return Int64(AgentAttachmentStore.encryptedContainerHeaderByteCount)
